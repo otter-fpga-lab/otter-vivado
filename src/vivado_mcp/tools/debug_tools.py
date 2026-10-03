@@ -170,3 +170,44 @@ async def debug_experiment_action(
                           ensure_ascii=False)
     except (ValueError, RuntimeError, OSError) as exc:
         return _error(exc)
+
+
+@mcp.tool()
+async def resolve_debug_controls(
+    spec: dict, writes: list[dict] | None = None, preset: str | None = None,
+    hardware: dict | None = None,
+) -> str:
+    """离线解析工程控件描述，预览精确位值/有序预设，解读可选 hardware 快照。
+
+    version=1；spec 含 title/target/device/controls/presets?；详见 DEBUG_CONTROLS.md。
+    number 显式声明补码、定点、scale/offset、单位与 min/max/step；所有工程数值用
+    十进制字符串。enum 用选项 id，对应显式 0x 原始值。writes=[{control_id,value}]。
+    返回 profile_sha256；不连接设备、不执行预设，快照匹配不代表实时硬件验证。
+    """
+    from vivado_mcp.debug_controls import resolve_controls
+
+    try:
+        return json.dumps(resolve_controls(spec, writes, preset, hardware), ensure_ascii=False)
+    except (ValueError, TypeError, AttributeError) as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+async def write_debug_control(
+    spec: dict, control_id: str, value: str, expected_profile_sha256: str,
+    expected_revision: int, session_id: str = "default", ctx: Context = None,
+) -> str:
+    """按已预览的工程控件声明写一次 VIO，复用共享控制权、版本与操作回执。
+
+    value 为十进制工程值字符串或 enum option id；不舍入、不饱和、不隐式生成脉冲。
+    写前再次检查实时 target/device/核 UUID/探针位宽和方向；返回 operation_id 后查询
+    get_debug_snapshot，核对终态及 result.semantic。读回不证明业务逻辑采纳或物理效果。
+    预设逐项等待成功回执与最新 revision；非原子、无回滚，unknown 禁止自动重试。
+    """
+    try:
+        service = await _service(ctx, session_id)
+        result = service.submit_control(spec, control_id, value, expected_profile_sha256,
+                                        expected_revision, source="ai")
+        return json.dumps(result, ensure_ascii=False)
+    except (ValueError, RuntimeError) as exc:
+        return _error(exc)

@@ -3,8 +3,51 @@
 Status: OPEN
 Target: otter-fpga-lab/otter-vivado
 Basis: 用户于 2026-10-03 确认板上调试、可视化和产品边界，并授权逐步实施；从 main 3750590 接续
-Next: 第 5 项工程控件语义（枚举、定点、单位、预设等）；之后核对独立 ILA 停止能力。消费者页面、声音和真实板卡按现场需求验证
-Result: 第 4 项本地实验软件能力已接通：运行器、共享硬件步骤、就绪/倒计时/提示/标记/暂停/恢复/中止/显式重做与生成指引；共 47 MCP 工具。未新增固定网页，未进行真实 EDA/板卡/声音验收
+Next: 第 6 项核对独立 ILA 停止能力；消费者页面、声音和真实板卡按现场需求验证
+Result: 第 5 项工程控件语义已接通：枚举、补码/定点、单位换算、精确范围/步长、有序预设预览和共享单项写入；共 49 MCP 工具。未新增固定网页，未进行真实 EDA/板卡/消费者浏览器验收
+
+## 当前工作：第 5 项工程控件语义（2026-10-03）
+
+从干净 main `cd55063f52a9379676b159dff60dbf8e82fa1aaf` 接续（本地实验编排提交）。
+用户要求开始下一项，继续以插件接口、数据与智能体生成指引交付；本节随实现提交保存。
+
+- 新增独立 version=1 工程控件描述，严格绑定 target/device、核名称/UUID、探针位宽/方向。
+  number 显式声明补码/无符号、定点、scale/offset、单位及 min/max/step；enum 显式选择
+  option id/位模式。1~256 位、十进制字符串/有理数精确计算，不经浮点、不舍入/饱和。
+- `resolve_debug_controls` 离线生成指纹、读回解释与有序预设计划。快照匹配不冒充实时
+  证据；未知/坏值/未映射枚举/超策略范围保留原始值，不把 GUI staged 值当已提交。
+- `write_debug_control` 与 Python submit_control 复用同一共享服务，保持控制权、版本、
+  busy 与实验独占。执行前复查实时绑定；保存语义请求指纹、原始回执与解码结果。
+  写前拒绝与写后 unknown 分开，读回匹配不证明业务生效，失败后不自动重放。
+- 预设只展开有序计划，消费者逐项等待成功与最新 revision。明确部分完成、非原子、无
+  回滚、不支持主机精确脉冲；当前实验原始 write_vio 步骤不会隐式应用控件语义。
+- 新增 [接口与示例](docs/DEBUG_CONTROLS.md) 和
+  [智能体控件生成参考](skills/otter-vivado/references/controls.md)，补齐 Skill 路由与
+  现有说明。控件 JSON、页面、适配与当前配置版本由消费者持有；没有增加固定 UI/HTTP
+  路由，不改变旧 panel_path schema、Tcl 或会话传输。
+
+验证：Linux / Python 3.12.14 / MCP SDK 2.3.0；asyncio 与 Tcl 解释器真实，硬件为明确替身。
+
+```bash
+source .venv/bin/activate
+pytest tests/test_debug_controls.py tests/test_debug_controls_tools.py \
+  tests/test_debug_experiment.py tests/test_debug_experiment_tools.py \
+  tests/test_debug_service.py tests/test_debug_backend.py tests/test_debug_http.py \
+  tests/test_debug_cli.py tests/test_ila_capture.py tests/test_ila_analysis_cli.py \
+  tests/test_debug_bundle.py tests/test_debug_artifacts_cli.py tests/test_debug_design_tools.py \
+  tests/test_debug_prepare_cli.py tests/test_prompts.py tests/test_readme_hooks.py \
+  tests/test_version.py -q -rs -k 'not browser'
+ruff check src/ tests/
+git diff --check
+python -m pip wheel --no-deps . -w /workspace/scratch/otter-vivado-controls-wheels
+```
+
+定向回归 **320 passed / 3 deselected**，3 项为未改网页的浏览器测试，不记为通过。
+首轮控件/共享服务/实验子集 **98 passed** 已包含于回归，不相加。覆盖补码边界、定点、
+负 scale、80 位整数、有效低枚举、错误声明、未知读回、实际 MCP→服务→Tcl 替身链路、
+单探针提交不影响其它 GUI 暂存值、旧指纹/版本、控制权、身份变化、实验独占、读回失配
+及写后断连保留回执。Ruff、diff、文档链接/示例与 wheel 检查通过。
+没有真实 Vivado、Windows、板卡、消费者浏览器验证；未改 web/、未发布包或操作设备。
 
 ## 当前工作：第 4 项本地实验编排（2026-10-03）
 

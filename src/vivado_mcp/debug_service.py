@@ -138,7 +138,7 @@ class DebugService:
         if state != "ready":
             raise RuntimeError("Vivado 会话当前不可执行，请等待现有命令完成")
 
-    def submit(self, request: dict, *, source: str, experiment=None) -> dict:
+    def submit(self, request: dict, *, source: str, experiment=None, semantic=None) -> dict:
         """在所属事件循环中验证并启动操作，立即返回可查询的操作 ID。"""
         if source not in {"manual", "ai"}:
             raise ValueError("未知操作来源")
@@ -198,13 +198,32 @@ class DebugService:
                 "status": "running", "started_at": time.time(), "finished_at": None,
                 "result": None, "error": None,
             }
+            if semantic is not None:
+                operation["semantic_request"] = {
+                    "profile_sha256": semantic.fingerprint,
+                    "control_id": semantic.control["id"], "value": semantic.value,
+                    "wire_hex": semantic.wire,
+                }
             self._state["operations"] = (self._state["operations"] + [operation])[-30:]
             self._state["busy"] = True
             self._state["revision"] += 1
             self._operation = self._loop.create_task(
-                self._execute(operation, copy.deepcopy(params), experiment)
+                self._execute(operation, copy.deepcopy(params), experiment, semantic)
             )
         return {"operation_id": operation["id"], "status": "running"}
+
+    def submit_control(self, spec: dict, control_id: str, value: str,
+                       expected_profile_sha256: str, expected_revision: int, *, source: str):
+        """消费者适配与 MCP 共用的语义写入入口；只允许所属事件循环调用。"""
+        from vivado_mcp.debug_controls import ControlWrite
+
+        if asyncio.get_running_loop() is not self._loop:
+            raise RuntimeError("控件写入必须投递到共享服务所属事件循环")
+        semantic = ControlWrite(spec, control_id, value, expected_profile_sha256)
+        semantic.validate(self.snapshot()["hardware"])
+        return self.submit({"action": "write_vio", "params": semantic.params,
+                            "expected_revision": expected_revision},
+                           source=source, semantic=semantic)
 
     async def _inspect(self, selection: dict) -> dict:
         return await self.backend.inspect(selection["target"], selection["device"])
@@ -219,7 +238,7 @@ class DebugService:
                 connection="connected", error=None,
             )
 
-    async def _execute(self, operation: dict, params: dict, experiment=None) -> None:
+    async def _execute(self, operation: dict, params: dict, experiment=None, semantic=None) -> None:
         action = operation["action"]
         mutation_started = False
         try:
@@ -255,6 +274,10 @@ class DebugService:
                         raise ValueError("设备或探针结构已变化，本次操作未执行；请核对新快照")
                     if experiment is not None:
                         experiment.validate_hardware(current)
+                    if semantic is not None:
+                        if action != "write_vio" or params != semantic.params:
+                            raise ValueError("语义约束与写入参数不一致")
+                        semantic.validate(current)
                     kind = "vios" if action == "write_vio" else "ilas"
                     matches = [c for c in current[kind] if c["name"] == params["core"]]
                     if len(matches) != 1:
@@ -267,6 +290,12 @@ class DebugService:
                     # 操作结果与其后的状态读取分别处理；读取失败不触发自动重放。
                     with self._lock:
                         operation["result"] = copy.deepcopy(result)
+                    if semantic is not None:
+                        result["semantic"] = semantic.receipt(result)
+                        with self._lock:
+                            operation["result"] = copy.deepcopy(result)
+                        if not result["semantic"]["readback_verified"]:
+                            raise RuntimeError("工程控件读回未通过核对；结果未知，不自动重试")
                     if action == "write_vio" and result.get("readback_matches") is False:
                         raise RuntimeError("VIO 写入后的硬件读回与请求值不一致，请核对后再操作")
                     self._publish(await self._inspect(selection))

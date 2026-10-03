@@ -20,6 +20,7 @@
 | 运行状态和报告 | `get_run_snapshot` / `get_run_progress`；保留 session、run、目标阶段与来源 |
 | 调试交付检查 | `export_debug_bundle` 的结果、manifest 与 `check_debug_artifacts` JSON |
 | 实验步骤与提示 | `get_debug_experiment` / 同一服务的 `DebugExperiment`，见 [实验参考](experiment.md) |
+| 工程控件与预设 | `resolve_debug_controls` / `write_debug_control`，人工适配用 `submit_control()`，见 [控件参考](controls.md) |
 | 调试控制与状态 | 同一个 `DebugService` 的 `snapshot()` / `submit()`，或已连接的 MCP 入口 |
 | 采样规则与反例 | `analyze_ila_capture` 的 statistics/checks/evidence，见 [分析参考](analysis.md) |
 | 波形/采样分析 | `debug_action(export_ila)` 导出 VCD；`read_ila_waveform` 提供事件，见 [波形参考](waveform.md) |

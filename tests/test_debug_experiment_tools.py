@@ -13,7 +13,7 @@ async def test_registered_experiment_flow_and_local_human_ready(tmp_path):
     registry = ctx.request_context.lifespan_context.debug_services
     try:
         tools = {t.name: t for t in await mcp.list_tools()}
-        assert len(tools) == 47
+        assert len(tools) == 49
         assert set(tools['create_debug_experiment'].input_schema['required']) == {
             'spec', 'output_dir', 'expected_revision',
         }

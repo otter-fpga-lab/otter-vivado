@@ -22,14 +22,14 @@ PyPI 上的同名包是上游发行版，Otter 功能按本仓源码入口安装
 
 **人和智能体操作同一份 Vivado 工程，观察同一次运行。**
 
-47 个 MCP 工具覆盖会话、综合、实现、真实进度、时序、XDC、IP、波形与烧录；其余 Vivado Tcl 能力由 `run_tcl`/`safe_tcl` 承载。原生 Vivado GUI 用于工程、Block Design、原理图与波形操作，本机网页提供只读运行观察，以及独立的 [ILA/VIO 调试面板](docs/HARDWARE_DEBUG.md)。调试支持已有硬件目标，并提供 [ILA/VIO 工程准备](docs/DEBUG_DESIGN.md)；并支持 [构建产物离线核对](docs/DEBUG_ARTIFACTS.md)。现支持 [ILA 采样导出与离线波形数据](docs/ILA_WAVEFORM.md)，智能体据此在消费者工程生成页面；现提供 [本地实验运行器与生成指引](docs/DEBUG_EXPERIMENT.md)。
+49 个 MCP 工具覆盖会话、综合、实现、真实进度、时序、XDC、IP、波形与烧录；其余 Vivado Tcl 能力由 `run_tcl`/`safe_tcl` 承载。原生 Vivado GUI 用于工程、Block Design、原理图与波形操作，本机网页提供只读运行观察，以及独立的 [ILA/VIO 调试面板](docs/HARDWARE_DEBUG.md)。调试支持已有硬件目标，并提供 [ILA/VIO 工程准备](docs/DEBUG_DESIGN.md)；并支持 [构建产物离线核对](docs/DEBUG_ARTIFACTS.md)。现支持 [ILA 采样导出与离线波形数据](docs/ILA_WAVEFORM.md)，智能体据此在消费者工程生成页面；现提供 [本地实验运行器与生成指引](docs/DEBUG_EXPERIMENT.md)，以及 [工程控件语义与预设](docs/DEBUG_CONTROLS.md)。
 
-| 47 个 MCP 工具 | 8 个工作流 Prompt | 2 个会话 Resources | GUI / Tcl / attach 三种会话 |
+| 49 个 MCP 工具 | 8 个工作流 Prompt | 2 个会话 Resources | GUI / Tcl / attach 三种会话 |
 |---:|---:|---:|---:|
 
 > 本项目控制的是**你本机安装的 Vivado**，不是云端综合服务。命令在当前用户权限下执行；工具说明和诊断建议以中文为主。
 >
-> **English:** Otter Vivado provides local AMD Vivado project, execution, simulation, IP, status, and report tools for humans and agents. It includes 47 MCP tools, 8 workflow prompts, native GUI/headless/attach sessions, and a shared read-only run monitor. RTL authoring belongs to the separate coding product.
+> **English:** Otter Vivado provides local AMD Vivado project, execution, simulation, IP, status, and report tools for humans and agents. It includes 49 MCP tools, 8 workflow prompts, native GUI/headless/attach sessions, and a shared read-only run monitor. RTL authoring belongs to the separate coding product.
 
 **导航**：[快速开始](#快速开始) · [原生 GUI 与交付](docs/HUMAN_GUI_WORKFLOW.md) · [工具职责](#工具职责) · [工作流 Prompts](#工作流-prompts) · [工具列表](#工具列表) · [会话模式](#会话模式) · [架构](#架构) · [CLI](#cli-参考) · [反馈](#反馈与-bug-提交)
 
@@ -130,7 +130,7 @@ VIVADO_PATH = "D:/Xilinx/Vivado/2019.1/bin/vivado.bat"
 
 ### 5. 在空闲边界加载客户端配置
 
-首次配置后按客户端要求加载 MCP，可发现 47 个工具、8 个工作流 Prompt 和 2 个会话状态 Resource。已有活动构建时保留其 MCP 会话，完成后再重载；结束拥有 Vivado 子进程的 MCP 会关闭该进程。
+首次配置后按客户端要求加载 MCP，可发现 49 个工具、8 个工作流 Prompt 和 2 个会话状态 Resource。已有活动构建时保留其 MCP 会话，完成后再重载；结束拥有 Vivado 子进程的 MCP 会关闭该进程。
 
 ### 6. 冒烟验证
 
@@ -172,7 +172,7 @@ BD、仿真、硬件调试和 IP 配置可通过 `run_tcl`/`safe_tcl` 使用当�
 ## 特性
 
 - **三种会话模式**：GUI 可视化、Tcl 无头运行，以及只连接现有 GUI 的 attach
-- **47 个 MCP 工具** — 覆盖 Vivado 执行、运行观察、诊断、离线解析和外部检查工具联动
+- **49 个 MCP 工具** — 覆盖 Vivado 执行、运行观察、诊断、离线解析和外部检查工具联动
 - **8 个证据驱动工作流** — 每个流程都要求新鲜基线、最小安全修改、复测门禁与明确停止条件
 - **一条命令自检** — `doctor` 只读定位环境问题，`doctor --fix` 才执行受限、可备份的修复
 - **可靠的长任务协议** — 综合/实现支持 `wait=False` 立即返回 job id，再由 `get_run_progress` 查询
@@ -285,6 +285,8 @@ get_run_progress(run_name="synth_1", session_id="default")
 | `open_debug_panel` | 返回现有会话的本机调试页面，可加载消费者工程的滑杆/开关描述 |
 | `get_debug_snapshot` | 读取共享设备、探针、控制权与操作结果缓存 |
 | `debug_action` | 明确选择目标后配置 ILA、启动/上传/导出采集或写 VIO；短操作返回可查询回执 |
+| `resolve_debug_controls` | 离线验证工程控件、精确换算、读回解释与有序预设预览 |
+| `write_debug_control` | 按声明与指纹写单个 VIO，共享版本/控制权并核对读回 |
 | `create_debug_experiment` | 创建消费者本地实验计划，固定设备身份与新记录目录 |
 | `get_debug_experiment` | 读取本地步骤、倒计时和事件，不查询 EDA |
 | `debug_experiment_action` | 启动、暂停、恢复、中止、标记和显式重做，不代替本地人工就绪 |
@@ -563,7 +565,7 @@ safe_tcl("set_property PACKAGE_PIN {0} [get_ports {1}]", args=["W5", "clk"])
 ```mermaid
 flowchart LR
     Agent["Cursor / Claude Code / Codex / Antigravity"] -->|"stdio MCP"| MCP["vivado-mcp"]
-    MCP --> Tools["47 Tools"]
+    MCP --> Tools["49 Tools"]
     MCP --> Prompts["8 Workflow Prompts"]
     MCP --> Resources["2 Session Resources"]
     Tools --> Tcl["SubprocessSession\nmode=tcl"]

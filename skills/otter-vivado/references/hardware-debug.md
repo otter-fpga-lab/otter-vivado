@@ -20,6 +20,9 @@
 5. 人接手后 AI 停止写入。此控制权只协调本服务；原生 GUI、`run_tcl`、其它进程
    不受此锁约束，使用这些入口时明确协调，不承诺全局设备锁。
 
+工程枚举、定点数、单位换算与预设使用 [控件语义参考](controls.md)，由消费者生成页面，
+通过 resolve_debug_controls / write_debug_control 或共享 submit_control 接入。
+
 需要复用现有参考页时，可读取实际探针及项目语义，生成仅含 `title` 与 `controls` 的 JSON。
 这只是参考页的配置格式，不限制消费者自己生成的页面布局。
 首批控件为非负整数 `slider` 或 0/1 `toggle`，绑定精确 `core`、`probe`。

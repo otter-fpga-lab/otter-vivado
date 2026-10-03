@@ -23,6 +23,7 @@ description: 操作 AMD Vivado 工程、启动综合与实现、查看真实运�
 | 看进度、日志或报告 | [workflows.md](references/workflows.md#进度与报告) | `open_run_monitor`、`get_run_snapshot`、`get_run_progress` |
 | 按工程生成页面/可视化 | [visualization.md](references/visualization.md) | 状态/报告 JSON、`DebugService`；可选参考页 |
 | 调试构建与产物交付 | [debug-delivery.md](references/debug-delivery.md) | 已有构建工具、`export_debug_bundle`、`check_debug_artifacts` |
+| 工程控件、枚举、定点数、单位与预设 | [controls.md](references/controls.md) | `resolve_debug_controls`、`write_debug_control` |
 | 本地实验、倒计时、动作标记、暂停/重做 | [experiment.md](references/experiment.md) | `create_debug_experiment`、`get_debug_experiment`、`debug_experiment_action` |
 | 采样分析、状态/握手检查、下一轮取证 | [analysis.md](references/analysis.md) | `analyze_ila_capture`、`read_ila_waveform`、`debug_action` |
 | 采样导出、离线 VCD、生成消费者波形页面 | [waveform.md](references/waveform.md) | `debug_action(export_ila)`、`read_ila_waveform` |

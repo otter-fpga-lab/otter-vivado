@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased] — 2026-10-03 工程控件语义
+
+- 新增 `resolve_debug_controls`、`write_debug_control`，共 49 MCP 工具。消费者显式
+  声明枚举、补码/定点、单位/缩放与范围，用字符串和有理数精确换算，无浮点舍入。
+- 有序预设仅预览；单项执行复用共享服务 control/revision/实验独占，写前核对设备与
+  核 UUID/探针结构，保留请求指纹、原始回执和解码读回。未知结果不重放，不承诺原子回滚。
+- 新增接口文档与 Skill 控件生成参考；消费者实现页面/适配，旧 web/ 与 panel JSON 不变。
+  离线/Tcl 替身验证不代表真实板卡、Vivado、Windows 或消费者浏览器验收。
+
 ## [Unreleased] — 2026-10-03 本地实验编排
 
 - 新增本地 `DebugExperiment` 与创建/快照/控制三个 MCP 入口，共 47 工具。支持人工就绪、
