@@ -22,14 +22,14 @@ PyPI 上的同名包是上游发行版，Otter 功能按本仓源码入口安装
 
 **人和智能体操作同一份 Vivado 工程，观察同一次运行。**
 
-41 个 MCP 工具覆盖会话、综合、实现、真实进度、时序、XDC、IP、波形与烧录；其余 Vivado Tcl 能力由 `run_tcl`/`safe_tcl` 承载。原生 Vivado GUI 用于工程、Block Design、原理图与波形操作，本机网页提供只读运行观察，以及独立的 [ILA/VIO 调试面板](docs/HARDWARE_DEBUG.md)。调试支持已有硬件目标，并提供 [ILA/VIO 工程准备](docs/DEBUG_DESIGN.md)；并支持 [构建产物离线核对](docs/DEBUG_ARTIFACTS.md)。采样导出和倒计时实验仍在后续计划中。
+42 个 MCP 工具覆盖会话、综合、实现、真实进度、时序、XDC、IP、波形与烧录；其余 Vivado Tcl 能力由 `run_tcl`/`safe_tcl` 承载。原生 Vivado GUI 用于工程、Block Design、原理图与波形操作，本机网页提供只读运行观察，以及独立的 [ILA/VIO 调试面板](docs/HARDWARE_DEBUG.md)。调试支持已有硬件目标，并提供 [ILA/VIO 工程准备](docs/DEBUG_DESIGN.md)；并支持 [构建产物离线核对](docs/DEBUG_ARTIFACTS.md)。采样导出和倒计时实验仍在后续计划中。
 
-| 41 个 MCP 工具 | 8 个工作流 Prompt | 2 个会话 Resources | GUI / Tcl / attach 三种会话 |
+| 42 个 MCP 工具 | 8 个工作流 Prompt | 2 个会话 Resources | GUI / Tcl / attach 三种会话 |
 |---:|---:|---:|---:|
 
 > 本项目控制的是**你本机安装的 Vivado**，不是云端综合服务。命令在当前用户权限下执行；工具说明和诊断建议以中文为主。
 >
-> **English:** Otter Vivado provides local AMD Vivado project, execution, simulation, IP, status, and report tools for humans and agents. It includes 41 MCP tools, 8 workflow prompts, native GUI/headless/attach sessions, and a shared read-only run monitor. RTL authoring belongs to the separate coding product.
+> **English:** Otter Vivado provides local AMD Vivado project, execution, simulation, IP, status, and report tools for humans and agents. It includes 42 MCP tools, 8 workflow prompts, native GUI/headless/attach sessions, and a shared read-only run monitor. RTL authoring belongs to the separate coding product.
 
 **导航**：[快速开始](#快速开始) · [原生 GUI 与交付](docs/HUMAN_GUI_WORKFLOW.md) · [工具职责](#工具职责) · [工作流 Prompts](#工作流-prompts) · [工具列表](#工具列表) · [会话模式](#会话模式) · [架构](#架构) · [CLI](#cli-参考) · [反馈](#反馈与-bug-提交)
 
@@ -130,7 +130,7 @@ VIVADO_PATH = "D:/Xilinx/Vivado/2019.1/bin/vivado.bat"
 
 ### 5. 在空闲边界加载客户端配置
 
-首次配置后按客户端要求加载 MCP，可发现 41 个工具、8 个工作流 Prompt 和 2 个会话状态 Resource。已有活动构建时保留其 MCP 会话，完成后再重载；结束拥有 Vivado 子进程的 MCP 会关闭该进程。
+首次配置后按客户端要求加载 MCP，可发现 42 个工具、8 个工作流 Prompt 和 2 个会话状态 Resource。已有活动构建时保留其 MCP 会话，完成后再重载；结束拥有 Vivado 子进程的 MCP 会关闭该进程。
 
 ### 6. 冒烟验证
 
@@ -172,7 +172,7 @@ BD、仿真、硬件调试和 IP 配置可通过 `run_tcl`/`safe_tcl` 使用当�
 ## 特性
 
 - **三种会话模式**：GUI 可视化、Tcl 无头运行，以及只连接现有 GUI 的 attach
-- **41 个 MCP 工具** — 覆盖 Vivado 执行、运行观察、诊断、离线解析和外部检查工具联动
+- **42 个 MCP 工具** — 覆盖 Vivado 执行、运行观察、诊断、离线解析和外部检查工具联动
 - **8 个证据驱动工作流** — 每个流程都要求新鲜基线、最小安全修改、复测门禁与明确停止条件
 - **一条命令自检** — `doctor` 只读定位环境问题，`doctor --fix` 才执行受限、可备份的修复
 - **可靠的长任务协议** — 综合/实现支持 `wait=False` 立即返回 job id，再由 `get_run_progress` 查询
@@ -272,6 +272,13 @@ get_run_progress(run_name="synth_1", session_id="default")
 | `get_run_snapshot` | 与面板共用状态缓存，运行与报告独立标注采样状态、时间和来源 |
 | `close_run_monitor` | 释放选定观察器、页面与缓存，保留 Vivado 会话和正在执行的 run |
 
+### 为消费者工程生成可视化
+
+插件提供操作接口、状态/报告数据和 [可视化生成 Skill](skills/otter-vivado/references/visualization.md)。
+智能体按具体工程和用户偏好生成页面，保存到消费者工程中；布局、样式与项目语义不写死在库里。
+已有运行/调试网页是可选参考实现，使用 CLI、MCP 或 Python 能力不要求采用这些页面。
+当前固定页面服务器尚不能直接加载任意消费者 HTML，生成的实时页面需有明确的本机适配层。
+
 ### ILA/VIO 板上调试
 | 工具 | 说明 |
 |------|------|
@@ -280,8 +287,7 @@ get_run_progress(run_name="synth_1", session_id="default")
 | `debug_action` | 明确选择目标后配置 ILA、启动/上传采集或写 VIO；短操作返回可查询回执 |
 | `close_debug_panel` | 释放调试服务与轮询，不停止 ILA 或关闭 Vivado |
 
-首批面向原生 Hardware Manager 已打开、已加载匹配探针的设备。人工与 AI 使用同一 MCP
-返回的页面；CLI 也可独立使用。用法、合成演示、边界和后续能力见 [硬件调试指南](docs/HARDWARE_DEBUG.md)。
+首批面向原生 Hardware Manager 已打开、已加载匹配探针的设备。人工与 AI 共用调试状态和操作协议；现有页面为可选参考，CLI/MCP 也可独立使用。用法、合成演示、边界和后续能力见 [硬件调试指南](docs/HARDWARE_DEBUG.md)。
 
 ### ILA/VIO 工程准备
 
@@ -291,10 +297,12 @@ get_run_progress(run_name="synth_1", session_id="default")
 | `inspect_debug_design` | 只读核对工程身份、run/约束集或已安装 IP 定义 |
 | `prepare_debug_design` | 创建并配置 IP，或注册专用调试约束；保留部分失败现场 |
 | `check_debug_artifacts` | 离线核对 bit/ltx 长度、器件、ILA/VIO 核和探针；不把元数据一致当作硬件配对通过 |
+| `export_debug_bundle` | 从专用空会话中的实现检查点导出 bit/ltx、报告和 SHA256 来源清单 |
 
 人工入口 `python -m vivado_mcp debug-prepare --spec design.json`；默认只生成计划。
 `--output-dir` 保存消费者文件，`--apply` 准备已有 GUI 工程。创建产物之后仍需接入 RTL、
 构建并核对 bit/ltx，见 [工程准备指南](docs/DEBUG_DESIGN.md)。
+同一实现 DCP 的交付使用 [调试导出流程](docs/DEBUG_BUNDLE.md)，不必加载任何网页。
 
 ### 新手引导 & 工程摸底
 | 工具 | 说明 |
@@ -548,7 +556,7 @@ safe_tcl("set_property PACKAGE_PIN {0} [get_ports {1}]", args=["W5", "clk"])
 ```mermaid
 flowchart LR
     Agent["Cursor / Claude Code / Codex / Antigravity"] -->|"stdio MCP"| MCP["vivado-mcp"]
-    MCP --> Tools["41 Tools"]
+    MCP --> Tools["42 Tools"]
     MCP --> Prompts["8 Workflow Prompts"]
     MCP --> Resources["2 Session Resources"]
     Tools --> Tcl["SubprocessSession\nmode=tcl"]

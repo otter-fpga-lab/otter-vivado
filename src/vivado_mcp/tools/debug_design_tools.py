@@ -65,3 +65,33 @@ async def prepare_debug_design(
         return _result(await DebugDesignPreparation(session).apply(spec, expected_project))
     except (ValueError, RuntimeError) as exc:
         return _result({"error": str(exc)})
+
+
+@mcp.tool()
+async def export_debug_bundle(
+    checkpoint_path: str, output_dir: str, expected_part: str,
+    source_revision: str | None = None, timeout_seconds: int = 1800,
+    session_id: str = "default", ctx: Context = None,
+) -> str:
+    """在专用空闲会话中从明确的实现 DCP 导出 bit/ltx/报告和来源清单。
+
+    必须使用没有打开工程/设计的独立会话；不关闭已有 GUI，不自动运行综合/实现。
+    checkpoint_path 是已完成实现的 DCP；expected_part 为完整器件名；output_dir
+    必须是父目录已存在的新目录。复制检查点后，同一 execute 中打开该副本，生成 bit、
+    ltx、timing/utilization/DRC 报告；SHA256 清单保存到消费者目录，不提供固定页面。
+    source_revision 仅记录调用方声明；不自动认证检查点源码来源。
+    exported 只表示导出和文件核对完成；不代表时序、板卡配对通过。
+    partial/unknown 保留文件；超时后 Vivado 可能继续运行，先核对状态，禁止直接重放。
+    导出后会话保留检查点。MCP 与 Vivado 必须共享本机文件系统。
+    """
+    from vivado_mcp.debug_bundle import export_debug_bundle as export
+
+    try:
+        session = _require_session(ctx, session_id)
+        if session is None:
+            raise ValueError(_NO_SESSION.format(sid=session_id))
+        return _result(await export(
+            session, checkpoint_path, output_dir, expected_part, source_revision, timeout_seconds,
+        ))
+    except (ValueError, RuntimeError, OSError) as exc:
+        return _result({"status": "blocked", "error": str(exc)})

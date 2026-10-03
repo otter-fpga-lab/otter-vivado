@@ -17,6 +17,6 @@ def run_debug_artifacts_cli(args) -> int:
         expected = json.loads(raw.decode("utf-8-sig"))
         if not isinstance(expected, dict):
             raise ValueError("预期产物描述必须是 JSON 对象")
-    result = check_debug_artifacts(args.bit, args.ltx, expected)
+    result = check_debug_artifacts(args.bit, args.ltx, expected, getattr(args, "manifest", None))
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return {"consistent": 0, "blocked": 1, "incomplete": 2}[result["status"]]

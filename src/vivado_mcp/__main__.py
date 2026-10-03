@@ -115,6 +115,14 @@ def main() -> None:
     p_artifacts.add_argument("--bit", required=True, help="已构建的 .bit 文件路径。")
     p_artifacts.add_argument("--ltx", required=True, help="对应 .ltx 文件路径。")
     p_artifacts.add_argument("--expected", help="消费者预期器件/核/探针的 JSON；省略则仅摸底。")
+    p_artifacts.add_argument("--manifest", help="导出交付包的 manifest.json，核对全包指纹。")
+    p_export = sub.add_parser("debug-export", help="在专用空会话中从实现 DCP 导出调试交付包。")
+    p_export.add_argument("--checkpoint", required=True, help="已完成实现的 DCP 路径。")
+    p_export.add_argument("--output-dir", required=True, help="父目录已存在的新交付目录。")
+    p_export.add_argument("--part", required=True, help="检查点的完整器件名称。")
+    p_export.add_argument("--port", type=int, required=True, help="专用空 GUI 会话的协议端口。")
+    p_export.add_argument("--source-revision", help="声明的源码提交；不作为已验证的来源。")
+    p_export.add_argument("--timeout", type=int, default=1800, help="等待秒数；超时不取消 Vivado。")
     p_connect = sub.add_parser("connect", help="一次接入源码 MCP 与原地 Skill 目录引用。")
     p_connect.add_argument(
         "--client", nargs="+", choices=("cursor", "claude-code", "codex", "antigravity", "all"),
@@ -130,6 +138,20 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    if args.cmd == "debug-export":
+        import asyncio
+
+        from vivado_mcp.debug_bundle_cli import run_debug_export_cli
+
+        try:
+            code = asyncio.run(run_debug_export_cli(args))
+        except KeyboardInterrupt:
+            code = 1
+        except (ValueError, RuntimeError, OSError) as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            code = 1
+        sys.exit(code)
 
     if args.cmd == "debug-artifacts":
         from vivado_mcp.debug_artifacts_cli import run_debug_artifacts_cli

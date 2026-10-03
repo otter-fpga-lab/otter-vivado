@@ -1,10 +1,62 @@
-# Otter Vivado：人机共用 ILA/VIO 调试
+# Otter Vivado：调试交付与智能体可视化能力
 
 Status: OPEN
 Target: otter-fpga-lab/otter-vivado
 Basis: 用户于 2026-10-03 确认板上调试、可视化和产品边界，并授权逐步实施；从 main 3750590 接续
-Next: 用真实工程核对 IP/RTL/约束，保留同次实现的 bit/ltx 构建来源并做板上验证；随后推进采样导出/波形与本地实验提示
-Result: 已有工程准备和共享 ILA/VIO 面板；新增 bit/ltx 离线完整性与预期探针核对，MCP 共 41 工具；真实构建配对、商业 Vivado/Windows/板卡仍待验证
+Next: 按顺序推进第 2 项采样导出与波形数据接口/生成指引；真实工程空闲时验证检查点导出和板上配对。页面由智能体放到消费者工程，不扩建固定 UI
+Result: 第 1 项软件流程已补齐：Skill 串联已有构建工具、专用空会话检查点导出和交付包复核；共 42 MCP 工具。商业 Vivado/Windows/板卡仍未实测
+
+## 当前工作：第 1 项调试构建交付与插件边界（2026-10-03）
+
+用户要求按剩余项目顺序推进，并明确：本仓作为插件，提供“告诉智能体怎么做可视化”
+的能力，最终页面由智能体为消费者工程生成。该偏好优先于之前把内置面板当成产品主界面
+的表述。库提供操作接口、共享状态、数据与 Skill 指引；项目页面、布局、主题和业务
+控件语义留在消费者目录。已有网页保留为可选参考，不破坏现有使用者；本批未改 web/。
+
+从 main `6b5c2c615868cd6a37ffc63820a45ae4a07505e1` 接续，工作树初始干净。
+第 1 项按插件/智能体工作流完成软件层接续，不重写现有综合实现后端：
+
+- Skill 的 `debug-delivery.md` 串联已有工程准备、run、报告和导出入口；明确确认目标
+  routed DCP、实际 part/version/run 及源码来源，不取“目录最新文件”代替核对。
+- 新增 `export_debug_bundle` MCP、`debug-export` CLI 与共享 Python 实现。检查点复制到
+  消费者新目录后，在没有打开工程/设计的专用会话中，单次 execute 连续生成 bit、ltx
+  和 timing/utilization/DRC 报告；不关闭/切换原 GUI，不启动综合或实现，不烧板。
+- 保存 attempt、result、仅成功生成的 manifest；记录实际 Vivado 返回版本/设计/part、
+  检查点和全部产物 SHA256。源码提交作为 declared_source_revision，不冒充已验证来源。
+  部分失败保留文件；超时/取消/协议损坏为 unknown，不重放，不自动结束 Vivado。
+- 离线核对新增 manifest_path / --manifest，检查固定全包文件和传入 bit/ltx 的指纹。
+  可整体搬迁目录；缺失/改过检查点或报告同样阻断。record_matches 是本地记录一致，
+  pairing/hardware_verified/timing_signoff 仍保留未验证，不使用本地清单作不可伪造认证。
+- 新增 `visualization.md`，说明页面生成、字段来源、静态/实时集成、单一共享服务、
+  revision/控制权/操作回执、宽整数和未知数据展示。当前内置服务器不能直接加载任意
+  HTML，自定义实时页面需明确适配层；没有把文档指引说成已交付任意页面加载器。
+
+验证环境 Linux / Python 3.12.14 / MCP SDK 2.3.0，真实 Tcl（Vivado 命令为测试桩）。
+
+```bash
+source .venv/bin/activate
+pytest tests/test_debug_bundle.py tests/analysis/test_debug_artifacts.py \
+  tests/analysis/test_bit_header_parser.py tests/analysis/test_ltx_parser.py \
+  tests/test_debug_artifacts_cli.py tests/test_debug_design_tools.py \
+  tests/test_debug_prepare_cli.py tests/test_debug_design.py tests/test_debug_ip.py \
+  tests/test_debug_service.py tests/test_prompts.py tests/test_protocol_regression.py \
+  tests/test_session.py tests/test_probe_then_attach.py tests/test_tcl_utils.py \
+  tests/test_version.py -q -rs
+ruff check src/ tests/
+git diff --check
+python -m pip wheel --no-deps . -w /workspace/scratch/otter-vivado-export-wheels
+```
+
+结果 **493 passed / 6 skipped**。跳过为已有 Windows-only 会话测试；未记为通过。
+覆盖空会话保护、错误器件、现有文件、中文/空格/$/[] 路径、同次 Tcl 调用顺序、
+stdio sentinel 包装、部分导出、未知回执/取消不重放、清单篡改/搬迁、真实 MCP 注册调用
+（42 工具）、CLI attach-only/断开和离线核对。Ruff、diff、Skill/文档链接通过；
+实际 wheel 含导出模块与 Tcl 模板，CLI help 正常。不需要浏览器测试，本批未改页面。
+
+官方 UG835 链接留在指南；本轮 HTTP 请求仅取得门户 HTML，未取得命令正文，执行前
+需用实际 Vivado 的 help 核对选项。没有商业 Vivado、真实 routed DCP、Windows 或板卡。
+因此第 1 项是软件实现/流程已接通，实机验收待补；不能宣称真实构建或板卡配对 PASS。
+后续按顺序推进采样导出与波形数据能力，再做分析、实验流程、控件语义与 ILA 停止。
 
 ## 当前工作：调试产物离线核对（2026-10-03）
 

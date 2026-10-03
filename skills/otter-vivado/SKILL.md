@@ -1,13 +1,17 @@
 ---
 name: otter-vivado
-description: 操作 AMD Vivado 工程、启动综合与实现、查看真实运行进度和报告、诊断工程与约束；人和智能体共用本机会话及运行面板。也支持无 Vivado 时读取 XPR、XCI、XDC 等已有资产。
+description: 操作 AMD Vivado 工程、启动综合与实现、查看真实运行进度和报告、诊断工程与约束；人和智能体共用本机会话；指导智能体为消费者工程生成可视化。也支持无 Vivado 时读取 XPR、XCI、XDC 等已有资产。
 ---
 
 # Otter Vivado
 
-本 Skill 负责选择工作路径，当前 MCP 的工具 schema 负责参数与执行约定；CLI、MCP 和 UI 使用同一份 `vivado_mcp` 实现。使用客户端实际配置的工具前缀。
+本 Skill 负责选择工作路径，当前 MCP 的工具 schema 负责参数与执行约定；CLI、MCP 和消费者可视化复用同一份 `vivado_mcp` 实现。使用客户端实际配置的工具前缀。
 
 本产品负责 Vivado 工程、执行、仿真、IP、状态与报告工具。RTL 设计和编码由 Coding 产品负责；此处保留已有检查器作为验证入口，并提供可以交给人用原生 Vivado GUI 继续操作的工程与证据。
+
+可视化职责：本插件提供接口、状态数据与生成方法，智能体为具体消费者工程生成页面和
+交互。页面、布局、主题、业务控件语义保存在消费者工程；已有内置网页仅为可选参考实现，
+不作为使用工具的前提。不要为了一个工程的风格需求改库内 `web/`。
 
 ## 只读当前任务需要的参考
 
@@ -17,6 +21,8 @@ description: 操作 AMD Vivado 工程、启动综合与实现、查看真实运�
 |---|---|---|
 | 接续工程、综合或实现 | [workflows.md](references/workflows.md#工程与构建) | `list_sessions`、`start_session`、`run_synthesis`、`run_implementation` |
 | 看进度、日志或报告 | [workflows.md](references/workflows.md#进度与报告) | `open_run_monitor`、`get_run_snapshot`、`get_run_progress` |
+| 按工程生成页面/可视化 | [visualization.md](references/visualization.md) | 状态/报告 JSON、`DebugService`；可选参考页 |
+| 调试构建与产物交付 | [debug-delivery.md](references/debug-delivery.md) | 已有构建工具、`export_debug_bundle`、`check_debug_artifacts` |
 | 人机共用 ILA/VIO 板上调试、生成工程控件 | [hardware-debug.md](references/hardware-debug.md) | `open_debug_panel`、`get_debug_snapshot`、`debug_action` |
 | 交付工程给人用 GUI 接续 | [workflows.md](references/workflows.md#原生-gui-交接) | 工程路径、实际会话、文件与报告证据 |
 | 分析失败、约束或 IP；无 EDA 摸底 | [workflows.md](references/workflows.md#诊断与离线分析) | `get_critical_warnings`、`xdc_lint`、`inspect_ip_params`、`parse_xpr` |

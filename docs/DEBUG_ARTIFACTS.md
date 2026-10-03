@@ -83,3 +83,15 @@ LTX UUID 无法单独说明 `.bit` 内部核的身份；本工具没有解析配
 ```bash
 python -m vivado_mcp debug-artifacts --bit tests/fixtures/sample_header.bit --ltx tests/fixtures/sample_probes.ltx --expected examples/debug/artifacts-expected.json
 ```
+
+
+## 核对导出清单
+
+[检查点导出](DEBUG_BUNDLE.md) 生成 `manifest.json`。CLI 增加
+`--manifest /project/debug/delivery/manifest.json`，MCP 增加 `manifest_path` 参数，
+即可核对清单中全部固定产物（检查点、bit、ltx、三份报告）的 SHA256，并检查当前传入
+bit/ltx 是否属于该记录。整个目录搬迁后仍可核对，内部文件名保持不变。
+
+`bundle.status=record_matches` 仅表示文件指纹与本地来源记录一致。记录本身可被编辑，
+不会把 `pairing` 升级为已验证；硬件配对与源码来源仍需独立证据。缺少文件、改过报告、
+替换检查点或错配 bit/ltx 会返回 blocked；不会根据清单中的任意路径读取外部文件。

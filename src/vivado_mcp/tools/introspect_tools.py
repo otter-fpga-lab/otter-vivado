@@ -87,6 +87,7 @@ async def parse_ltx(file_path: str, ctx: Context = None) -> str:
 @mcp.tool()
 async def check_debug_artifacts(
     bit_path: str, ltx_path: str, expected: dict | None = None,
+    manifest_path: str | None = None,
 ) -> str:
     """离线核对 bit/ltx：载荷长度、器件/封装、ILA/VIO 核、UUID 与探针要求。
 
@@ -95,12 +96,13 @@ async def check_debug_artifacts(
     不从 IP 模块名猜实例名。完整 schema 见 docs/DEBUG_ARTIFACTS.md。
     无 expected 时仅摸底，返回 incomplete。consistent 仅表示离线检查一致；
     pairing 始终 unverified：没有解析 bit 内部 UUID，也没有实际硬件验证。
-    只读本地文件，不构建、不连接设备、不烧录；SHA256 用于保存本次文件身份。
+    manifest_path 可指向 export_debug_bundle 的清单，核对全包指纹和导出记录；
+    record_matches 也不代表不可伪造的配对认证。只读本地文件，不构建、不连接设备、不烧录。
     """
     from vivado_mcp.analysis.debug_artifacts import check_debug_artifacts as check
 
     try:
-        result = await asyncio.to_thread(check, bit_path, ltx_path, expected)
+        result = await asyncio.to_thread(check, bit_path, ltx_path, expected, manifest_path)
     except (OSError, ValueError) as exc:
         result = {"status": "blocked", "pairing": "unverified", "error": str(exc)}
     return json.dumps(result, ensure_ascii=False)

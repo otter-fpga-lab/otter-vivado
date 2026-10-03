@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased] — 2026-10-03 检查点交付与可视化职责
+
+- 新增 `export_debug_bundle` MCP 与 `debug-export` CLI，在专用空会话中从明确实现
+  DCP 连续导出 bit/ltx、时序/资源/DRC 报告，保存 SHA256 来源清单。保留原 GUI、
+  检查点副本和失败现场，超时不自动重放。MCP 共 42 工具，未发布包。
+- `check_debug_artifacts` 新增可选 `manifest_path`，CLI 对应 `--manifest`，
+  核对交付包全部固定文件。来源记录一致与实际硬件配对分开。
+- Skill 新增构建交付和消费者可视化生成参考：智能体按工程生成页面，库提供接口、
+  状态与方法；已有网页是可选参考。本轮没有新增或修改固定网页。
+
 ## [Unreleased] — 2026-10-03 调试产物核对
 
 - 新增 `check_debug_artifacts` MCP 与 `debug-artifacts` CLI：复用解析器，只读核对

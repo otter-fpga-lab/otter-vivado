@@ -4,8 +4,9 @@
 或烧录。工程准备另有结构化入口。使用实际 MCP schema；完整用法与 JSON 样例在源码根
 `docs/HARDWARE_DEBUG.md`、`docs/DEBUG_DESIGN.md`、`examples/debug/`。
 
-1. 复用现有 Vivado 会话，用 `open_debug_panel` 为人提供本机 URL。人和 AI 共用
-   该服务；另一个 CLI/MCP 进程的控制权不会自动同步。独立人工入口为
+1. 复用现有 Vivado 会话，通过 `get_debug_snapshot`/`debug_action` 使用共享服务。
+   需要参考页时可用 `open_debug_panel`；生成消费者页面先读 [可视化参考](visualization.md)。
+   另一个 CLI/MCP 进程的控制权不会自动同步。独立参考入口为
    `python -m vivado_mcp debug --port 9999`。
 2. `get_debug_snapshot` 只读缓存。通过 `debug_action` 的 `inventory` 获取完整名称，
    `control {owner: ai}` 明确接手，再用 `select {target, device}` 选择目标。
@@ -18,7 +19,8 @@
 5. 人接手后 AI 停止写入。此控制权只协调本服务；原生 GUI、`run_tcl`、其它进程
    不受此锁约束，使用这些入口时明确协调，不承诺全局设备锁。
 
-为工程生成界面时，读取实际探针及项目语义，生成仅含 `title` 与 `controls` 的 JSON。
+需要复用现有参考页时，可读取实际探针及项目语义，生成仅含 `title` 与 `controls` 的 JSON。
+这只是参考页的配置格式，不限制消费者自己生成的页面布局。
 首批控件为非负整数 `slider` 或 0/1 `toggle`，绑定精确 `core`、`probe`。
 滑杆需 `min/max/step`，范围上限 65535，实际写入同时受硬件宽度限制；未知宽度、输入
 探针、无效绑定不可写。不猜定点格式、单位或参数生效时刻。描述放消费者工程，工具库
@@ -29,7 +31,8 @@
 project 身份调用 `prepare_debug_design`。只创建 IP 或注册约束，不会改业务 RTL或启动
 构建；constraints_added 不代表已插核，created 不代表已接入 RTL。缺失/重名 net 会使
 加载约束的实际 run 失败；partial 或未知时先核对现场，不重放。再用已有构建、报告入口
-验证连接、时序、资源与配套 bit/ltx，不能用准备成功代替这些证据。人工可用
+验证连接、时序、资源与配套 bit/ltx，不能用准备成功代替这些证据。
+检查点导出接续读 [debug-delivery.md](debug-delivery.md)。人工可用
 `debug-prepare --spec ...` 离线规划，`--output-dir` 保存新文件，`--apply` 准备已有 GUI。
 
 专用界面的布局与风格由生成智能体按用户偏好决定；库负责可用控件、绑定、操作状态和

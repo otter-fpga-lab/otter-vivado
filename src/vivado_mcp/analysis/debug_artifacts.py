@@ -81,7 +81,10 @@ def _identity(path):
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
 
-def check_debug_artifacts(bit_path: str, ltx_path: str, expected: dict | None = None) -> dict:
+def check_debug_artifacts(
+    bit_path: str, ltx_path: str, expected: dict | None = None,
+    manifest_path: str | None = None,
+) -> dict:
     """只读解析和散列两份本地文件，核对消费者给出的实际实例/探针要求。"""
     expected = _expectations(expected)
     checks = []
@@ -205,6 +208,17 @@ def check_debug_artifacts(bit_path: str, ltx_path: str, expected: dict | None = 
                 raise ValueError("文件在核对期间改变，请在构建结束后重新核对")
         except (OSError, ValueError) as exc:
             add(f"{kind}.changed", "blocked", str(exc))
+    if manifest_path:
+        from vivado_mcp.debug_bundle import verify_debug_bundle
+
+        try:
+            if not bit or not ltx:
+                raise ValueError("bit/ltx 未解析成功，不能核对交付清单")
+            result["bundle"] = verify_debug_bundle(manifest_path, bit.sha256, ltx.sha256)
+            add("bundle.manifest", "match", result["bundle"]["note"])
+        except (OSError, ValueError) as exc:
+            result["bundle"] = {"status": "blocked", "error": str(exc)}
+            add("bundle.manifest", "blocked", str(exc))
     states = {check["status"] for check in checks}
     result["status"] = "blocked" if "blocked" in states else (
         "incomplete" if "unknown" in states else "consistent")

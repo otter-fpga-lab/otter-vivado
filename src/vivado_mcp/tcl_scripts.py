@@ -1365,3 +1365,60 @@ if {[catch {
 apply $__emit result [list $__status $__stage $__attempted $__created $__generated $__error]
 puts "VMCP_DEBUG_IP_DONE:1"
 """
+
+# 专用空会话导出：同一检查点、单次 execute，不切换用户已有工程/设计。
+# 官方入口：UG835 open_checkpoint/write_bitstream/write_debug_probes/report_*。
+DEBUG_BUNDLE_EXPORT = r"""
+apply {{} {
+__DECLARATIONS__
+set __fields [dict create attempt_id $__attempt_id status blocked stage preflight]
+set __attempted 0
+set __code [catch {
+    if {[llength [current_project -quiet]] || [llength [current_design -quiet]]} {
+        error "Export requires an empty dedicated session; keep existing GUI project untouched"
+    }
+    if {![file isfile $__checkpoint]} { error "Checkpoint is not visible to this Vivado session" }
+    foreach __path [list $__bit $__ltx $__timing $__utilization $__drc] {
+        if {![catch {file type $__path} __type]} { error "Export target already exists: $__path" }
+    }
+    set __attempted 1
+    dict set __fields stage open_checkpoint
+    open_checkpoint $__checkpoint
+    set __design [current_design -quiet]
+    if {[llength $__design] != 1} { error "Expected one design opened from checkpoint" }
+    set __part [get_property PART $__design]
+    if {$__part ne $__expected_part} { error "Checkpoint part does not match expected_part" }
+    dict set __fields part $__part
+    dict set __fields design [get_property NAME $__design]
+    dict set __fields vivado_version [version -short]
+    foreach __command {write_bitstream write_debug_probes report_timing_summary \
+            report_utilization report_drc} \
+            __path [list $__bit $__ltx $__timing $__utilization $__drc] {
+        dict set __fields stage $__command
+        if {[current_design -quiet] ne $__design
+            || [get_property PART [current_design]] ne $__expected_part} {
+            error "Current design changed during export"
+        }
+        if {$__command in {write_bitstream write_debug_probes}} {
+            $__command $__path
+        } else {
+            $__command -file $__path
+        }
+        if {![file isfile $__path] || [file size $__path] <= 0} {
+            error "Export command did not produce a nonempty file: $__command"
+        }
+    }
+    dict set __fields status exported
+    dict set __fields stage complete
+} __error]
+if {$__code} {
+    dict set __fields status [expr {$__attempted ? "partial" : "blocked"}]
+    dict set __fields error $__error
+}
+dict for {__key __value} $__fields {
+    binary scan [encoding convertto utf-8 $__value] H* __encoded
+    puts "VMCP_BUNDLE_FIELD:$__key|$__encoded"
+}
+puts "VMCP_BUNDLE_DONE:1"
+}}
+"""
