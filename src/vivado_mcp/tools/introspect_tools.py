@@ -133,3 +133,31 @@ async def read_ila_waveform(
     except (OSError, ValueError) as exc:
         result = {"status": "blocked", "error": str(exc)}
     return json.dumps(result, ensure_ascii=False)
+
+
+@mcp.tool()
+async def analyze_ila_capture(
+    file_path: str, spec: dict, start_tick: str = "0", end_tick: str | None = None,
+    expected_sha256: str | None = None,
+) -> str:
+    """只读分析数字 VCD：统计信号变化，并检查消费者声明的采样规则。
+
+    spec={signals:[VCD 标识符], sample_clock?:{id,edge:'rising'|'falling',
+    values:'before_tick'|'after_tick'}, reset?:{id,active:'0'|'1'}, checks?:[...]}。
+    检查需明确时钟及取值时机；全部引用必须在 signals 中。支持 allowed_values
+    {name,kind,signal,values:[全位宽二进制]}、state_transitions
+    {name,kind,signal,allowed_pairs:[[前态,后态]]} 和 stable_while_stalled
+    {name,kind,valid,ready,data:[标识符]}。不猜状态编码或协议，详细语义见 ILA_ANALYSIS.md。
+    返回 violated/consistent/inconclusive/observed、有限违规原值和 tick、源文件与描述指纹。
+    consistent 仅是观察窗口内声明规则一致；未知值、时钟歧义、无有效检查不能算通过。
+    最多 64 信号、16 规则、窗口 200000 事件；不截断后给成功。不连接设备或执行触发建议。
+    """
+    from vivado_mcp.analysis.ila_analysis import analyze_ila_capture as analyze
+
+    try:
+        result = await asyncio.to_thread(
+            analyze, file_path, spec, start_tick, end_tick, expected_sha256,
+        )
+    except (OSError, ValueError) as exc:
+        result = {"status": "blocked", "error": str(exc)}
+    return json.dumps(result, ensure_ascii=False)

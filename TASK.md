@@ -3,8 +3,52 @@
 Status: OPEN
 Target: otter-fpga-lab/otter-vivado
 Basis: 用户于 2026-10-03 确认板上调试、可视化和产品边界，并授权逐步实施；从 main 3750590 接续
-Next: 第 3 项 AI 数据分析闭环；随后依次是本地实验编排、工程控件语义和独立 ILA 停止。真实工程/板卡验证按现场需求补充
-Result: 第 2 项软件能力已接通：完整单窗口 VCD 导出、离线波形数据读取和消费者页面生成 Skill；共 43 MCP 工具。未新增固定网页；商业 Vivado/Windows/板卡未实测
+Next: 第 4 项本地实验编排（就绪、倒计时、动作标记、暂停/重做）；随后为工程控件语义和独立 ILA 停止。真实工程/板卡验证按现场需求补充
+Result: 第 3 项软件能力已接通：离线统计、声明的状态/握手检查、证据与下一轮取证 Skill；共 44 MCP 工具。消费者报告/页面由智能体生成；未进行真实 EDA/板卡验收
+
+## 当前工作：第 3 项采样分析与智能体取证（2026-10-03）
+
+从干净 main `91e932d9b919cb3bbfce426e0b34e38530c1f2a7` 接续（上一轮采样导出提交）。
+用户要求继续，沿用插件能力边界。本节随本次实现提交保存，不发布包、不操作真实设备。
+
+- 新增 `analyze_ila_capture` MCP 与 `ila-analyze` CLI，纯离线分析；共享 VCD 解析器
+  在一次扫描中统计所选信号，不拼首屏分页或重新实现另一套解析规则。
+- 统计赋值/变化/边沿数、已知/未知 tick 时长、宽整数无符号范围；按消费者显式规则检查
+  allowed_values、state_transitions、stable_while_stalled。全部标识符和语义由工程声明，
+  不猜协议、状态编码、时钟相位或复位。ILA 未导出有效时钟边沿时，规则检查不能伪造通过。
+- 输入与规则指纹、窗口、原始二进制前后值及反例 tick 可追溯；observed、consistent、
+  inconclusive、violated、blocked 分开。同刻时钟歧义、未知值、复位不跨接历史；尾部不
+  外推，不把零有效检查或等待未完成当成通过。证据例子可截断，计数完整；资源超限阻断。
+- 新增 [分析接口说明](docs/ILA_ANALYSIS.md) 与
+  [分析 Skill 参考](skills/otter-vivado/references/analysis.md)，串联假设、映射、规则、
+  证据、下一轮取证意图和既有共享服务内的已授权操作；保留旧记录，不覆盖规则制造 PASS。
+  更新既有 ILA Prompt，使采集优先走共享 revision/控制权与回执，加入实际分析入口。
+- 建议是不可执行的取证意图；智能体仍须核对 VCD id 到真实 hw_probe 的映射和触发能力。
+  没有增加自动设备写入、固定分析网页或完整 AXI/UART/SPI 解码器。根因解释依赖消费者
+  工程语义，规则一致仅指观察范围，不代替真实硬件配对、完整采集或时序签核。
+
+验证环境 Linux / Python 3.12.14 / MCP SDK 2.3.0，VCD 为合成样本，EDA 命令为明确替身。
+
+```bash
+source .venv/bin/activate
+pytest tests/analysis/test_ila_analysis.py tests/analysis/test_ila_waveform.py \
+  tests/test_ila_analysis_cli.py tests/test_ila_capture.py tests/test_debug_backend.py \
+  tests/test_debug_service.py tests/test_debug_bundle.py tests/test_debug_artifacts_cli.py \
+  tests/test_debug_design_tools.py tests/test_debug_prepare_cli.py tests/test_prompts.py \
+  tests/test_readme_hooks.py tests/test_version.py -q -rs
+ruff check src/ tests/
+git diff --check
+python -m pip wheel --no-deps . -w /workspace/scratch/otter-vivado-analysis-wheels
+```
+
+定向回归 **244 passed**，无跳过；随后更新 ILA Prompt 与对应断言，重跑该子集 **6 passed**
+（包含已有 Prompt 测试，不相加为独立覆盖数）。分析/波形/MCP/CLI 首批与边界子集
+**77 passed** 已包含在上述回归中。覆盖宽值与大 tick、前/后取值、同刻更新行序、复位、
+未知/丢失时钟、状态历史间隙、背压释放时的保持义务、无适用规则、尾部 pending、
+坏文件/坏描述/指纹变化、有限反例与超事件预算，以及现有导出至读取和共享服务入口。
+Ruff、diff、文档/Skill 链接、CLI help、wheel 模块检查通过；未改 Tcl/会话传输或 web/。
+没有真实 Vivado VCD、商业 EDA、Windows 或板卡验证，复杂协议和实际诊断仍按使用反馈
+在消费者工程处理。下一项继续本地实验编排，不扩大成本去铺全版本验证矩阵。
 
 ## 当前工作：第 2 项采样导出与波形数据（2026-10-03）
 

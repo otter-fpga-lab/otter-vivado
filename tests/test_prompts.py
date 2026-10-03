@@ -126,3 +126,14 @@ def test_high_risk_prompts_have_domain_specific_gates():
     assert "compile success 属于 FAIL" in bodies["simulation_bringup"]
     assert "空报告" in bodies["cdc_audit"]
     assert "bitstream、LTX、器件和 commit" in bodies["ila_hardware_debug"]
+
+
+def test_ila_analysis_prompt_uses_shared_actions_and_evidence():
+    from vivado_mcp.prompts import ila_hardware_debug
+
+    body = ila_hardware_debug()
+    for term in ("get_debug_snapshot", "debug_action", "export_ila", "read_ila_waveform",
+                 "analyze_ila_capture", "revision", "反例 tick", "inconclusive/observed",
+                 "消费者工程", "unknown"):
+        assert term in body
+    assert "Capture：通过 `run_tcl`" not in body

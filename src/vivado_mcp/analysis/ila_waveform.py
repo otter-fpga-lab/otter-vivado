@@ -16,10 +16,11 @@ def _identity(stat):
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
 
-def read_ila_waveform(
+def _scan_ila_waveform(
     file_path: str, signal_ids: list[str] | None = None,
     start_tick: str = "0", end_tick: str | None = None,
     offset: int = 0, limit: int = 1000, expected_sha256: str | None = None,
+    *, visitor=None,
 ) -> dict:
     """读取有限数字 VCD；时间和值用字符串，不推断实际采样周期或触发位置。"""
     for name, value in (("start_tick", start_tick), ("end_tick", end_tick)):
@@ -131,6 +132,8 @@ def read_ila_waveform(
         raise ValueError("signal_ids 包含未声明的 VCD 标识符")
     if sum(widths[code] for code in selected) > 262144:
         raise ValueError("所选信号总位宽超过 262144；请先取目录，再缩小 signal_ids")
+    if visitor is not None:
+        visitor.begin(signals, widths)
     initial = dict.fromkeys(sorted(selected))
     events, matched = [], 0
     page_bytes, page_full = 0, False
@@ -173,18 +176,23 @@ def read_ila_waveform(
         value = value.rjust(width, value[0] if value[0] in "xz" else "0")
         if code not in selected:
             continue
+        if visitor is not None and (end is None or tick <= end):
+            visitor.event(tick, code, value)
         if tick < start:
             initial[code] = value
         elif end is None or tick <= end:
-            if matched >= offset and not page_full:
+            if visitor is None and matched >= offset and not page_full:
                 page_full = len(events) >= limit or page_bytes + len(value) + len(code) > 262144
-            if matched >= offset and not page_full:
+            if visitor is None and matched >= offset and not page_full:
                 page_bytes += len(value) + len(code)
                 events.append({"tick": str(tick), "id": code, "value": value})
             matched += 1
     if dump is not None:
         raise ValueError("VCD dump 未闭合")
-    next_offset = offset + len(events) if offset + len(events) < matched else None
+    if visitor is not None:
+        visitor.finish(last_tick)
+    next_offset = (offset + len(events)
+                   if visitor is None and offset + len(events) < matched else None)
     return {
         "schema": "otter.waveform.v1", "source": "file", "format": "vcd",
         "file": {"path": str(path.absolute()), "size": len(raw), "sha256": digest},
@@ -197,3 +205,14 @@ def read_ila_waveform(
         "matching_events": matched, "truncated": next_offset is not None,
         "capture_completeness": "unverified",
     }
+
+
+def read_ila_waveform(
+    file_path: str, signal_ids: list[str] | None = None,
+    start_tick: str = "0", end_tick: str | None = None,
+    offset: int = 0, limit: int = 1000, expected_sha256: str | None = None,
+) -> dict:
+    """离线读取一页事件；内部扫描器也供分析使用，避免逐页重复读取文件。"""
+    return _scan_ila_waveform(
+        file_path, signal_ids, start_tick, end_tick, offset, limit, expected_sha256,
+    )

@@ -132,6 +132,12 @@ def main() -> None:
     p_wave.add_argument("--offset", type=int, default=0)
     p_wave.add_argument("--limit", type=int, default=1000)
     p_wave.add_argument("--expected-sha256", help="分页时锁定首份文件指纹。")
+    p_analysis = sub.add_parser("ila-analyze", help="按消费者声明只读分析 VCD，输出证据 JSON。")
+    p_analysis.add_argument("--file", required=True, help="数字 VCD 文件。")
+    p_analysis.add_argument("--spec", required=True, help="消费者分析规则 JSON。")
+    p_analysis.add_argument("--start-tick", default="0")
+    p_analysis.add_argument("--end-tick")
+    p_analysis.add_argument("--expected-sha256")
     p_connect = sub.add_parser("connect", help="一次接入源码 MCP 与原地 Skill 目录引用。")
     p_connect.add_argument(
         "--client", nargs="+", choices=("cursor", "claude-code", "codex", "antigravity", "all"),
@@ -147,6 +153,11 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    if args.cmd == "ila-analyze":
+        from vivado_mcp.ila_analysis_cli import run_ila_analysis_cli
+
+        sys.exit(run_ila_analysis_cli(args))
 
     if args.cmd == "ila-waveform":
         import json
