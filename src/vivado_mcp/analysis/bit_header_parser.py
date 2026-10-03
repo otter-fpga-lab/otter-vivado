@@ -1,7 +1,7 @@
 """Xilinx .bit 比特流文件头解析器。
 
 纯 Python 模块，不依赖 Vivado。只解析 .bit 二进制文件的 TLV 头部
-（不读取 payload bitstream 本体），抽取设计名 / 目标器件 / 日期 / 时间，
+（不解释 payload 配置包），抽取设计名 / 目标器件 / 日期 / 时间，
 并计算整文件 SHA256，用于烧录前防错板（part 比对）和交付对账。
 
 .bit 头部字节格式（Vivado 2019.1，已在真工件上验通）：
@@ -25,8 +25,10 @@ import hashlib
 import os
 from dataclasses import dataclass
 
-# 文件大小上限（10MB），防止误传超大文件耗尽内存
-_MAX_FILE_SIZE = 10 * 1024 * 1024
+# 四个 uint16 长度的文本字段；载荷按块散列，不整体加载。
+_MAX_HEADER_SIZE = 4 * (65535 + 2) + 32
+_HASH_CHUNK_SIZE = 1024 * 1024
+_MAX_FILE_SIZE = 0xFFFFFFFF + _MAX_HEADER_SIZE
 
 # 前导魔数：2B 长度字段 0x0009 + 9 字节内容
 _MAGIC_LEN = b"\x00\x09"
@@ -54,6 +56,17 @@ class BitHeader:
     bitstream_size: int     # 'e' 段声明的 payload 字节数
     file_size: int          # 整个 .bit 文件字节数
     sha256: str             # 整个 .bit 文件的 SHA256 十六进制摘要
+    payload_offset: int | None = None
+
+    @property
+    def payload_size_actual(self) -> int | None:
+        """实际载荷长度；缺少 e 段时保持未知。"""
+        return None if self.payload_offset is None else self.file_size - self.payload_offset
+
+    @property
+    def payload_complete(self) -> bool:
+        """仅表示长度一致，不验证配置包 CRC 或硬件可用性。"""
+        return self.bitstream_size > 0 and self.payload_size_actual == self.bitstream_size
 
     def to_dict(self) -> dict:
         """转换为可 JSON 序列化的字典。"""
@@ -67,6 +80,9 @@ class BitHeader:
             "bitstream_size": self.bitstream_size,
             "file_size": self.file_size,
             "sha256": self.sha256,
+            "payload_offset": self.payload_offset,
+            "payload_size_actual": self.payload_size_actual,
+            "payload_complete": self.payload_complete,
         }
 
 
@@ -84,7 +100,7 @@ def _normalize_part(part_raw: str) -> str:
     """
     if not part_raw:
         return part_raw
-    if part_raw.startswith("xc"):
+    if part_raw.lower().startswith(("xc", "xa", "xq")):
         return part_raw
     return "xc" + part_raw
 
@@ -92,7 +108,7 @@ def _normalize_part(part_raw: str) -> str:
 def parse_bit(file_path: str) -> BitHeader:
     """解析 .bit 文件头部，抽取设计名 / part / 日期 / 时间，并计算 SHA256。
 
-    只读取头部 TLV 段，不解析 payload bitstream 本体。
+    只解析头部 TLV 段；整文件按块读取以计算 SHA256，不解释配置载荷。
 
     Args:
         file_path: .bit 文件的绝对路径。
@@ -115,10 +131,25 @@ def parse_bit(file_path: str) -> BitHeader:
         )
 
     with open(file_path, "rb") as f:
-        data = f.read()
+        before = os.fstat(f.fileno())
+        data = f.read(_MAX_HEADER_SIZE)
+        digest = hashlib.sha256(data)
+        total = len(data)
+        while chunk := f.read(_HASH_CHUNK_SIZE):
+            total += len(chunk)
+            if total > _MAX_FILE_SIZE:
+                raise ValueError(".bit 文件过大或仍在增长，请在构建结束后读取")
+            digest.update(chunk)
+        after = os.fstat(f.fileno())
+    current = os.stat(file_path)
 
-    # 整文件 SHA256（交付对账用）
-    sha256 = hashlib.sha256(data).hexdigest()
+    def identity(s):
+        return s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns
+
+    if identity(before) != identity(after) or identity(after) != identity(current):
+        raise ValueError(".bit 文件在读取期间发生变化，请等待构建完成后重试")
+    file_size = total
+    sha256 = digest.hexdigest()
 
     # 校验前导魔数：必须是 00 09 + 0F F0 0F F0 0F F0 0F F0 00
     intro = _MAGIC_LEN + _MAGIC_BODY
@@ -150,6 +181,7 @@ def parse_bit(file_path: str) -> BitHeader:
         bitstream_size=bitstream_size if isinstance(bitstream_size, int) else 0,
         file_size=file_size,
         sha256=sha256,
+        payload_offset=sections.get("_payload_offset"),
     )
 
 
@@ -202,11 +234,14 @@ def _read_sections(data: bytes, pos: int) -> dict[str, object]:
             if pos + 4 > len(data):
                 raise ValueError("'e' 段长度字段越界（头部被截断）")
             result["e"] = int.from_bytes(data[pos : pos + 4], "big")
+            result["_payload_offset"] = pos + 4
             break
 
         if key not in ("b", "c", "d"):
-            # 未知段，停止（保守：避免把 payload 当段误读）
-            break
+            raise ValueError(f"未知 .bit 头部字段 {key!r}")
+
+        if key in result:
+            raise ValueError(f"重复 .bit 头部字段 {key!r}")
 
         body = _read_section_body(data, pos, key)
         result[key] = body
@@ -243,4 +278,5 @@ def format_bit(result: BitHeader) -> str:
     )
     lines.append(f"文件大小: {result.file_size} 字节")
     lines.append(f"SHA256: {result.sha256}")
+    lines.append(f"载荷长度一致: {result.payload_complete}（不代表 CRC 或板卡验证通过）")
     return "\n".join(lines)

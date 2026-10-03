@@ -216,9 +216,12 @@ class TestParseBitErrors:
         with pytest.raises(ValueError, match="'a' 段引导"):
             parse_bit(str(bad))
 
-    def test_file_too_large(self, tmp_path):
-        """文件超过 10MB 上限抛 ValueError。"""
+    def test_file_too_large(self, tmp_path, monkeypatch):
+        """测试上限分支而不分配超大文件。"""
+        import vivado_mcp.analysis.bit_header_parser as mod
+
         big = tmp_path / "huge.bit"
-        big.write_bytes(b"\x00" * (10 * 1024 * 1024 + 1))
+        big.write_bytes(_build_bit())
+        monkeypatch.setattr(mod, "_MAX_FILE_SIZE", 16)
         with pytest.raises(ValueError, match="过大"):
             parse_bit(str(big))

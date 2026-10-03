@@ -20,12 +20,13 @@ JSON 结构关键路径：
                         ├─ type        # 如 "DATA_TRIGGER"
                         ├─ direction   # 如 "IN"
                         ├─ isVector
-                        ├─ leftIndex / rightIndex   # 位宽 = right - left + 1
+                        ├─ leftIndex / rightIndex   # 位宽 = abs(right - left) + 1
                         └─ nets[]{name}             # 映射到设计中的网线名
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -50,15 +51,20 @@ class LtxProbe:
     name: str                  # probe 名（如 "probe0"）
     probe_type: str            # probe 类型（如 "DATA_TRIGGER"）
     direction: str             # 方向（如 "IN"）
-    left_index: int            # 高位下标（leftIndex）
-    right_index: int           # 低位下标（rightIndex）
-    is_vector: bool            # 是否为向量
+    left_index: int | None     # LTX leftIndex；缺失保持未知
+    right_index: int | None    # LTX rightIndex；不假定总线方向
+    is_vector: bool | None     # 是否为向量
     nets: tuple[str, ...] = ()  # 映射到的网线名（顶层 net，不含逐位 subnets）
 
+    port_index: int | None = None
+    subnets: tuple[str, ...] = ()
+
     @property
-    def width(self) -> int:
-        """probe 位宽 = rightIndex - leftIndex + 1。"""
-        return self.right_index - self.left_index + 1
+    def width(self) -> int | None:
+        """兼容两种下标方向；缺少下标不猜成一位。"""
+        if self.left_index is None or self.right_index is None:
+            return None
+        return abs(self.right_index - self.left_index) + 1
 
 
 @dataclass(frozen=True)
@@ -70,6 +76,13 @@ class LtxCore:
     spec: str                       # 核规格（如 "labtools_ila_v6"）
     ip_name: str                    # IP 名（如 "ila"，dbg_hub 为空）
     probes: tuple[LtxProbe, ...] = ()  # 探针列表（dbg_hub 为空）
+
+    uuid: str = ""
+
+    @property
+    def is_vio(self) -> bool:
+        """VIO 核；未知类型保留原文。"""
+        return self.core_type in {"VIO_V2", "VIO_V3"}
 
     @property
     def is_ila(self) -> bool:
@@ -91,6 +104,14 @@ class LtxConfig:
     minor: str                      # ltx_root.minor（原样字符串）
     cores: tuple[LtxCore, ...] = ()  # 所有调试核（ILA + dbg_hub）
 
+    sha256: str = ""
+    file_size: int = 0
+
+    @property
+    def vio_cores(self) -> tuple[LtxCore, ...]:
+        """仅 VIO 核。"""
+        return tuple(c for c in self.cores if c.is_vio)
+
     @property
     def ila_cores(self) -> tuple[LtxCore, ...]:
         """仅 ILA 核。"""
@@ -107,6 +128,8 @@ class LtxConfig:
             "file_path": self.file_path,
             "version": self.version,
             "minor": self.minor,
+            "sha256": self.sha256,
+            "file_size": self.file_size,
             "cores": [
                 {
                     "name": c.name,
@@ -114,6 +137,8 @@ class LtxConfig:
                     "spec": c.spec,
                     "ip_name": c.ip_name,
                     "is_ila": c.is_ila,
+                    "is_vio": c.is_vio,
+                    "uuid": c.uuid,
                     "is_dbg_hub": c.is_dbg_hub,
                     "probes": [
                         {
@@ -125,6 +150,8 @@ class LtxConfig:
                             "width": p.width,
                             "is_vector": p.is_vector,
                             "nets": list(p.nets),
+                            "port_index": p.port_index,
+                            "subnets": list(p.subnets),
                         }
                         for p in c.probes
                     ],
@@ -139,51 +166,70 @@ class LtxConfig:
 # ====================================================================== #
 
 
+def _objects(value, field):
+    """结构错误不能静默丢弃成空探针清单。"""
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise ValueError(f"LTX {field} 必须是对象数组")
+    return value
+
+
+def _text(obj, field):
+    value = obj.get(field, "")
+    if not isinstance(value, str):
+        raise ValueError(f"LTX {field} 必须是字符串")
+    return value
+
+
+def _index(obj, field):
+    value = obj.get(field)
+    if value is None:
+        return None
+    if isinstance(value, str) and value.isascii() and value.isdecimal():
+        value = int(value)
+    if type(value) is not int or not 0 <= value <= 0x7FFFFFFF:
+        raise ValueError(f"LTX {field} 必须是非负整数")
+    return value
+
+
 def _parse_probe(pin: dict) -> LtxProbe:
-    """从单个 pin 字典构造 LtxProbe。"""
-    # leftIndex/rightIndex 在真文件里是整数，做容错转换（缺失按 0 / 单位宽处理）
-    left = pin.get("leftIndex", 0)
-    right = pin.get("rightIndex", 0)
-    try:
-        left_index = int(left)
-    except (TypeError, ValueError):
-        left_index = 0
-    try:
-        right_index = int(right)
-    except (TypeError, ValueError):
-        right_index = 0
-
-    nets = tuple(
-        str(n.get("name", ""))
-        for n in pin.get("nets", [])
-        if isinstance(n, dict) and n.get("name")
-    )
-
+    """保留端口、方向和子网名；不从列表顺序推断位序。"""
+    nets = _objects(pin.get("nets", []), "nets")
+    vector = pin.get("isVector")
+    if vector is not None and type(vector) is not bool:
+        raise ValueError("LTX isVector 必须是布尔值")
     return LtxProbe(
-        name=str(pin.get("name", "")),
-        probe_type=str(pin.get("type", "")),
-        direction=str(pin.get("direction", "")),
-        left_index=left_index,
-        right_index=right_index,
-        is_vector=bool(pin.get("isVector", False)),
-        nets=nets,
+        name=_text(pin, "name"),
+        probe_type=_text(pin, "type"),
+        direction=_text(pin, "direction"),
+        left_index=_index(pin, "leftIndex"),
+        right_index=_index(pin, "rightIndex"),
+        is_vector=vector,
+        nets=tuple(_text(n, "name") for n in nets),
+        port_index=_index(pin, "portIndex"),
+        subnets=tuple(
+            _text(subnet, "name") for net in nets
+            for subnet in _objects(net.get("subnets", []), "subnets")
+        ),
     )
 
 
 def _parse_core(core: dict) -> LtxCore:
-    """从单个 debug_core 字典构造 LtxCore。"""
-    probes = tuple(
-        _parse_probe(p)
-        for p in core.get("pins", [])
-        if isinstance(p, dict)
-    )
+    """保留 ILA/VIO 身份和探针，缺失证据交给核对层标记。"""
     return LtxCore(
-        name=str(core.get("name", "")),
-        core_type=str(core.get("type", "")),
-        spec=str(core.get("spec", "")),
-        ip_name=str(core.get("ipName", "")),
-        probes=probes,
+        name=_text(core, "name"), core_type=_text(core, "type"),
+        spec=_text(core, "spec"), ip_name=_text(core, "ipName"),
+        uuid=_text(core, "uuid"),
+        probes=tuple(_parse_probe(p) for p in _objects(core.get("pins", []), "pins")),
     )
+
+
+def _unique_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"LTX JSON 含重复字段 {key!r}")
+        result[key] = value
+    return result
 
 
 def parse_ltx(file_path: str) -> LtxConfig:
@@ -209,8 +255,22 @@ def parse_ltx(file_path: str) -> LtxConfig:
             f"上限 {_MAX_FILE_SIZE / 1024 / 1024:.0f}MB"
         )
 
-    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-        text = f.read()
+    with open(file_path, "rb") as f:
+        before = os.fstat(f.fileno())
+        raw = f.read(_MAX_FILE_SIZE + 1)
+        after = os.fstat(f.fileno())
+    if len(raw) > _MAX_FILE_SIZE:
+        raise ValueError("LTX 文件过大")
+
+    def identity(stat):
+        return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+    if identity(before) != identity(after) or identity(after) != identity(os.stat(file_path)):
+        raise ValueError("LTX 文件在读取期间发生变化，请等待构建完成后重试")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValueError("LTX 必须是有效 UTF-8，不能替换损坏的探针名称") from exc
 
     # 嗅探首个非空字符判断格式：{ = JSON，< = 旧版 XML
     stripped = text.lstrip()
@@ -230,7 +290,7 @@ def parse_ltx(file_path: str) -> LtxConfig:
         )
 
     try:
-        data = json.loads(text)
+        data = json.loads(text, object_pairs_hook=_unique_keys)
     except json.JSONDecodeError as e:
         raise ValueError(f"JSON 解析失败: {e}") from e
 
@@ -245,18 +305,17 @@ def parse_ltx(file_path: str) -> LtxConfig:
     minor = str(root.get("minor", ""))
 
     cores: list[LtxCore] = []
-    for block in root.get("ltx_data", []):
-        if not isinstance(block, dict):
-            continue
-        for core in block.get("debug_cores", []):
-            if isinstance(core, dict):
-                cores.append(_parse_core(core))
+    for block in _objects(root.get("ltx_data", []), "ltx_data"):
+        for core in _objects(block.get("debug_cores", []), "debug_cores"):
+            cores.append(_parse_core(core))
 
     return LtxConfig(
         file_path=file_path,
         version=version,
         minor=minor,
         cores=tuple(cores),
+        sha256=hashlib.sha256(raw).hexdigest(),
+        file_size=len(raw),
     )
 
 
@@ -284,9 +343,9 @@ def format_ltx(result: LtxConfig) -> str:
 
     ila_cores = result.ila_cores
     dbg_hubs = result.dbg_hubs
-    total_probes = sum(len(c.probes) for c in ila_cores)
+    total_probes = sum(len(c.probes) for c in (*ila_cores, *result.vio_cores))
     lines.append(
-        f"ILA 核: {len(ila_cores)} 个，"
+        f"ILA 核: {len(ila_cores)} 个，VIO 核: {len(result.vio_cores)} 个，"
         f"dbg_hub: {len(dbg_hubs)} 个，"
         f"probe 合计: {total_probes} 个"
     )
@@ -294,8 +353,10 @@ def format_ltx(result: LtxConfig) -> str:
 
     if not ila_cores:
         lines.append("（未发现 ILA 核）")
-    for core in ila_cores:
-        lines.append(f"--- ILA: {core.name} ---")
+    for core in (*ila_cores, *result.vio_cores):
+        kind = "ILA" if core.is_ila else "VIO"
+        lines.append(f"--- {kind}: {core.name} ---")
+        lines.append(f"  UUID: {core.uuid or '未知'}")
         if core.ip_name:
             lines.append(f"  IP: {core.ip_name}  规格: {core.spec}")
         if not core.probes:

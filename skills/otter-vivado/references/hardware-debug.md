@@ -38,3 +38,11 @@ project 身份调用 `prepare_debug_design`。只创建 IP 或注册约束，不
 需要采样导出分析、倒计时或声音提示时，应明确这些仍是后续工作，不把现有
 ILA workflow prompt 或合成演示当成已实现的功能。精确动态配合最终需要硬件触发/帧标记；
 网页与 JTAG 不提供周期精确的时序。业务 RTL 改造沿用 Coding，处理器软件调试沿用 Vitis。
+
+
+构建后可用 `check_debug_artifacts(bit_path, ltx_path, expected)`，或
+`python -m vivado_mcp debug-artifacts --bit ... --ltx ... --expected ...`。
+预期描述使用实际层级实例名与探针名，不从 IP 模块名猜实例；格式见
+`docs/DEBUG_ARTIFACTS.md`。`blocked` 表示明确不一致/解析失败，`incomplete` 表示缺少
+离线核对证据，`consistent` 仅表示所提供的离线检查一致。`pairing` 始终为 `unverified`；
+不得把 LTX UUID、同名/同目录文件或 SHA256 当作 .bit 内核身份或板卡 PASS。

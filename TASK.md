@@ -3,8 +3,52 @@
 Status: OPEN
 Target: otter-fpga-lab/otter-vivado
 Basis: 用户于 2026-10-03 确认板上调试、可视化和产品边界，并授权逐步实施；从 main 3750590 接续
-Next: 核对真实工程中的 IP 配置、约束加载与连接；完成调试构建/bit-ltx 配对，再推进采样证据与本地人机配合实验
-Result: 已有共享调试服务、面板与消费者控件描述；本批补调试工程准备计划、预检和应用，MCP 共 40 工具；商业 Vivado/Windows/板卡未测
+Next: 用真实工程核对 IP/RTL/约束，保留同次实现的 bit/ltx 构建来源并做板上验证；随后推进采样导出/波形与本地实验提示
+Result: 已有工程准备和共享 ILA/VIO 面板；新增 bit/ltx 离线完整性与预期探针核对，MCP 共 41 工具；真实构建配对、商业 Vivado/Windows/板卡仍待验证
+
+## 当前工作：调试产物离线核对（2026-10-03）
+
+用户报告原云环境可能过期，并要求继续优化。新环境从正式 origin/main `df1da99`
+恢复；本对话没有读取旧聊天正文，以仓库任务记录为接续依据。当前环境不含商业 Vivado
+和板卡，先完成可独立验证的产物核对，不把它宣称为自动构建或硬件配对闭环。
+
+本批完成：
+
+- 新增 `check_debug_artifacts` MCP 与 `debug-artifacts` CLI，共用纯 Python 核对实现。
+  核对 bit 声明/实际载荷长度、目标器件/封装、ILA/VIO 精确实例名、探针位宽/方向/端口，
+  可选核对 LTX UUID；返回两份文件 SHA256，供消费者保存证据。
+- `consistent/incomplete/blocked` 区分离线一致、证据不足、明确不匹配。`pairing`
+  始终 `unverified`，不从相同名称、目录、时间或 LTX UUID 推断 bit 内核身份。
+- `.bit` 从全量读入/10 MiB 上限改为有界头部和分块散列，新增载荷完整性字段，
+  保留缺段解析能力；检查重复/未知头部字段和读取期间可检测的文件变化。
+- LTX 保留 UUID、VIO 分类、端口与子网信息；支持 BOM、两种下标方向，缺位宽返回未知。
+  拒绝损坏 UTF-8/数组结构/重复 JSON 字段，不再静默替换名称或默认为一位。
+- CLI 退出码 0/2/1 对应上述三个状态；MCP 通过后台线程读取文件。README、示例和
+  [产物指南](docs/DEBUG_ARTIFACTS.md) 已接到工程准备与硬件调试流程。包版本未变、未发布。
+
+验证：Linux / Python 3.12.14 / MCP SDK 2.3.0，合成 bit/ltx，无 EDA API 调用。
+
+```bash
+source .venv/bin/activate
+pytest tests/analysis/test_bit_header_parser.py tests/analysis/test_ltx_parser.py \
+  tests/analysis/test_debug_artifacts.py tests/test_debug_artifacts_cli.py \
+  tests/test_debug_design_tools.py tests/test_debug_prepare_cli.py tests/test_debug_cli.py \
+  tests/test_prompts.py tests/test_version.py tests/test_readme_hooks.py -q -rs
+ruff check src/ tests/
+git diff --check
+python -m pip wheel --no-deps . -w /workspace/scratch/otter-vivado-wheels
+```
+
+最终 **158 passed**，无跳过；包含 12 MiB 合成 bit 分块读取、载荷截断/多余字节、
+封装不符、重复 UUID/名称、探针缺失/方向/位宽、读取时替换文件、CLI 退出码与真实 MCP
+注册调用（41 工具）。首次 README hook 用例因子进程未使用 venv 失败，激活 venv 后
+同一完整定向集合通过；未修改 hook 行为。Ruff、diff、相关文档链接通过，实际 wheel
+含新增模块；文档 CLI 样例返回 consistent/unverified/false，与证据边界一致。
+
+下一步保持真实 IP/RTL/约束和构建来源核对优先。XML LTX 仍未支持，多个探针集重名
+保守阻断；不自动选集。没有 bit 内部 UUID/CRC 解析、自动同次构建导出或板卡配对认证。
+没有 Windows/Vivado/硬件实测，不要求扩成全版本矩阵；有实际工程反馈后定向修复。
+本批按现有贡献约定保存到 main；后续接续读取 origin/main 最新 HEAD。
 
 ## 当前工作：调试工程准备（2026-10-03）
 

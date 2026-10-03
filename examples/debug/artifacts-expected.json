@@ -1,0 +1,12 @@
+{
+  "part": "xc7k325tffg900-2",
+  "cores": [
+    {
+      "name": "u_top/ila_sample",
+      "type": "ILA_V3",
+      "probes": [
+        {"name": "probe0", "width": 64, "direction": "IN", "port_index": 0}
+      ]
+    }
+  ]
+}

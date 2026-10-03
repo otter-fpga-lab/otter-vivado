@@ -111,6 +111,10 @@ def main() -> None:
     p_prepare_mode = p_prepare.add_mutually_exclusive_group()
     p_prepare_mode.add_argument("--apply", action="store_true", help="检查并准备当前 GUI 工程。")
     p_prepare_mode.add_argument("--output-dir", help="离线保存计划和模板，仅创建新文件。")
+    p_artifacts = sub.add_parser("debug-artifacts", help="离线核对 bit/ltx 完整性和预期探针。")
+    p_artifacts.add_argument("--bit", required=True, help="已构建的 .bit 文件路径。")
+    p_artifacts.add_argument("--ltx", required=True, help="对应 .ltx 文件路径。")
+    p_artifacts.add_argument("--expected", help="消费者预期器件/核/探针的 JSON；省略则仅摸底。")
     p_connect = sub.add_parser("connect", help="一次接入源码 MCP 与原地 Skill 目录引用。")
     p_connect.add_argument(
         "--client", nargs="+", choices=("cursor", "claude-code", "codex", "antigravity", "all"),
@@ -126,6 +130,16 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    if args.cmd == "debug-artifacts":
+        from vivado_mcp.debug_artifacts_cli import run_debug_artifacts_cli
+
+        try:
+            code = run_debug_artifacts_cli(args)
+        except (ValueError, OSError) as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            code = 1
+        sys.exit(code)
 
     if args.cmd == "debug-prepare":
         import asyncio

@@ -11,6 +11,9 @@
   - parse_ltx     —— get_hw_probes 需板子在手 + 活 hw session;离线读探针清单。
 """
 
+import asyncio
+import json
+
 from mcp.server.mcpserver import Context
 
 from vivado_mcp.analysis.bit_header_parser import format_bit as _format_bit
@@ -36,7 +39,7 @@ async def parse_xpr(file_path: str, ctx: Context = None) -> str:
     """
     try:
         cfg = _parse_xpr(file_path)
-    except (FileNotFoundError, ValueError) as e:
+    except (OSError, ValueError) as e:
         return f"[ERROR] .xpr 解析失败: {e}"
     return _format_xpr(cfg)
 
@@ -45,7 +48,8 @@ async def parse_xpr(file_path: str, ctx: Context = None) -> str:
 async def parse_bit_header(file_path: str, ctx: Context = None) -> str:
     """离线解析 .bit 比特流文件头部,无需启动 Vivado。
 
-    只读文件头(不读 payload):提取设计名 / 目标 part(原始 + 规整)/ 构建日期时间 /
+    解析文件头并分块读取整文件计算 SHA256（不解释配置载荷）:
+    提取设计名 / 目标 part(原始 + 规整)/ 构建日期时间 /
     文件 SHA256。用于烧录前防错板(part 比对)、交付/返修对账(确认孤立 .bit 是不是
     声称的那版)。Vivado 无任何 Tcl 命令读离线 .bit。
     注意:.bit 里 part 去 'xc' 前缀 + 去速度等级(如 7k325tffg900);规整字段补回
@@ -55,8 +59,8 @@ async def parse_bit_header(file_path: str, ctx: Context = None) -> str:
         file_path: .bit 文件的绝对路径。
     """
     try:
-        header = _parse_bit(file_path)
-    except (FileNotFoundError, ValueError) as e:
+        header = await asyncio.to_thread(_parse_bit, file_path)
+    except (OSError, ValueError) as e:
         return f"[ERROR] .bit 解析失败: {e}"
     return _format_bit(header)
 
@@ -74,7 +78,29 @@ async def parse_ltx(file_path: str, ctx: Context = None) -> str:
         file_path: .ltx 文件的绝对路径。
     """
     try:
-        cfg = _parse_ltx(file_path)
-    except (FileNotFoundError, ValueError) as e:
+        cfg = await asyncio.to_thread(_parse_ltx, file_path)
+    except (OSError, ValueError) as e:
         return f"[ERROR] .ltx 解析失败: {e}"
     return _format_ltx(cfg)
+
+
+@mcp.tool()
+async def check_debug_artifacts(
+    bit_path: str, ltx_path: str, expected: dict | None = None,
+) -> str:
+    """离线核对 bit/ltx：载荷长度、器件/封装、ILA/VIO 核、UUID 与探针要求。
+
+    expected 可含 part、cores；核使用实际层级 name/type/probes，可选 uuid。
+    probe 使用 name/width，可选 direction/port_index。预期是需要存在的子集，
+    不从 IP 模块名猜实例名。完整 schema 见 docs/DEBUG_ARTIFACTS.md。
+    无 expected 时仅摸底，返回 incomplete。consistent 仅表示离线检查一致；
+    pairing 始终 unverified：没有解析 bit 内部 UUID，也没有实际硬件验证。
+    只读本地文件，不构建、不连接设备、不烧录；SHA256 用于保存本次文件身份。
+    """
+    from vivado_mcp.analysis.debug_artifacts import check_debug_artifacts as check
+
+    try:
+        result = await asyncio.to_thread(check, bit_path, ltx_path, expected)
+    except (OSError, ValueError) as exc:
+        result = {"status": "blocked", "pairing": "unverified", "error": str(exc)}
+    return json.dumps(result, ensure_ascii=False)
