@@ -3,7 +3,7 @@
 Status: OPEN
 Target: otter-fpga-lab/otter-vivado
 Basis: Hub main 0e9c375e；topics/20261002_vivado-progress-and-ross/TASK.md
-Next: PR #1 已合入，默认从远端 main 接续；仅在实际 Windows/Vivado 补定向现场验收，不重启活动构建
+Next: 默认 main 接续；按用户常用 2018.3/2024.2 优先、2020.2/2022.2 兼顾优化与定向验收；About 简介交哈基米协助
 Result: 已补 Windows 路径/编码兼容、原生 GUI 工程交付与报告数值可视化；本轮定向 231 passed / 7 skipped，未宣称真实 EDA 或 Windows PASS
 
 ## 接手与边界
@@ -193,3 +193,20 @@ merge commit：`cf768a67f9e7982f21bbea2c946861c1adea9e8c`，保留全部原提�
 本地已切回并 fast-forward 到 `main`，后续使用 `origin/main` 最新 HEAD；本条交接也直接
 提交到 main。没有删除旧分支、发布包、改可见性或操作设备。旧贡献分支仍为 `b40e62cd`。
 对应 Hub 只更新现有 Vivado 议题与 [PR #5](https://github.com/lingshuncangqiong/otter-agent-hub/pull/5)。
+
+## 当前用户偏好与哈基米交接（2026-10-03）
+
+- Windows 为主。常用 Vivado **2018.3、2020.2、2022.2、2024.2**，其中 **2018.3 和
+  2024.2 优先**。这是产品维护/现场验收目标，不是已经跑通的兼容认证；保留上游2019.1
+  历史验证来源。显式选择版本，已有工程不自动升级，运行中的会话不为更新而重启。
+- 界面美观参考 shadcn/ui 与 Radix Colors，沿用本机共享状态薄视图；优先易读、键盘操作、
+  长时间观察和报告查找，不为外观引入第二套业务实现。普通开发继续在 main 小块提交。
+- **待哈基米协助：GitHub About 简介。** 用户已确认由哈基米处理，本云端修改
+  `otter-fpga-lab/otter-vivado` 仓库 About 的 API 权限返回403，不重复尝试或改凭据。
+  入口：[产品仓库](https://github.com/otter-fpga-lab/otter-vivado) 右侧 About 设置。
+  仅修改 description，建议直接使用下列文案；无需改仓名、可见性、许可、fork或旧分支：
+
+  > Otter Vivado — 本机 AMD Vivado 工程、执行、仿真、IP、真实进度与报告工具；人和智能体共用原生 GUI 工程，Skill / CLI / MCP / UI 共用实现。保留 vivado-mcp 上游来源与许可。
+
+  完成后在本节记录实际修改结果即可。README 与包说明已采用相同工具定位；About 待办
+  不阻塞代码工作，也无需占用 Coding 的现场测试。
