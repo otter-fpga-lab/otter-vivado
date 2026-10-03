@@ -3,7 +3,7 @@
 Status: OPEN
 Target: otter-fpga-lab/otter-vivado
 Basis: Hub main 0e9c375e；topics/20261002_vivado-progress-and-ross/TASK.md
-Next: 按用户最新授权合入 PR #1 后默认 main 接续；仅在实际 Windows/Vivado 补定向现场验收，不重启活动构建
+Next: PR #1 已合入，默认从远端 main 接续；仅在实际 Windows/Vivado 补定向现场验收，不重启活动构建
 Result: 已补 Windows 路径/编码兼容、原生 GUI 工程交付与报告数值可视化；本轮定向 231 passed / 7 skipped，未宣称真实 EDA 或 Windows PASS
 
 ## 接手与边界
@@ -84,7 +84,7 @@ git diff --check
 Ross 二进制、完整签核/bitstream/硬件。精确现场流程见 docs/RUN_MONITOR.md 最后一节，
 不要求抢占 Coding 本机测试。展示质量卡当前保持 unknown，报告仅带来源供人工核查。
 
-## GitHub 恢复点
+## 首轮 GitHub 恢复点（历史，当前入口见末节）
 
 分支：`feat/progress-view-study`，base `main` @ 60b13cf。
 已保存远端领取提交：`ced7425d770c7ff6647dbee84938d527ebcb8b5c`。
@@ -187,4 +187,9 @@ junction/.bat/ANSI 运行测试和 2 个需中文 Windows CP936 的编码测试�
 修改 GitHub About 简介同样返回 `Resource not accessible by integration` (403)；
 README/包说明定位已更新，About 待有仓库设置权限的入口改为相同工具定位。
 
-合入与 main 的实际远端恢复点将在操作完成后记录于本节；历史验证按各批次保留。
+本批实现远端提交：`9d8b3a4ac96cf6357c32b33c5c73350eca056a7d`。
+[产品 PR #1](https://github.com/otter-fpga-lab/otter-vivado/pull/1) 已按用户授权合入，
+merge commit：`cf768a67f9e7982f21bbea2c946861c1adea9e8c`，保留全部原提交与作者。
+本地已切回并 fast-forward 到 `main`，后续使用 `origin/main` 最新 HEAD；本条交接也直接
+提交到 main。没有删除旧分支、发布包、改可见性或操作设备。旧贡献分支仍为 `b40e62cd`。
+对应 Hub 只更新现有 Vivado 议题与 [PR #5](https://github.com/lingshuncangqiong/otter-agent-hub/pull/5)。
