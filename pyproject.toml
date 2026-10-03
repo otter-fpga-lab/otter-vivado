@@ -56,6 +56,7 @@ packages = ["src/vivado_mcp"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "scripts/vivado_mcp_server.tcl" = "vivado_mcp/scripts/vivado_mcp_server.tcl"
+"THIRD_PARTY_NOTICES.md" = "vivado_mcp/THIRD_PARTY_NOTICES.md"
 
 [tool.ruff]
 target-version = "py310"

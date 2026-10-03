@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 
 # ============================================================== #
@@ -19,7 +20,7 @@ from dataclasses import asdict, dataclass, field
 class ResourceUsage:
     """单项资源占用(如 LUT/FF/BRAM)。"""
     name: str        # 资源名称(如 "Slice LUTs")
-    used: int        # 已用数量
+    used: int | float  # 已用数量；Block RAM Tile 可为 0.5 等分数
     available: int   # 总可用数
     percent: float   # 使用百分比 0-100
 
@@ -56,6 +57,7 @@ class UtilizationReport:
             "resources": [asdict(r) for r in self.resources],
             "critical": [r.name for r in self.resources if r.is_critical],
             "warning": [r.name for r in self.resources if r.is_warning],
+            "parse_error": self.parse_error,
         }
 
 
@@ -63,12 +65,14 @@ class UtilizationReport:
 #  表格解析
 # ============================================================== #
 
-# 只关心这几个核心资源(xc7a35t 常见瓶颈,按重要度排)
+# 核心资源保留报告原名，兼容 7 系列 Slice 与 UltraScale CLB 命名。
 _CORE_RESOURCES = (
     "Slice LUTs",
+    "CLB LUTs",
     "LUT as Logic",
     "LUT as Memory",
     "Slice Registers",
+    "CLB Registers",
     "Register as Flip Flop",
     "Block RAM Tile",
     "DSPs",
@@ -105,8 +109,8 @@ def parse_utilization(raw_text: str) -> UtilizationReport:
     Vivado 2020.1+ 在 Fixed 后多一列 Prohibited —— 按固定位置取列会整列错位
     (available=0、percent=资源总数,产出假 CRITICAL)。
     有表格行但解析不出任何核心资源时,设置 parse_error 显式报告降级
-    (区分"表头不识别"与"表头可识别但行名不在收录集",如 UltraScale
-    的 'CLB LUTs' 命名),而不是静默返回空结果。
+    (区分"表头不识别"与"表头可识别但行名不在收录集")，而不是静默返回空结果。
+    Block RAM Tile 的 Used 可为 0.5，不取整或静默丢弃；非法数字明确降级。
     """
     resources: list[ResourceUsage] = []
     bram_detail: list[ResourceUsage] = []
@@ -117,6 +121,7 @@ def parse_utilization(raw_text: str) -> UtilizationReport:
     col: tuple[int, int, int] | None = None
     saw_table_row = False
     saw_known_header = False
+    invalid_resources: list[str] = []
 
     for line in raw_text.splitlines():
         cells = _split_cells(line)
@@ -144,10 +149,19 @@ def parse_utilization(raw_text: str) -> UtilizationReport:
         # 去重(同名资源可能在多个表格出现),只收核心资源/BRAM 子行
         if name in _CORE_RESOURCES and name not in seen:
             try:
-                used = int(cells[used_i])
+                used = float(cells[used_i])
                 avail = int(cells[avail_i])
                 pct = float(cells[pct_i])
+                if not math.isfinite(used) or not math.isfinite(pct):
+                    raise ValueError("资源数值非有限值")
+                if used < 0 or avail < 0 or pct < 0:
+                    raise ValueError("资源数值不能为负")
+                if used.is_integer():
+                    used = int(used)
+                elif name != "Block RAM Tile":
+                    raise ValueError("该资源数量应为整数")
             except ValueError:
+                invalid_resources.append(name)
                 continue
             seen.add(name)
             resources.append(ResourceUsage(name=name, used=used, available=avail, percent=pct))
@@ -168,14 +182,17 @@ def parse_utilization(raw_text: str) -> UtilizationReport:
             )
 
     parse_error = ""
-    if not resources and saw_table_row:
+    if invalid_resources:
+        parse_error = (
+            "部分资源数值无法解析：" + ", ".join(dict.fromkeys(invalid_resources))
+            + "。已解析项仅供局部参考，请核对报告原文。"
+        )
+    elif not resources and saw_table_row:
         if saw_known_header:
             # 表头能定位列,但没有任何数据行命中收录的核心资源名:
-            # 典型如 UltraScale 的 'CLB LUTs'/'CLB Registers'(非 7 系列命名)
             parse_error = (
                 "资源报告表头可识别(Used/Available/Util%),但没有任何行名"
-                "命中收录的核心资源(Slice LUTs 等 7 系列命名)。"
-                "可能是非 7 系列器件(如 UltraScale 的 'CLB LUTs')的命名差异,"
+                "命中收录的核心资源(Slice/CLB LUTs 等)。请保留实际器件的报告原名，"
                 '请用 run_tcl("report_utilization -return_string") 查看原始报告。'
             )
         else:
@@ -205,6 +222,8 @@ def format_utilization_report(report: UtilizationReport, detail: bool = False) -
                 "再在 open_run 后调用本工具。")
 
     lines: list[str] = ["=== 资源占用摘要 ==="]
+    if report.parse_error:
+        lines.insert(0, f"[DEGRADED] {report.parse_error}")
     has_critical = any(r.is_critical for r in report.resources)
     has_warning = any(r.is_warning for r in report.resources)
 
@@ -222,7 +241,7 @@ def format_utilization_report(report: UtilizationReport, detail: bool = False) -
         elif r.is_warning:
             flag = " [WARN]"
         lines.append(
-            f"  {r.name:<30s} {r.used:>7d} / {r.available:<7d}  "
+            f"  {r.name:<30s} {r.used:>7} / {r.available:<7d}  "
             f"({r.percent:5.2f}%){flag}"
         )
 

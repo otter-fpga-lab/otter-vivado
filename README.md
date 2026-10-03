@@ -22,14 +22,14 @@ PyPI 上的同名包是上游发行版，Otter 功能按本仓源码入口安装
 
 **人和智能体操作同一份 Vivado 工程，观察同一次运行。**
 
-32 个 MCP 工具覆盖会话、综合、实现、真实进度、时序、XDC、IP、波形与烧录；其余 Vivado Tcl 能力由 `run_tcl`/`safe_tcl` 承载。原生 Vivado GUI 用于工程、Block Design、原理图与波形操作，本机网页面板用于读取运行状态、日志和报告。
+33 个 MCP 工具覆盖会话、综合、实现、真实进度、时序、XDC、IP、波形与烧录；其余 Vivado Tcl 能力由 `run_tcl`/`safe_tcl` 承载。原生 Vivado GUI 用于工程、Block Design、原理图与波形操作，本机网页面板用于读取运行状态、日志和报告。
 
-| 32 个 MCP 工具 | 8 个工作流 Prompt | 2 个会话 Resources | GUI / Tcl / attach 三种会话 |
+| 33 个 MCP 工具 | 8 个工作流 Prompt | 2 个会话 Resources | GUI / Tcl / attach 三种会话 |
 |---:|---:|---:|---:|
 
 > 本项目控制的是**你本机安装的 Vivado**，不是云端综合服务。命令在当前用户权限下执行；工具说明和诊断建议以中文为主。
 >
-> **English:** Otter Vivado provides local AMD Vivado project, execution, simulation, IP, status, and report tools for humans and agents. It includes 32 MCP tools, 8 workflow prompts, native GUI/headless/attach sessions, and a shared read-only run monitor. RTL authoring belongs to the separate coding product.
+> **English:** Otter Vivado provides local AMD Vivado project, execution, simulation, IP, status, and report tools for humans and agents. It includes 33 MCP tools, 8 workflow prompts, native GUI/headless/attach sessions, and a shared read-only run monitor. RTL authoring belongs to the separate coding product.
 
 **导航**：[快速开始](#快速开始) · [原生 GUI 与交付](docs/HUMAN_GUI_WORKFLOW.md) · [工具职责](#工具职责) · [工作流 Prompts](#工作流-prompts) · [工具列表](#工具列表) · [会话模式](#会话模式) · [架构](#架构) · [CLI](#cli-参考) · [反馈](#反馈与-bug-提交)
 
@@ -41,12 +41,17 @@ PyPI 上的同名包是上游发行版，Otter 功能按本仓源码入口安装
 
 Windows 是使用与兼容维护重点；当前云端自动化通过不等于商业 Vivado、Windows GUI 或板卡现场已通过。实际验证范围与待测步骤见 [TASK.md](TASK.md) 和 [GUI 指南](docs/HUMAN_GUI_WORKFLOW.md)。
 
-| Vivado 版本 | 支持等级 | 验证范围 |
-|---|---|---|
-| 2019.1 | **主要支持基线** | 作者长期实测 GUI / Tcl / attach 与完整 FPGA 流程 |
-| 2018.3 | **部分路径验证** | 社区贡献者验证 IPDEF-only IP 元数据（[PR #1](https://github.com/mapleleavessssssss-wq/vivado-mcp/pull/1)） |
-| 2022.2 | **社区现场验证** | Windows 10 GUI/XSim 问题现场（[Issue #2](https://github.com/mapleleavessssssss-wq/vivado-mcp/issues/2)），不代表完整回归 |
-| 其他版本 | **实验性兼容** | 协议层为纯 Tcl，但未持续做真机矩阵；请先跑下方冒烟验证 |
+| Vivado 版本 | 用户支持目标 | 已有证据 | 本产品现场待测 |
+|---|---|---|---|
+| **2018.3** | **优先维护，常用版本** | 本轮核对该版官方 Tcl/安装文档；历史 [上游 PR #1](https://github.com/mapleleavessssssss-wq/vivado-mcp/pull/1) 仅验证 IPDEF-only IP 元数据 | Windows GUI/Tcl/attach、构建、报告、原生工程重开 |
+| **2024.2** | **优先维护，常用版本** | 本轮核对该版官方 Tcl/安装/分析文档，未运行商业 EDA | 同上，兼顾不同器件的资源报告名称与数值 |
+| 2020.2 | 持续兼容 | 本轮核对该版官方核心 Tcl 命令与选项，未运行商业 EDA | 按同一最小工程定向复测 |
+| 2022.2 | 持续兼容 | 本轮核对官方 Tcl；历史 [上游 Issue #2](https://github.com/mapleleavessssssss-wq/vivado-mcp/issues/2) 为 Windows 10 GUI/XSim 局部现场记录 | 按同一最小工程定向复测，历史记录不代表完整通过 |
+| 2019.1 | 保留上游历史基线 | 原作者长期使用 GUI/Tcl/attach 与 FPGA 工具流程 | 保留回归，不用历史结果替代上述四版本验收 |
+| 其他版本 | 按实际任务评估 | 不自动扩大支持矩阵 | 先核对本机官方帮助和所需能力 |
+
+支持目标与实际通过记录分开维护；选版本、官方依据与验收范围见
+[版本兼容说明](docs/VERSION_COMPATIBILITY.md)。使用旧版工程不要求升级到新版 Vivado。
 
 ## 快速开始
 
@@ -122,7 +127,7 @@ VIVADO_PATH = "D:/Xilinx/Vivado/2019.1/bin/vivado.bat"
 
 ### 5. 在空闲边界加载客户端配置
 
-首次配置后按客户端要求加载 MCP，可发现 32 个工具、8 个工作流 Prompt 和 2 个会话状态 Resource。已有活动构建时保留其 MCP 会话，完成后再重载；结束拥有 Vivado 子进程的 MCP 会关闭该进程。
+首次配置后按客户端要求加载 MCP，可发现 33 个工具、8 个工作流 Prompt 和 2 个会话状态 Resource。已有活动构建时保留其 MCP 会话，完成后再重载；结束拥有 Vivado 子进程的 MCP 会关闭该进程。
 
 ### 6. 冒烟验证
 
@@ -164,7 +169,7 @@ BD、仿真、硬件调试和 IP 配置可通过 `run_tcl`/`safe_tcl` 使用当�
 ## 特性
 
 - **三种会话模式**：GUI 可视化、Tcl 无头运行，以及只连接现有 GUI 的 attach
-- **32 个 MCP 工具** — 覆盖 Vivado 执行、运行观察、诊断、离线解析和外部检查工具联动
+- **33 个 MCP 工具** — 覆盖 Vivado 执行、运行观察、诊断、离线解析和外部检查工具联动
 - **8 个证据驱动工作流** — 每个流程都要求新鲜基线、最小安全修改、复测门禁与明确停止条件
 - **一条命令自检** — `doctor` 只读定位环境问题，`doctor --fix` 才执行受限、可备份的修复
 - **可靠的长任务协议** — 综合/实现支持 `wait=False` 立即返回 job id，再由 `get_run_progress` 查询
@@ -261,7 +266,8 @@ get_run_progress(run_name="synth_1", session_id="default")
 | 工具 | 说明 |
 |------|------|
 | `open_run_monitor` | 返回本机只读面板 URL，观察指定 run/目标阶段，不启动构建 |
-| `get_run_snapshot` | 与面板共用状态缓存，包含采样时间、连接状态、日志与报告来源 |
+| `get_run_snapshot` | 与面板共用状态缓存，运行与报告独立标注采样状态、时间和来源 |
+| `close_run_monitor` | 释放选定观察器、页面与缓存，保留 Vivado 会话和正在执行的 run |
 
 ### 新手引导 & 工程摸底
 | 工具 | 说明 |
@@ -515,7 +521,7 @@ safe_tcl("set_property PACKAGE_PIN {0} [get_ports {1}]", args=["W5", "clk"])
 ```mermaid
 flowchart LR
     Agent["Cursor / Claude Code / Codex / Antigravity"] -->|"stdio MCP"| MCP["vivado-mcp"]
-    MCP --> Tools["32 Tools"]
+    MCP --> Tools["33 Tools"]
     MCP --> Prompts["8 Workflow Prompts"]
     MCP --> Resources["2 Session Resources"]
     Tools --> Tcl["SubprocessSession\nmode=tcl"]
@@ -548,7 +554,8 @@ flowchart LR
 | `vivado-mcp doctor --fix [--client all\|claude-code\|codex]` | 备份后修复可安全自动处理的配置 |
 | `vivado-mcp connect --client all [--check]` | 一次接入四客户端的源码 MCP 与 Skill 目录链接；`--check` 仅核对 |
 | `vivado-mcp monitor --port 9999 --run impl_1 --target route_design` | 只观察指定已有 GUI 的 run；详见 [运行观察](docs/RUN_MONITOR.md) |
-| `vivado-mcp version` | 显示版本 |
+| `vivado-mcp version` | 显示 Otter Python 包版本 |
+| `vivado-mcp versions [--json]` | 只读列出本机 Vivado 安装候选与默认选择，不启动 EDA；详见 [版本兼容](docs/VERSION_COMPATIBILITY.md) |
 
 ## 开发
 

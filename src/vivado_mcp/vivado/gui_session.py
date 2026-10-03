@@ -245,6 +245,7 @@ class GuiSession(BaseSession):
         session_id: str = "default",
         port: int = 0,
         attach_only: bool = False,
+        expected_version: str | None = None,
     ):
         super().__init__(vivado_path=vivado_path, session_id=session_id)
         # 端口意图哨兵(B 方案):
@@ -254,6 +255,9 @@ class GuiSession(BaseSession):
         # attach 模式下 port 始终是要连的显式端口(attach 本就需知道连哪)。
         self._port_preference = port
         self._attach_only = attach_only
+        # 仅显式指定安装路径时约束隐式 attach；显式 attach 由用户选择端口。
+        self._expected_version = expected_version
+        self._runtime_version: str | None = None
         # probe-then-attach 命中外部 GUI(用户手动启动 + init.tcl 已注入)时为 True
         # 与 _attach_only 区别:_attach_only 是用户显式请求,_attached_external
         # 是 mode="gui" 时的隐式 attach。两者对 mode/stop 行为意义相同。
@@ -306,6 +310,8 @@ class GuiSession(BaseSession):
         d = super().status_dict()
         if self._pid is not None:
             d["pid"] = self._pid
+        d["runtime_version"] = self._runtime_version or "unknown"
+        d["vivado_path_is_launch_candidate"] = self._attach_only or self._attached_external
         return d
 
     @staticmethod
@@ -363,12 +369,53 @@ class GuiSession(BaseSession):
                 await writer.wait_closed()
             except Exception:
                 pass
+            if self._expected_version is not None:
+                self._state = SessionState.ERROR
+                raise RuntimeError(
+                    f"端口 {port} 已有监听，但无法确认其 Vivado 协议/版本（GUI 可能正忙）。"
+                    "不会在该端口自动启动另一实例。请等待现有任务完成，"
+                    "或用 port=0 启动所选安装的独立实例；明确连接现有 GUI 请用 mode='attach'。"
+                )
             return False
 
         self._reader = reader
         self._writer = writer
         self._connected_port = port
         self._attached_external = True
+        if self._expected_version is not None:
+            try:
+                if self._expected_version == "unknown":
+                    raise ValueError("无法从所选安装路径确定待核对的版本")
+                result = await asyncio.wait_for(
+                    self._execute_impl("version -short"), timeout=timeout,
+                )
+                actual = result.output.strip()
+                if result.is_error or actual != self._expected_version:
+                    raise ValueError(
+                        f"所选安装版本为 {self._expected_version}，端口中实际返回 {actual!r}"
+                    )
+                self._runtime_version = actual
+                self._response_phase = None
+            except Exception as exc:
+                # 仅关闭本次只读探测连接，不向原 GUI 发 exit，不自动另开实例。
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+                self._reader = self._writer = None
+                self._connected_port = None
+                self._response_phase = None
+                self._state = SessionState.ERROR
+                detail = (
+                    "version -short 查询超时，现有 GUI 可能正忙"
+                    if isinstance(exc, asyncio.TimeoutError) else str(exc)
+                )
+                raise RuntimeError(
+                    f"无法确认端口 {port} 的 GUI 符合明确版本选择：{detail}。"
+                    "原 GUI 保持运行。请用 port=0 启动所选安装的独立实例，"
+                    "或明确使用 mode='attach' 连接该端口的现有 GUI。"
+                ) from exc
         return True
 
     async def start(self, timeout: float = 120.0) -> str:

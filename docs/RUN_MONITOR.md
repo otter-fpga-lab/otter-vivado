@@ -10,6 +10,8 @@
 `connect --client all` 一次配置 Cursor、Claude Code、Codex 与 Antigravity。
 该文档集中说明目录链接、已有配置保留、Windows junction、自定义路径与日常更新。
 完成源码接入后，再按下列流程选择实际 Vivado 会话。
+多版本本机先按 [版本兼容指南](VERSION_COMPATIBILITY.md) 选定安装；2018.3 与 2024.2
+为优先维护目标，2020.2/2022.2 一并保留，文档核对不代替现场验证。
 
 GUI/attach 使用上游已有的协议注入：首次需要时显式执行 `vivado-mcp install`
 （会备份并修改指定 Vivado 的 init Tcl），按 README 选择实际安装路径。
@@ -45,6 +47,35 @@ open_run_monitor(run_name="impl_1", target_step="route_design", session_id="defa
 不保证代表当前目标或整个 FPGA 流程的完成比例，没有 ETA。
 `place_design Complete!` 不等于 route 完成；route 完成也不等于 write_bitstream 完成。
 错误/取消不会补写 100%。观察超时不会取消底层 run。
+
+报告使用独立的后台读取，不等待慢磁盘才更新 STATUS。查看 `reports_status` 与
+`reports_observed_at`；loading/error/stale 可能保留上次报告，页面会单独显示报告状态与
+来源。运行已连接不代表报告刚读完，`ready` 仅表示文件读取完成。每个观察器最多一项
+报告读取，运行来源改变时不接受迟到的旧来源结果。
+
+不再需要观察时可显式释放页面、缓存与采样：
+
+```text
+close_run_monitor(run_name="impl_1", target_step="route_design", session_id="default")
+```
+
+它不关闭 Vivado 或停止 run，其他 run/目标的观察器保留；再次需要时重新调用
+`open_run_monitor`。只关浏览器标签会保留观察器；Vivado 失联后停止定时查询，最后快照
+仍可查看，直到显式关闭观察器或结束所属 MCP。
+
+## 长时间观察与报告阅读
+
+页面支持跟随系统、浅色与深色外观。报告可按名称、阶段或路径过滤；采样刷新保留选中项、
+键盘焦点和原文阅读位置。工程/报告路径可以复制到剪贴板，浏览器不允许时会提示手动选择；
+复制不会打开工程或执行命令。时序和资源摘要沿用共享解析器，包含 CLB/Slice 名称和
+小数 BRAM Tile 用量；缺失/不合法数据明确降级，不算零或默认为通过。
+
+外观参考 [shadcn/ui Theming](https://ui.shadcn.com/docs/theming) 的语义样式与
+[Radix Colors 色阶用途](https://www.radix-ui.com/colors/docs/palette-composition/understanding-the-scale)，
+使用 Slate/Teal 与状态色值。运行页面仍来自本仓同一静态资源，不需要 React、CDN、网络字体
+或新的前端构建环境；颜色许可见 [第三方说明](../THIRD_PARTY_NOTICES.md)。
+
+## 最小原生工程样例
 
 没有工程时，可在**空会话**中创建仓内最小样例：
 

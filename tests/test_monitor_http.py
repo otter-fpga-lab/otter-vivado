@@ -418,3 +418,166 @@ def test_browser_report_metrics_and_windows_gui_project_evidence(monitor, tmp_pa
             assert errors == []
         finally:
             browser.close()
+
+
+def test_browser_daily_workflow_keeps_focus_and_supports_themes_copy_and_search(monitor, tmp_path):
+    """后台采样不打断键盘/阅读；主题和复制只影响本机展示。"""
+    playwright = pytest.importorskip("playwright.sync_api")
+    executable = shutil.which("chromium") or shutil.which("chromium-browser")
+    if executable is None:
+        pytest.skip("未安装 Chromium；HTTP 边界测试仍独立运行")
+    _, url, _, snapshot = monitor
+    fixtures = Path(__file__).parent / "fixtures"
+    timing_text = (fixtures / "sample_report_timing.txt").read_text(encoding="utf-8")
+    util_text = (fixtures / "sample_report_utilization.txt").read_text(encoding="utf-8")
+    project_file = r"C:\工程\telemetry\telemetry.xpr"
+    util_path = r"C:\工程\telemetry\telemetry.runs\impl_1\utilization_routed.rpt"
+    timing_report = {
+        "name": "timing_routed.rpt",
+        "path": r"C:\工程\timing_routed.rpt",
+        "stage": "post-route",
+        "stage_source": "filename_hint",
+        "freshness": "unverified",
+        "text": timing_text,
+        "reason": "浏览器验证样本，尚未验证目标/约束匹配",
+        "summary": {"kind": "timing", **parse_timing_summary(timing_text).to_dict()},
+    }
+    util_report = {
+        "name": "utilization_routed.rpt",
+        "path": util_path,
+        "stage": "post-route",
+        "freshness": "stale",
+        "text": util_text,
+        "reason": "旧报告样本；不代表本次运行签核",
+        "summary": {"kind": "utilization", **parse_utilization(util_text).to_dict()},
+    }
+    snapshot.update(
+        {
+            "connection": "connected",
+            "session_id": "ui-fixture",
+            "session_mode": "gui",
+            "run_name": "impl_1",
+            "target_step": "route_design",
+            "observed_at": time.time(),
+            "reports": [timing_report, util_report],
+            "reports_status": "ready",
+            "reports_observed_at": time.time() - 15,
+            "reports_source": {"project": "浏览器测试样本", "run_name": "impl_1"},
+            "quality": {"timing": "unknown", "resources": "unknown"},
+        }
+    )
+    snapshot["run"].update(
+        {
+            "project_file": project_file,
+            "project_mode": "unknown",
+            "state": "running",
+            "progress_percent": 50,
+            "project": "浏览器测试样本",
+            "version": "Vivado v2024.2（样本）",
+            "elapsed": "00:08:23",
+            "current_phase": "Phase 4.1 Global Iteration",
+            "log_mtime": time.time() - 3,
+            "tail": [{"lineno": 1, "text": "INFO: 此处为浏览器验证样本，不是现场 EDA 运行。"}],
+            "diagnostics": {
+                "errors": 0,
+                "warnings": 2,
+                "critical_warnings": 0,
+                "scope": "仅当前日志尾部；0 不代表全程无警告/错误",
+            },
+        }
+    )
+    with playwright.sync_playwright() as runtime:
+        browser = runtime.chromium.launch(
+            executable_path=executable, headless=True, args=["--no-sandbox"]
+        )
+        try:
+            context = browser.new_context(
+                viewport={"width": 1440, "height": 1150},
+                color_scheme="light",
+                permissions=["clipboard-read", "clipboard-write"],
+            )
+            page = context.new_page()
+            errors, requests = [], []
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            page.on("console", lambda msg: errors.append(msg.text) if msg.type == "error" else None)
+            page.on("request", lambda request: requests.append((request.method, request.url)))
+            page.goto(url)
+            playwright.expect(page.locator("#state")).to_have_text("运行中")
+            playwright.expect(page.locator("html")).to_have_attribute("data-theme", "light")
+            assert page.locator("#reports-sampling-status").inner_text() == "报告读取完成"
+            assert "不代表报告新鲜" in page.locator("#reports-sampling-error").inner_text()
+            assert "文件名线索" in page.locator("#report-context").inner_text()
+            page.screenshot(path=str(tmp_path / "monitor-light.png"), full_page=True)
+
+            theme = page.get_by_role("combobox", name="界面外观")
+            theme.select_option("dark")
+            playwright.expect(page.locator("html")).to_have_attribute("data-theme", "dark")
+            page.reload()
+            playwright.expect(theme).to_have_value("dark")
+            playwright.expect(page.locator("#state")).to_have_text("运行中")
+            page.screenshot(path=str(tmp_path / "monitor-dark.png"), full_page=True)
+            theme.select_option("system")
+            playwright.expect(page.locator("html")).to_have_attribute("data-theme", "light")
+            page.emulate_media(color_scheme="dark")
+            playwright.expect(page.locator("html")).to_have_attribute("data-theme", "dark")
+            page.set_viewport_size({"width": 390, "height": 844})
+            assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+            page.screenshot(path=str(tmp_path / "monitor-dark-mobile.png"), full_page=True)
+            page.set_viewport_size({"width": 1440, "height": 1150})
+
+            page.get_by_role("button", name="复制工程路径").click()
+            playwright.expect(page.locator("#project-copy-status")).to_have_text("路径已复制。")
+            assert page.evaluate("navigator.clipboard.readText()") == project_file
+            selected = page.get_by_role("button", name="utilization_routed.rpt", exact=True)
+            selected.focus()
+            page.keyboard.press("Enter")
+            playwright.expect(selected).to_have_attribute("aria-pressed", "true")
+            selected.evaluate("node => { window.originalReportButton = node; }")
+            page.locator("#report-text").evaluate("node => { node.scrollTop = 80; }")
+            snapshot["run"]["elapsed"] = "00:08:24"
+            util_report["mtime"] = time.time()
+            snapshot["reports_status"] = "loading"
+            playwright.expect(page.locator("#elapsed")).to_have_text("00:08:24", timeout=6000)
+            playwright.expect(selected).to_be_focused()
+            assert selected.evaluate("node => node === window.originalReportButton")
+            assert page.locator("#report-text").evaluate("node => node.scrollTop") == 80
+            assert "保留上次结果" in page.locator("#reports-sampling-status").inner_text()
+            assert page.locator("#report-title").inner_text() == "utilization_routed.rpt"
+
+            search = page.get_by_role("searchbox", name="查找报告")
+            search.fill("timing")
+            assert (
+                not page.locator("#report-list tr")
+                .filter(has_text="utilization_routed")
+                .is_visible()
+            )
+            assert "阅读内容已保留" in page.locator("#report-filter-note").inner_text()
+            snapshot["run"]["elapsed"] = "00:08:25"
+            snapshot["reports_status"] = "stale"
+            playwright.expect(page.locator("#elapsed")).to_have_text("00:08:25", timeout=6000)
+            playwright.expect(search).to_be_focused()
+            assert page.locator("#report-count").inner_text() == "1 / 2 份"
+            assert "不代表当前运行" in page.locator("#reports-sampling-status").inner_text()
+            page.keyboard.press("Escape")
+            playwright.expect(search).to_have_value("")
+            playwright.expect(selected).to_have_attribute("aria-pressed", "true")
+            page.get_by_role("button", name="复制报告路径").click()
+            playwright.expect(page.locator("#report-copy-status")).to_have_text("路径已复制。")
+            assert page.evaluate("navigator.clipboard.readText()") == util_path
+
+            # 模拟浏览器拒绝剪贴板权限，提供可手动复制的准确路径。
+            page.evaluate("""Object.defineProperty(navigator, 'clipboard', {
+                value: {writeText: () => Promise.reject(new Error('denied'))}, configurable: true
+            })""")
+            page.get_by_role("button", name="复制报告路径").click()
+            playwright.expect(page.locator("#report-copy-status")).to_contain_text("请按 Ctrl+C")
+            assert page.evaluate("window.getSelection().toString()") == util_path
+            assert page.locator("#timing").inner_text() == "未知"
+            assert page.locator("#resources").inner_text() == "未知"
+            assert errors == []
+            assert requests
+            for method, request_url in requests:
+                assert method == "GET"
+                assert request_url in (url, url + "snapshot.json")
+        finally:
+            browser.close()

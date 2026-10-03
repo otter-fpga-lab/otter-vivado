@@ -36,6 +36,24 @@ _SAMPLE_TIMING = _FIXTURE_DIR / "sample_report_timing.txt"
 _SAMPLE_VIOLATING = _FIXTURE_DIR / "sample_violating_paths.txt"
 
 
+@pytest.mark.parametrize("header,expected", [
+    ("| Design State : Routed\n", "post-route"),
+    ("Design State : Placed\n", "post-place"),
+    ("| Design State : Synthesized\n", "post-synth"),
+    ("| Design State : Unknown new state\n", "unknown"),
+    ("", "unknown"),
+])
+def test_stage_comes_from_same_report_not_another_run_status(header, expected):
+    """受控报告头样本验证来源；不将支持格式测试冒称对应 Vivado 实测。"""
+    other_run = "VMCP_STAGE:stage=post-route|synth_status=Complete!|impl_status=Complete!\n"
+    report = parse_timing_summary(other_run + header + _SAMPLE_TIMING.read_text(encoding="utf-8"))
+    assert report.source_stage == expected
+    assert "impl_1" not in report.source_detail
+    assert report.summary.wns == pytest.approx(0.234)
+    if expected == "unknown":
+        assert "阶段尚未核实" in report.stage_warning
+
+
 @pytest.fixture
 def sample_text() -> str:
     """读取 sample_report_timing.txt fixture 文件。"""

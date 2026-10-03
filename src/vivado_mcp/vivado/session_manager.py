@@ -8,9 +8,11 @@
 
 import asyncio
 import logging
+import os
 import re
 from typing import Literal
 
+from vivado_mcp.config import find_vivado, get_vivado_version, normalize_path
 from vivado_mcp.vivado.base_session import BaseSession
 from vivado_mcp.vivado.gui_session import (
     _PENDING_SPAWN_PORTS,
@@ -111,13 +113,28 @@ class SessionManager:
                 f"无效的 mode: {mode!r}。支持: {_VALID_MODES}"
             )
 
+        selected_path = vivado_path or os.environ.get("VIVADO_PATH")
         existing = self.get(session_id)
         if existing:
+            if selected_path and os.path.normcase(
+                os.path.abspath(normalize_path(os.path.expanduser(selected_path)))
+            ) != (
+                os.path.normcase(os.path.abspath(normalize_path(existing.vivado_path)))
+            ):
+                raise ValueError(
+                    f"会话 '{session_id}' 已使用 {existing.vivado_path!r}；"
+                    f"不能用同一 session_id 静默改成 {selected_path!r}。"
+                    "原会话保持运行；请换一个 session_id，新开 GUI 时同时使用 port=0。"
+                )
             return existing, (
                 f"会话 '{session_id}' 已在运行中（mode={existing.mode}）。"
             )
 
-        path = vivado_path or self._default_vivado_path
+        path = (
+            find_vivado(vivado_path)
+            if selected_path and mode != "attach"
+            else selected_path or self._default_vivado_path
+        )
 
         session: BaseSession
         if mode == "tcl":
@@ -128,6 +145,7 @@ class SessionManager:
                 session_id=session_id,
                 port=port,
                 attach_only=False,
+                **({"expected_version": get_vivado_version(path)} if selected_path else {}),
             )
         else:  # attach
             session = GuiSession(

@@ -45,12 +45,6 @@ _NA_TIMING = """\
          NA           NA                     NA                   NA           NA           NA                     NA                   NA
 """  # noqa: E501
 
-_STAGE_POST_ROUTE = (
-    "VMCP_STAGE:stage=post-route"
-    "|synth_status=synth_design Complete!"
-    "|impl_status=route_design Complete!"
-)
-
 _PROJ_INFO = (
     "VMCP_PROJ:project_name=demo\n"
     "VMCP_PROJ:part=xc7a35tcpg236-1\n"
@@ -58,6 +52,30 @@ _PROJ_INFO = (
     "VMCP_PROJ:synth_status=synth_design Complete!\n"
     "VMCP_PROJ:impl_status=route_design Complete!\n"
 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("design_state", ["Synthesized", "Placed", "Unrecognized", ""])
+@pytest.mark.parametrize("tool_name", ["check_bitstream_readiness", "get_pre_commit_summary"])
+async def test_other_run_cannot_make_unverified_report_ready(tool_name, design_state):
+    """磁盘 run 已完成，当前报告却是前置/未知阶段：保留数字，不能给 READY。"""
+    from vivado_mcp.tools import report_tools
+
+    header = f"| Design State : {design_state}\n" if design_state else ""
+    report = header + _load_fixture("sample_report_timing.txt")
+    if tool_name == "check_bitstream_readiness":
+        outputs = ["VMCP_PRE_BIT:status=route_design Complete!,critical_warnings=0", report]
+    else:
+        outputs = [_PROJ_INFO, report, _load_fixture("sample_report_utilization.txt"),
+                   "VMCP_DIAG:errors=0,critical_warnings=0,warnings=0"]
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[_make_tcl_result(text) for text in outputs])
+    with patch("vivado_mcp.tools.report_tools._require_session", return_value=session):
+        result = await getattr(report_tools, tool_name)(ctx=_mock_context())
+    assert "READY" not in result
+    assert "DEGRADED" in result
+    assert "报告阶段" in result
+    assert "0.234" in result
 
 
 # ====================================================================== #
@@ -121,6 +139,22 @@ class TestGetUtilizationReportDetail:
 
 class TestGetTimingReportNa:
     @pytest.mark.asyncio
+    async def test_live_report_stage_does_not_query_or_reuse_other_run_status(self):
+        """当前打开综合设计时，即使磁盘实现早已完成也不能冒认 post-route。"""
+        from vivado_mcp.tools.report_tools import get_timing_report
+
+        session = AsyncMock()
+        report = "| Design State : Synthesized\n" + _load_fixture("sample_report_timing.txt")
+        session.execute = AsyncMock(return_value=_make_tcl_result(report))
+        with patch("vivado_mcp.tools.report_tools._require_session", return_value=session):
+            result = await get_timing_report(ctx=_mock_context())
+        session.execute.assert_awaited_once_with(
+            "report_timing_summary -return_string", timeout=120.0,
+        )
+        assert "post-synth" in result
+        assert "数据来源: post-route" not in result
+
+    @pytest.mark.asyncio
     async def test_na_no_crash_no_false_pass(self):
         """NA 摘要不再 float('NA') 崩溃,且不显示 PASS,解释真实原因。"""
         from vivado_mcp.tools.report_tools import get_timing_report
@@ -128,7 +162,6 @@ class TestGetTimingReportNa:
         session = AsyncMock()
         session.execute = AsyncMock(
             side_effect=[
-                _make_tcl_result(_STAGE_POST_ROUTE),  # QUERY_DESIGN_STAGE
                 _make_tcl_result(_NA_TIMING),         # report_timing_summary
             ]
         )
@@ -138,8 +171,8 @@ class TestGetTimingReportNa:
         assert "[ERROR]" not in result
         assert "PASS" not in result
         assert "无时序" in result
-        # NA(timing_met=False 但 parse_status 非 ok)不应触发第三次违例路径查询
-        assert session.execute.await_count == 2
+        # NA 不触发违例路径查询，也不额外查询其他 run 来猜本报告阶段。
+        assert session.execute.await_count == 1
 
     @pytest.mark.asyncio
     async def test_unrecognized_format_marked_degraded(self):
@@ -149,7 +182,6 @@ class TestGetTimingReportNa:
         session = AsyncMock()
         session.execute = AsyncMock(
             side_effect=[
-                _make_tcl_result(_STAGE_POST_ROUTE),
                 _make_tcl_result("完全不是时序报告的输出"),
             ]
         )
@@ -158,7 +190,7 @@ class TestGetTimingReportNa:
 
         assert "[DEGRADED]" in result
         assert "PASS" not in result
-        assert session.execute.await_count == 2
+        assert session.execute.await_count == 1
 
 
 # ====================================================================== #
@@ -254,7 +286,9 @@ class TestCheckBitstreamReadinessNa:
         session.execute = AsyncMock(
             side_effect=[
                 _make_tcl_result(self._PRE_OK),
-                _make_tcl_result(_load_fixture("sample_report_timing.txt")),
+                _make_tcl_result(
+                    "| Design State : Routed\n" + _load_fixture("sample_report_timing.txt")
+                ),
             ]
         )
         with patch("vivado_mcp.tools.report_tools._require_session", return_value=session):
@@ -336,7 +370,8 @@ class TestPreCommitSummaryNa:
         assert any("资源报告解析降级" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.asyncio
-    async def test_ok_timing_stays_ready(self):
+    @pytest.mark.parametrize("logic_family", ["Slice", "CLB"])
+    async def test_ok_timing_stays_ready(self, logic_family):
         """positive 对照:四项采样全部成功且无问题 → READY。"""
         from vivado_mcp.tools.report_tools import get_pre_commit_summary
 
@@ -344,8 +379,12 @@ class TestPreCommitSummaryNa:
         session.execute = AsyncMock(
             side_effect=[
                 _make_tcl_result(_PROJ_INFO),
-                _make_tcl_result(_load_fixture("sample_report_timing.txt")),
-                _make_tcl_result(_load_fixture("sample_report_utilization.txt")),
+                _make_tcl_result(
+                    "| Design State : Routed\n" + _load_fixture("sample_report_timing.txt")
+                ),
+                _make_tcl_result(
+                    _load_fixture("sample_report_utilization.txt").replace("Slice", logic_family)
+                ),
                 _make_tcl_result("VMCP_DIAG:errors=0,critical_warnings=0,warnings=0"),
             ]
         )
@@ -354,3 +393,5 @@ class TestPreCommitSummaryNa:
 
         assert "[READY]" in result
         assert "DEGRADED" not in result
+        assert f"`{logic_family} LUTs`" in result
+        assert f"`{logic_family} Registers`" in result

@@ -43,6 +43,8 @@ async def run_monitor_cli(args) -> None:
         await session.start(timeout=5)
         await monitor.sample()
         if args.json:
+            # 一次输出最多等一秒报告；未读完显式保留 loading，不阻塞真实运行。
+            await monitor.wait_for_reports(timeout=1.0)
             print(json.dumps(monitor.snapshot(), ensure_ascii=False, indent=2))
             return
         monitor.start()

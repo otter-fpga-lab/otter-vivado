@@ -6,6 +6,8 @@ Otter Vivado 的插件体验由 **Skill + MCP + 运行面板**组成。Skill 与
 
 这种原地引用就是正式接入方式，不要求客户端原生插件市场，也没有同步器或第二份业务库。
 本仓继续保留 NJ 的 vivado-mcp 作者、Apache-2.0 许可、fork 和上游贡献关系。
+同机安装多个 Vivado 时，按 [版本兼容说明](VERSION_COMPATIBILITY.md) 选择工程所需版本；
+客户端接入本身不要求升级 Vivado。
 
 ## 一次接入四个客户端
 

@@ -401,7 +401,20 @@ def parse_timing_summary(raw_text: str) -> TimingReport:
     """
     summary = _parse_summary_table(raw_text)
     paths = _parse_paths(raw_text)
-    return TimingReport(summary=summary, paths=paths)
+    # 阶段只来自这份报告自身；磁盘上另一个 run 完成不证明当前打开设计已布线。
+    state = re.search(r"^[ \t|]*Design State\s*:\s*([^\r\n|]+)", raw_text, re.MULTILINE)
+    states = {"routed": "post-route", "placed": "post-place", "synthesized": "post-synth"}
+    stage = states.get(state[1].strip().lower(), "unknown") if state else "unknown"
+    detail = f"报告 Design State: {state[1].strip()}" if state else "报告未提供 Design State"
+    warnings = {
+        "post-synth": "当前报告为综合后估算，未经布局布线。",
+        "post-place": "当前报告为布局后估算，尚未完成布线。",
+        "unknown": "报告阶段尚未核实；不以其他 run 的完成状态推断当前设计阶段。",
+    }
+    return TimingReport(
+        summary=summary, paths=paths, source_stage=stage, source_detail=detail,
+        stage_warning=warnings.get(stage, ""),
+    )
 
 
 def format_timing_report(report: TimingReport) -> str:

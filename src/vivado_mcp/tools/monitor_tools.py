@@ -53,6 +53,9 @@ async def get_run_snapshot(
 
     检查 connection/observed_at，不能把旧快照当最新状态。completed 只表示指定
     run 目标完成，不表示时序/资源通过；报告各自保留来源与新鲜度证据。
+    报告独立采样，另查 reports_status、reports_observed_at、reports_error 和
+    reports_source；loading/error/stale 可能保留此前报告，不能因运行状态
+    connected 而当作本轮新报告。
     """
     try:
         snapshot = _monitor(ctx, session_id, run_name, target_step).snapshot()
@@ -61,4 +64,27 @@ async def get_run_snapshot(
                 report.pop("text", None)
         return json.dumps(snapshot, ensure_ascii=False)
     except ValueError as exc:
+        return f"[ERROR] {exc}"
+
+
+@mcp.tool()
+async def close_run_monitor(
+    run_name: str = "impl_1",
+    target_step: str = "route_design",
+    session_id: str = "default",
+    ctx: Context = None,
+) -> str:
+    """关闭匹配面板与采样，释放缓存；不会停止 Vivado、run 或用户 GUI。
+
+    同一 session_id 重连前后匹配的旧观察器也会释放。找不到时直接返回
+    not_found，不创建观察器或连接；其他 run/目标的面板不受影响。
+    """
+    try:
+        registry = ctx.request_context.lifespan_context.run_monitors
+        count = await registry.release(session_id, run_name, target_step)
+        return json.dumps({
+            "status": "closed" if count else "not_found", "closed": count,
+            "session_id": session_id, "run_name": run_name, "target_step": target_step,
+        }, ensure_ascii=False)
+    except (ValueError, OSError) as exc:
         return f"[ERROR] {exc}"

@@ -182,13 +182,21 @@ SAMPLE_ULTRASCALE = """
 """
 
 
+def test_clb_names_preserve_report_values():
+    """CLB 名称使用原报告数字，不根据 Vivado 版本猜资源或改名。"""
+    report = parse_utilization(SAMPLE_ULTRASCALE)
+    assert report.get("CLB LUTs").used == 1440
+    assert report.get("CLB Registers").available == 460800
+    assert report.get("CLB LUTs").percent == pytest.approx(0.63)
+    assert report.parse_error == ""
+
+
 def test_known_header_zero_rows_sets_parse_error():
-    """表头可识别但零行命中(UltraScale 'CLB LUTs' 命名)→ 置 parse_error,
-    文案提示可能是非 7 系列命名并建议 run_tcl 看原文,而非误导性"请确认已跑过综合"。"""
-    r = parse_utilization(SAMPLE_ULTRASCALE)
+    """未知行名仍明确降级，不误导为没有运行综合。"""
+    r = parse_utilization(SAMPLE_ULTRASCALE.replace("CLB", "Unrecognized"))
     assert r.resources == []
     assert r.parse_error != ""
-    assert "非 7 系列" in r.parse_error
+    assert "没有任何行名" in r.parse_error
     assert "run_tcl" in r.parse_error
     text = format_utilization_report(r)
     assert "[DEGRADED]" in text
@@ -205,10 +213,29 @@ def test_two_parse_error_messages_are_distinct():
         "+------------+------+\n"
     )
     r_header = parse_utilization(weird_header)
-    r_rows = parse_utilization(SAMPLE_ULTRASCALE)
+    r_rows = parse_utilization(SAMPLE_ULTRASCALE.replace("CLB", "Unrecognized"))
     assert "格式不识别" in r_header.parse_error
     assert "非 7 系列" not in r_header.parse_error
     assert "格式不识别" not in r_rows.parse_error
+
+
+def test_fractional_bram_tile_is_not_silently_dropped():
+    """合成格式样本：BRAM 18Kb 使用半个 Tile；不代表特定版本 EDA 实测。"""
+    raw = SAMPLE.replace("| Block RAM Tile |    2 |", "| Block RAM Tile |  0.5 |")
+    report = parse_utilization(raw)
+    assert report.get("Block RAM Tile").used == 0.5
+    assert "0.5 / 50" in format_utilization_report(report)
+    assert report.to_dict()["parse_error"] == ""
+
+
+@pytest.mark.parametrize("value", ["NaN", "inf", "-2", "unavailable"])
+def test_invalid_core_values_keep_partial_data_and_explain_degradation(value):
+    raw = SAMPLE.replace("| Block RAM Tile |    2 |", f"| Block RAM Tile | {value} |")
+    report = parse_utilization(raw)
+    assert report.get("Slice LUTs") is not None
+    assert report.get("Block RAM Tile") is None
+    assert "Block RAM Tile" in report.to_dict()["parse_error"]
+    assert "[DEGRADED]" in format_utilization_report(report)
 
 
 # -- Block RAM 明细(detail=True,C2) ------------------------------------------ #

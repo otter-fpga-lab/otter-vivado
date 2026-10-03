@@ -145,6 +145,9 @@ def test_truncated_report_does_not_reinterpret_utf8_as_ansi(tmp_path):
 def test_tcl_read_only_query_bounds_log_and_handles_real_file_errors(tmp_path):
     log = tmp_path / "runme.log"
     log.write_text("old line\n" * 10000 + "Starting Routing\nWARNING: sample\n", encoding="utf-8")
+    begin = tmp_path / ".vivado.begin.rst"
+    begin.touch()
+    os.utime(begin, (123, 123))
     # Tcl mock 仅替代 Vivado get_*；真实执行模板/文件 I/O/协议标记。
     stub = """
 proc get_runs {args} {return impl_1}
@@ -171,6 +174,7 @@ proc get_property {prop object} {
     assert value["total_lines"] < 10000
     assert len(value["tail"]) == 2
     assert value["progress_percent"] == 37.5
+    assert value["run_started"] == 123
     assert len(result.stdout) < 4096
 
 

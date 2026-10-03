@@ -10,6 +10,7 @@ import asyncio
 import codecs
 import copy
 import re
+import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -34,7 +35,8 @@ def parse_snapshot(raw: str, run_name: str, target_step: str) -> dict:
     rp = parse_run_progress(raw, run_name)
     if rp.error or not rp.found or "VMCP_RUN_DONE" not in raw.splitlines():
         raise ValueError(rp.error or "缺少完整 run 状态标记")
-    meta = dict(re.findall(r"^VMCP_RUN:(\w+)=(.*)$", raw, re.MULTILINE))
+    meta = {key: value.strip() for key, value in
+            re.findall(r"^VMCP_RUN:(\w+)=(.*)$", raw, re.MULTILINE)}
     if not rp.status:
         raise ValueError("缺少 run STATUS")
     tail = [asdict(line) for line in rp.tail]
@@ -47,6 +49,10 @@ def parse_snapshot(raw: str, run_name: str, target_step: str) -> dict:
             counts["critical_warnings"] += 1
         elif text.startswith("WARNING:"):
             counts["warnings"] += 1
+    try:
+        run_started = int(meta["run_started"])
+    except (KeyError, ValueError):
+        run_started = None
     return {
         **asdict(rp),
         "state": run_state(rp.status, target_step),
@@ -60,7 +66,8 @@ def parse_snapshot(raw: str, run_name: str, target_step: str) -> dict:
         "top": meta.get("top", ""),
         "elapsed": meta.get("elapsed", ""),
         "needs_refresh": meta.get("needs_refresh", "unknown"),
-        "log_offset": int(meta.get("log_offset", "0")),
+        "run_started": run_started,
+        "log_offset": rp.log_offset,
         "diagnostics": {**counts, "scope": "仅当前日志尾部；0 不代表全程无警告/错误"},
     }
 
@@ -77,10 +84,7 @@ def read_reports(run: dict) -> list[dict]:
     except OSError:
         started = None
     reports = []
-    try:
-        paths = sorted(directory.glob("*.rpt"))[:_REPORT_LIMIT]
-    except OSError:
-        return []
+    paths = sorted(directory.glob("*.rpt"))[:_REPORT_LIMIT]
     for path in paths:
         if path.is_symlink() or not path.is_file():
             continue
@@ -99,8 +103,9 @@ def read_reports(run: dict) -> list[dict]:
                 # 与会话输出共用 Windows 系统 ANSI 回退。
                 text = decode_vivado_output(chunk)
             text = text.lstrip("\ufeff")
-        except OSError:
-            continue
+        except OSError as exc:
+            # 报告读取失败单独交给观察器呈现，不能冒充成功的空报告列表。
+            raise OSError(f"无法读取报告 {path}: {exc}") from exc
         name = path.name.lower()
         stage = "unknown"
         for marker, label in (("routed", "post-route"), ("placed", "post-place"),
@@ -135,6 +140,33 @@ def read_reports(run: dict) -> list[dict]:
     return reports
 
 
+async def _read_reports_background(run: dict) -> list[dict]:
+    """磁盘操作用单个 daemon 线程，慢文件系统不阻止观察器/CLI 退出。"""
+    loop = asyncio.get_running_loop()
+    result = loop.create_future()
+
+    def publish(reports, error):
+        if result.done():
+            return
+        if error is not None:
+            result.set_exception(error)
+        else:
+            result.set_result(reports)
+
+    def read():
+        try:
+            reports, error = read_reports(run), None
+        except Exception as exc:
+            reports, error = None, exc
+        try:
+            loop.call_soon_threadsafe(publish, reports, error)
+        except RuntimeError:
+            pass  # CLI 已退出，丢弃迟到的只读结果。
+
+    threading.Thread(target=read, name="vivado-report-reader", daemon=True).start()
+    return await result
+
+
 class RunMonitor:
     """每个选定 session/run/目标一个观察器，不拥有底层 Vivado 生命周期。"""
 
@@ -148,6 +180,7 @@ class RunMonitor:
         self.target_step = target_step
         self.interval = interval
         self._task = None
+        self._report_task = None
         self._http = None
         self._closed = False
         self._value = {
@@ -155,6 +188,8 @@ class RunMonitor:
             "run_name": run_name, "target_step": target_step, "connection": "waiting",
             "observed_at": None, "last_attempt_at": None, "error": "", "run": {},
             "reports": [], "quality": {"timing": "unknown", "resources": "unknown"},
+            "reports_status": "waiting", "reports_observed_at": None,
+            "reports_error": "", "reports_source": {},
         }
 
     def snapshot(self) -> dict:
@@ -162,7 +197,7 @@ class RunMonitor:
         return copy.deepcopy(self._value)
 
     def start(self) -> None:
-        if self._task is None:
+        if not self._closed and (self._task is None or self._task.done()):
             self._task = asyncio.create_task(self._loop())
 
     def open_view(self) -> str:
@@ -174,6 +209,8 @@ class RunMonitor:
 
     async def sample(self) -> None:
         """忙时不排队查询；超时保留底层 session 的在途响应所有权。"""
+        if self._closed:
+            return
         now = time.time()
         current = {**self._value, "last_attempt_at": now}
         if not self.session.is_alive:
@@ -191,20 +228,88 @@ class RunMonitor:
                 raise ValueError(result.output)
             run = parse_snapshot(result.output, self.run_name, self.target_step)
             observed_at = time.time()
-            reports = await asyncio.to_thread(read_reports, run)
             self._value = {
-                **current, "connection": "connected", "error": "", "run": run,
-                "observed_at": observed_at, "reports": reports,
+                **self._value, "last_attempt_at": now,
+                "connection": "connected", "error": "", "run": run,
+                "observed_at": observed_at,
             }
+            self._schedule_reports(run)
         except Exception as exc:
             connection = "error" if self.session.is_alive else "disconnected"
             if isinstance(exc, asyncio.TimeoutError):
                 connection = "busy"
-            self._value = {**current, "connection": connection, "error": str(exc)}
+            self._value = {
+                **self._value, "last_attempt_at": now,
+                "connection": connection, "error": str(exc),
+            }
+
+    def _report_source(self, run: dict) -> dict:
+        """来源标记仅用于阻止跨运行混用，文件归属仍不是签核证据。"""
+        return {
+            "run_name": self.run_name,
+            **{key: run.get(key) for key in (
+                "directory", "project", "project_file", "top", "version", "run_started",
+            )},
+        }
+
+    def _schedule_reports(self, run: dict) -> None:
+        """每个观察器至多一项在途报告读取，慢磁盘不拖延 STATUS 采样。"""
+        source = self._report_source(run)
+        retained_source = self._value["reports_source"]
+        changed = bool(retained_source) and retained_source != source
+        if changed:
+            self._value = {**self._value, "reports_status": "stale"}
+        if self._report_task is not None and not self._report_task.done():
+            return
+        self._value = {
+            **self._value, "reports_status": "stale" if changed else "loading",
+            "reports_error": "",
+        }
+        self._report_task = asyncio.create_task(self._refresh_reports(run, source))
+
+    async def _refresh_reports(self, run: dict, source: dict) -> None:
+        """独立发布报告结果；旧来源迟到结果不覆盖当前运行的报告。"""
+        try:
+            reports = await _read_reports_background(run)
+            if self._closed:
+                return
+            current_run = self._value["run"]
+            if self._report_source(current_run) != source:
+                self._value = {
+                    **self._value, "reports_status": "stale",
+                    "reports_error": "读取期间运行来源已改变，等待当前来源的报告采样。",
+                }
+                return
+            if str(current_run.get("needs_refresh", "")).lower() in ("1", "true", "yes"):
+                for report in reports:
+                    report["freshness"] = "stale"
+                    report["reason"] = "Vivado 标记 NEEDS_REFRESH，不能作为当前结果"
+            self._value = {
+                **self._value, "reports": reports, "reports_source": source,
+                "reports_status": "ready", "reports_observed_at": time.time(),
+                "reports_error": "",
+            }
+        except Exception as exc:
+            if not self._closed:
+                changed = self._report_source(self._value["run"]) != source
+                self._value = {
+                    **self._value, "reports_status": "stale" if changed else "error",
+                    "reports_error": str(exc),
+                }
+
+    async def wait_for_reports(self, timeout: float = 1.0) -> None:
+        """单次 CLI 最多等待一秒报告；超时只结束等待，不取消 reader。"""
+        if self._report_task is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(self._report_task), timeout=timeout)
+            except asyncio.TimeoutError:
+                pass
 
     async def _loop(self) -> None:
         while not self._closed:
             await self.sample()
+            if self._value["connection"] == "disconnected":
+                break
             await asyncio.sleep(self.interval)
 
     async def close(self) -> None:
@@ -214,6 +319,11 @@ class RunMonitor:
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
+        if self._report_task:
+            # 只释放异步等待者；daemon 线程中已开始的只读文件操作自行结束。
+            self._report_task.cancel()
+            await asyncio.gather(self._report_task, return_exceptions=True)
+            self._report_task = None
         if self._http:
             await asyncio.to_thread(self._http.close)
             self._http = None
@@ -239,6 +349,17 @@ class MonitorRegistry:
             if (session.session_id, name, target) == (session_id, run_name, target_step):
                 return monitor
         return None
+
+    async def release(self, session_id: str, run_name: str, target_step: str) -> int:
+        """释放匹配的现有观察器（含重连前旧会话）；不查询或创建会话。"""
+        validate_identifier(run_name, "run_name")
+        if target_step not in TARGET_STEPS:
+            raise ValueError(f"target_step 必须为 {TARGET_STEPS}")
+        keys = [key for key in self._monitors
+                if (key[0].session_id, key[1], key[2]) == (session_id, run_name, target_step)]
+        monitors = [self._monitors.pop(key) for key in keys]
+        await asyncio.gather(*(monitor.close() for monitor in monitors))
+        return len(monitors)
 
     async def close(self) -> None:
         await asyncio.gather(*(monitor.close() for monitor in self._monitors.values()))

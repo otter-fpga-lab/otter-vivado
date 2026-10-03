@@ -16,9 +16,7 @@ from vivado_mcp.analysis.project_parser import format_project_info, parse_projec
 from vivado_mcp.analysis.run_progress_parser import format_run_progress, parse_run_progress
 from vivado_mcp.analysis.suggestion_engine import format_suggestion, suggest_next
 from vivado_mcp.analysis.timing_parser import (
-    derive_stage_warning,
     format_timing_report,
-    parse_design_stage,
     parse_timing_summary,
     parse_violating_paths,
 )
@@ -28,7 +26,6 @@ from vivado_mcp.server import _NO_SESSION, _require_session, mcp
 from vivado_mcp.tcl_scripts import (
     CHECK_PRE_BITSTREAM,
     COUNT_WARNINGS,
-    QUERY_DESIGN_STAGE,
     QUERY_PROJECT_INFO,
     QUERY_RUN_PROGRESS,
     REPORT_VIOLATING_PATHS,
@@ -93,19 +90,7 @@ async def get_timing_report(
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
-    # 第一步:查询当前设计阶段,后面附加到 TimingReport 让用户知道数据来源
-    # Bug 2 修复:区分 post-synth 估算 vs post-route 最终,避免误判
-    stage, synth_status, impl_status = "unknown", "", ""
-    try:
-        stage_result = await session.execute(QUERY_DESIGN_STAGE, timeout=15.0)
-        if not stage_result.is_error:
-            stage, synth_status, impl_status = parse_design_stage(stage_result.output)
-    except Exception as e:
-        # 阶段查询失败不致命,继续跑时序报告,source_stage 保持 "unknown"
-        # 但把具体原因打出来,避免报告里 stage=unknown 让人困惑
-        logger.warning("查询 design stage 失败,stage 降级为 unknown: %s", e)
-
-    # 第二步:跑时序报告
+    # 报告对应当前打开的设计；阶段从同一报告头取得，不混用固定 run 的状态。
     try:
         result = await session.execute(
             "report_timing_summary -return_string", timeout=120.0
@@ -118,12 +103,6 @@ async def get_timing_report(
                 "请先运行 run_synthesis 或 run_implementation。"
             )
         timing_report = parse_timing_summary(result.output)
-
-        # 注入阶段信息
-        source_detail, stage_warning = derive_stage_warning(stage, synth_status, impl_status)
-        timing_report.source_stage = stage
-        timing_report.source_detail = source_detail
-        timing_report.stage_warning = stage_warning
 
         # 时序违例 → 二次查询违例路径详情 + 模式嗅探 + 修复建议
         # 健康工程跳过不跑,省 10-30s。异常降级:不阻断主报告。
@@ -201,6 +180,7 @@ async def check_bitstream_readiness(
     timing_met = None
     timing_line = ""
     timing_err: str = ""
+    timing_stage = "unknown"
     # True = 时序子查询失败(rc 错误/格式不识别/查询异常),判定本身不可信;
     # 与 NA(数据本来就不存在,WARN 语义成立)分流,前者 verdict 附 [DEGRADED]
     timing_degraded = False
@@ -210,12 +190,17 @@ async def check_bitstream_readiness(
         )
         if not timing_raw.is_error:
             tr = parse_timing_summary(timing_raw.output)
+            timing_stage = tr.source_stage
             if tr.summary.parse_status == "ok":
-                timing_met = tr.summary.timing_met
                 timing_line = (
                     f"  WNS = {tr.summary.wns:+.3f} ns  WHS = {tr.summary.whs:+.3f} ns  "
                     f"失败端点 = {tr.summary.failing_endpoints}/{tr.summary.total_endpoints}"
                 )
+                if timing_stage == "post-route":
+                    timing_met = tr.summary.timing_met
+                else:
+                    timing_err = f"当前报告阶段为 {timing_stage}，未确认布线后时序"
+                    timing_degraded = True
             else:
                 # NA / 格式不识别:timing_met 保持 None 走"未能读取"提示,
                 # 绝不能把全零占位摘要当 PASS/FAIL 参与判定
@@ -247,9 +232,9 @@ async def check_bitstream_readiness(
     warnings_list: list[str] = []
 
     if has_impl_error:
-        blockers.append(f"impl_1 执行错误: {status}")
+        blockers.append(f"{impl_run} 执行错误: {status}")
     elif not is_routed:
-        blockers.append(f"impl_1 未完成布线(当前状态: {status or '未启动'})")
+        blockers.append(f"{impl_run} 未完成布线(当前状态: {status or '未启动'})")
 
     if timing_met is False:
         blockers.append("时序违例(WNS/WHS 为负)")
@@ -263,14 +248,16 @@ async def check_bitstream_readiness(
             blockers.append(f"CRITICAL WARNING 数量过多: {cw_count} 条")
         else:
             warnings_list.append(f"存在 {cw_count} 条 CRITICAL WARNING,建议排查")
+    elif cw_count < 0:
+        warnings_list.append("CRITICAL WARNING 计数不可用")
 
     # 4. 构造报告
     if blockers:
         verdict = "BLOCK (阻塞,不建议生成比特流)"
     elif warnings_list:
-        verdict = "WARN (可生成,但有风险)"
+        verdict = "WARN (存在待核对的检查项)"
     else:
-        verdict = "READY (可以安全生成比特流)"
+        verdict = "READY (本次检查通过)"
 
     # 时序子查询失败 ≠ 数据不存在:判定不可信,verdict 行附 [DEGRADED] 标记
     # (BLOCK 由实现状态等可信信号触发,结论已足够强,不叠加标记)
@@ -280,6 +267,7 @@ async def check_bitstream_readiness(
     out: list[str] = [f"=== 烧板前检查: {verdict} ==="]
     out.append(f"实现状态: {status or 'UNKNOWN'}")
     out.append(f"CRITICAL WARNING: {cw_count if cw_count >= 0 else '无法读取'}")
+    out.append(f"当前打开设计的报告阶段: {timing_stage}")
     if timing_line:
         out.append("时序摘要:")
         out.append(timing_line)
@@ -574,6 +562,9 @@ async def get_pre_commit_summary(
                 sample_failures.append(f"时序解析降级({reason})")
                 logger.warning("pre_commit 时序摘要解析降级: %s", reason)
                 timing = None
+            elif timing.source_stage != "post-route":
+                # 保留有来源的局部数值，但不能用其他 run 完成把它升级为 READY。
+                sample_failures.append(f"时序报告阶段未确认布线后({timing.source_stage})")
         else:
             sample_failures.append(f"时序 rc={tr.return_code}")
     except Exception as e:
@@ -648,15 +639,16 @@ async def get_pre_commit_summary(
             f"- 时序 {met}: WNS `{s.wns:+.3f} ns`, WHS `{s.whs:+.3f} ns`, "
             f"失败端点 `{s.failing_endpoints}/{s.total_endpoints}`"
         )
+        out.append(f"- 当前设计报告阶段: `{timing.source_stage}`；{timing.source_detail}")
     if util and util.resources:
         # 挑最关心的 5 种
         core = {r.name: r for r in util.resources}
         nice = []
-        for name in ("Slice LUTs", "Slice Registers", "Block RAM Tile", "DSPs", "Bonded IOB"):
-            for full_name, row in core.items():
-                if name.lower() in full_name.lower():
-                    nice.append(f"`{full_name}` {row.used}/{row.available} ({row.percent:.1f}%)")
-                    break
+        for names in (("Slice LUTs", "CLB LUTs"), ("Slice Registers", "CLB Registers"),
+                      ("Block RAM Tile",), ("DSPs",), ("Bonded IOB",)):
+            row = next((core[name] for name in names if name in core), None)
+            if row is not None:
+                nice.append(f"`{row.name}` {row.used}/{row.available} ({row.percent:.1f}%)")
         if nice:
             out.append("- 资源: " + "; ".join(nice))
     if errs >= 0 or cws >= 0:

@@ -58,7 +58,9 @@ POLL_RUN_STATUS = """\
 set __r [get_runs {run_name}]
 set __s [get_property STATUS $__r]
 set __p [get_property PROGRESS $__r]
-set __e [get_property STATS.ELAPSED $__r]
+set __e ""
+# 部分版本/run 尚无耗时属性；缺少辅助信息不应终止真实状态轮询。
+catch {{set __e [get_property STATS.ELAPSED $__r]}}
 puts "VMCP_POLL|$__s|$__p|$__e"
 """
 
@@ -78,7 +80,7 @@ if {{$__r eq ""}} {{
          || [string match -nocase "*Queued*" $__s]}} {{
         puts "VMCP_RUN_LAUNCH|busy|$__s"
     }} else {{
-        reset_run {run_name}
+        reset_runs {run_name}
         launch_runs {run_name} -jobs {jobs}
         puts "VMCP_RUN_LAUNCH|started|[get_property STATUS $__r]"
     }}
@@ -385,6 +387,12 @@ if {{$__run eq ""}} {{
     puts "VMCP_RUN:status=$__status"
     puts "VMCP_RUN:progress=$__progress"
     puts "VMCP_RUN:dir=$__dir"
+    catch {{
+        set __begin [file join $__dir ".vivado.begin.rst"]
+        if {{$__dir ne "" && [file isfile $__begin] && [file type $__begin] ne "link"}} {{
+            puts "VMCP_RUN:run_started=[file mtime $__begin]"
+        }}
+    }}
     puts "VMCP_RUN:version=[version -short]"
     # 工程元数据为可选信息；旧版本/自定义 fileset 不应令真实 run 状态失效。
     catch {{

@@ -61,6 +61,8 @@ def main() -> None:
 
     # version
     sub.add_parser("version", help="显示版本号并退出。")
+    p_versions = sub.add_parser("versions", help="只读列出本机 Vivado 安装与默认选择，不启动 EDA。")
+    p_versions.add_argument("--json", action="store_true", help="输出安装路径和版本推断的 JSON。")
 
     # doctor
     p_doctor = sub.add_parser(
@@ -151,6 +153,23 @@ def main() -> None:
 
     if args.cmd == "version":
         print(f"vivado-mcp {__version__}")
+        return
+
+    if args.cmd == "versions":
+        import json
+
+        from vivado_mcp.config import list_vivado_installations
+
+        report = list_vivado_installations()
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            print(report["note"])
+            for item in report["installations"]:
+                selected = " [默认选择]" if item["path"] == report["selected_path"] else ""
+                print(f"{item['version_from_path']:9} {item['path']}{selected}")
+            if report["selection_error"]:
+                print(f"[未选定] {report['selection_error']}")
         return
 
     if args.cmd == "doctor":

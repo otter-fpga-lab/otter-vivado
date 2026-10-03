@@ -186,7 +186,9 @@ async def start_session(
               session_id 也会 probe/attach 到 9999 的同一个 GUI(不会自动多开)，要独立
               实例就传 ``port=0`` 或显式不同端口。
             - ``attach`` 模式：要连接的现有 GUI 的显式端口(默认 9999)。
-        vivado_path: 可选，自定义 Vivado 可执行文件路径。留空则自动检测。
+        vivado_path: 可选，明确选择 Vivado 可执行文件；失效即报错，不换版本。
+            gui 复用已有端口前核对 version -short，不符时保留原 GUI，改用 port=0
+            新开所选版本，或明确 mode='attach' 接受端口当前实例。留空时沿用默认发现。
         timeout: 启动超时秒数，GUI 模式建议 120+。默认 120。
     """
     manager = _get_manager(ctx)
@@ -203,9 +205,14 @@ async def start_session(
         status = session.status_dict()
         ascii_warn = _check_ascii_paths(status.get("vivado_path") or vivado_path)
         curdir_warn = _check_win_curdir_policy()
+        path_label = (
+            "启动候选路径（不代表已连接 GUI 的实际版本）"
+            if status.get("vivado_path_is_launch_candidate") else "Vivado"
+        )
         return (
             f"会话 '{session_id}' 已就绪（mode={status['mode']}）。\n"
-            f"Vivado: {status['vivado_path']}\n"
+            f"{path_label}: {status['vivado_path']}\n"
+            f"已核对运行版本: {status.get('runtime_version', 'unknown')}\n"
             f"状态: {status['state']}\n\n"
             f"--- 启动信息 ---\n{banner}"
             f"{ascii_warn}"

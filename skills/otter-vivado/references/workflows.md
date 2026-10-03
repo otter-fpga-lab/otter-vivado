@@ -51,6 +51,8 @@ GUI 使用已有 `start_session` 的 `gui`/`attach` 模式和 Vivado 工程命�
 
 `get_run_progress` 适合单次状态查询。重复刷新优先使用快照，避免用户界面和模型各自密集查询 Tcl。面板扫描文件数量、大小、日志窗口都有边界；完整规则见仓库 `docs/RUN_MONITOR.md`，摘要里的 0 条错误不代表完整日志无错误。
 
+运行状态与报告各自采样；`reports_status` 为 loading/error/stale 时可能显示旧报告，应同时核对 `reports_observed_at` 和 `reports_source`。慢报告不会阻塞 STATUS 更新。不再需要面板时用 `close_run_monitor` 释放指定 session/run/目标的观察器；它不停止 Vivado 或 run。只关浏览器标签会保留观察器以便再看。
+
 需要重新生成时序或资源报告时，先等会话空闲，核对当前打开的 design。`get_timing_report`、`get_utilization_report` 和 `get_io_report` 针对当前 design；异步构建完成并不自动证明当前 design 就是该 run。确认目标后显式打开相应已完成 run，再调用报告工具。面板仅浏览已有报告，不隐式执行 `open_run` 或 `report_*`。
 
 报告结论按 [evidence-and-docs.md](evidence-and-docs.md) 留证据。`completed` 表示请求阶段完成，时序、资源、约束和功能是否满足需求分别验证。

@@ -1,16 +1,16 @@
 """Vivado 路径检测与全局配置。
 
 检测优先级：
-1. VIVADO_PATH 环境变量
+1. 显式路径 / VIVADO_PATH 环境变量（无效即报错，不偷偷切换版本）
 2. 系统 PATH 中的 vivado / vivado.bat
-3. 平台相关的默认安装路径（取最新版本）
+3. 平台相关的默认安装路径（所有默认目录一起比较版本）
 """
 
 import glob
 import os
+import re
 import shutil
 import sys
-from pathlib import Path
 
 
 def _default_install_globs() -> list[str]:
@@ -35,6 +35,34 @@ def normalize_path(path: str) -> str:
     return path.replace("\\", "/")
 
 
+def _selected_path(path: str, source: str) -> str:
+    """明确的版本选择不能因拼写错误而悄悄退回其他安装。"""
+    expanded = os.path.expanduser(path)
+    if not os.path.isfile(expanded):
+        raise FileNotFoundError(
+            f"{source} 指定的 Vivado 文件不存在：{path}。"
+            "不会自动改用其他版本；请修正路径，或清除该选择后重新检测。"
+        )
+    return normalize_path(os.path.abspath(expanded))
+
+
+def _default_candidates() -> list[str]:
+    """全局排序默认安装，避免旧版 D 盘安装压过新版 C 盘安装。"""
+    paths = {
+        normalize_path(os.path.abspath(path))
+        for pattern in _default_install_globs()
+        for path in glob.glob(pattern)
+        if os.path.isfile(path)
+    }
+
+    def order(path):
+        version = get_vivado_version(path)
+        numbers = tuple(map(int, version.split("."))) if version != "unknown" else ()
+        return numbers, path
+
+    return sorted(paths, key=order, reverse=True)
+
+
 def find_vivado(vivado_path: str | None = None) -> str:
     """查找 Vivado 可执行文件路径。
 
@@ -48,13 +76,13 @@ def find_vivado(vivado_path: str | None = None) -> str:
         FileNotFoundError: 未找到任何 Vivado 安装。
     """
     # 1. 显式传入
-    if vivado_path and os.path.isfile(vivado_path):
-        return normalize_path(vivado_path)
+    if vivado_path:
+        return _selected_path(vivado_path, "显式路径")
 
     # 2. 环境变量 VIVADO_PATH
     env_path = os.environ.get("VIVADO_PATH")
-    if env_path and os.path.isfile(env_path):
-        return normalize_path(env_path)
+    if env_path:
+        return _selected_path(env_path, "VIVADO_PATH")
 
     # 3. 系统 PATH
     which = shutil.which("vivado") or shutil.which("vivado.bat")
@@ -62,10 +90,9 @@ def find_vivado(vivado_path: str | None = None) -> str:
         return normalize_path(which)
 
     # 4. 平台相关的默认安装目录（取版本号最大的）
-    for pattern in _default_install_globs():
-        matches = sorted(glob.glob(pattern), reverse=True)
-        if matches:
-            return normalize_path(matches[0])
+    matches = _default_candidates()
+    if matches:
+        return matches[0]
 
     raise FileNotFoundError(
         "未找到 Vivado 安装。请设置 VIVADO_PATH 环境变量，"
@@ -74,12 +101,49 @@ def find_vivado(vivado_path: str | None = None) -> str:
 
 
 def get_vivado_version(vivado_path: str) -> str:
-    """从路径中提取 Vivado 版本号（如 '2019.1'）。"""
-    parts = Path(vivado_path).parts
+    """从路径推断版本号，不执行 Vivado，也不构成实际版本验证。"""
+    parts = normalize_path(vivado_path).split("/")
     for i, part in enumerate(parts):
         if part.lower() == "vivado" and i + 1 < len(parts):
             candidate = parts[i + 1]
-            # 版本号格式: 20xx.x
-            if candidate[:2] == "20" and "." in candidate:
+            if re.fullmatch(r"20\d{2}\.\d+(?:\.\d+)?", candidate):
                 return candidate
     return "unknown"
+
+
+def list_vivado_installations() -> dict:
+    """只读列出已配置和常见安装路径；不启动 EDA，不扫描全盘。"""
+    found: dict[str, dict] = {}
+
+    def add(path: str | None, source: str) -> None:
+        if not path:
+            return
+        path = os.path.expanduser(path)
+        if not os.path.isfile(path):
+            return
+        path = normalize_path(os.path.abspath(path))
+        key = os.path.normcase(path)
+        item = found.setdefault(key, {
+            "path": path, "version_from_path": get_vivado_version(path), "sources": [],
+        })
+        if source not in item["sources"]:
+            item["sources"].append(source)
+
+    add(os.environ.get("VIVADO_PATH"), "VIVADO_PATH")
+    for folder in os.environ.get("PATH", "").split(os.pathsep):
+        if folder:
+            add(shutil.which("vivado", path=folder), "PATH")
+            add(shutil.which("vivado.bat", path=folder), "PATH")
+    for path in _default_candidates():
+        add(path, "default_directory")
+    try:
+        selected, error = find_vivado(), ""
+    except FileNotFoundError as exc:
+        selected, error = None, str(exc)
+    return {
+        "selected_path": selected,
+        "selection_error": error,
+        "installations": list(found.values()),
+        "version_evidence": "installation_path_only",
+        "note": "仅检查本地文件和路径版本；未启动 Vivado，未核对已有 GUI 或许可证。",
+    }
