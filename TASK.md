@@ -39,6 +39,9 @@ AI 可以利用库内控件与操作接口，为消费者工程生成专用调�
 Tcl 接口依据是官方 UG835/UG912 2022.2；具体链接在模板注释与使用指南。目标版本的实际
 属性、动态状态刷新、VIO 读回与 GUI 暂存交互仍需现场确认，文档依据不是板卡 PASS。
 
+首批实现已进入 `main`：[`328185d`](https://github.com/otter-fpga-lab/otter-vivado/commit/328185dfdf4e61fc7280e586b14ba3f2423c6206)。
+通过现有 GitHub 连接写入，20 个 blob 和完整 tree 与本地验证版本逐项一致；后续取最新 main。
+
 ### 本批验证
 
 环境：Linux、Python 3.12.14、MCP SDK 2.3.0、真实 Tcl 解释器与 Chromium。未安装或
