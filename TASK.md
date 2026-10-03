@@ -3,8 +3,60 @@
 Status: OPEN
 Target: otter-fpga-lab/otter-vivado
 Basis: 用户于 2026-10-03 确认板上调试、可视化和产品边界，并授权逐步实施；从 main 3750590 接续
-Next: 在本机核对首批 Hardware Manager 路径；继续自动插核/工程准备，再推进采样证据与本地人机配合实验
-Result: 首批共享调试服务、MCP/CLI、本地面板和消费者控件描述已实现；商业 Vivado/Windows/板卡未测
+Next: 核对真实工程中的 IP 配置、约束加载与连接；完成调试构建/bit-ltx 配对，再推进采样证据与本地人机配合实验
+Result: 已有共享调试服务、面板与消费者控件描述；本批补调试工程准备计划、预检和应用，MCP 共 40 工具；商业 Vivado/Windows/板卡未测
+
+## 当前工作：调试工程准备（2026-10-03）
+
+从 main `acbe7ffcac4e89eed6111acb8d61d6e3b91fe874` 接续。用户确认继续逐步实施，并询问
+专用界面的视觉职责：配色、布局和风格交给以后生成页面的智能体与消费者项目；本库
+提供可靠接口、控件绑定语义、状态反馈和基本可用性。当前 JSON 仍只支持滑杆/开关，
+不能把未来任意布局、曲线与实验功能说成已经可用。
+
+- 新增 `plan_debug_design / inspect_debug_design / prepare_debug_design` 三个 MCP 工具，
+  加上原有入口共 40 个；`debug-prepare --spec` 提供独立 CLI。默认离线生成，
+  `--output-dir` 只创建消费者新文件；`--apply` 连接已有 GUI，退出不关闭 Vivado。
+- `ila_ip/vio_ip` 生成结构化配置与 RTL 例化模板，按实际已安装 IP 定义创建；创建后
+  检查 CONFIG 属性并读回，再生成 IP 输出产物。预检不承诺 part/配置已兼容，created
+  不表示 RTL 已集成。VIO 宽初始值以十六进制字符串保持精度。
+- `ila_netlist` 生成实现阶段的 unmanaged Tcl 插核约束；所有 net 与同名核在首次
+  变更前检查，每个 probe 从 bit 0 明确连接。`mark_debug` 单独生成综合保留约束，
+  不能恢复已经优化掉的信号。ASCII 文件用 UTF-8 十六进制还原特殊 net 名称。
+- 在线约束准备仅在当前工程 `otter_debug` 创建并注册专用文件，按目标 run 的
+  CONSTRSET 设置 USED_IN 与 LATE，返回所有共用该约束集的 run。不会执行生成约束、
+  打开其它 design 或启动构建；constraints_added 不表示插核或连接已验证。
+- 应用重新核对预检返回的 name/directory/part，拒绝工程切换、同名文件/IP、活动 run
+  与符号链接目标。部分失败保留现场；传输或回执未知时不自动重放、不报告回滚。
+- Skill 与 [工程准备指南](docs/DEBUG_DESIGN.md) 说明分步操作、消费者文件归属、RTL
+  职责和后续构建验证。没有改其它 Otter 产品或原生运行观察器。
+
+依据：官方 UG835/UG912/UG903 2022.2 与 PG159 VIO；特别使用约束集中的 unmanaged
+`.tcl` 承载检查，不把完整 Tcl 控制流写成普通 XDC。未取得 PG172 正文，不声称已依据它
+认证所有 ILA 参数；本地描述范围仍由实际 IP 属性配置和真实 run 最终验证。独立评审
+发现并修复了规范化路径后才检查链接导致的目录逃逸，并加入已有/悬空链接回归。
+
+验证环境 Linux / Python 3.12.14；真实 Tcl 解释器内的 Vivado 对象为测试桩。执行：
+
+```bash
+.venv/bin/pytest tests/test_debug_design.py tests/test_debug_ip.py \
+  tests/test_debug_prepare_cli.py tests/test_debug_backend.py tests/test_debug_service.py \
+  tests/test_debug_http.py tests/test_debug_cli.py tests/test_prompts.py \
+  tests/test_tcl_utils.py tests/test_session.py tests/test_session_encoding.py \
+  tests/test_probe_then_attach.py -q -rs
+.venv/bin/pytest tests/test_debug_design_tools.py -q
+.venv/bin/ruff check src/ tests/
+git diff --check
+uv build --wheel --out-dir /tmp/otter-vivado-design-wheel
+```
+
+主批 **459 passed / 8 skipped**；独立真实 MCP 注册/调用 **12 passed**，核对 40 工具。
+跳过均需 Windows 或 CP936；未将其记为通过。覆盖特殊名称/位序、缺失/歧义 net 在
+变更前失败、工程切换、文件冲突、共享约束集、部分应用、协议失败和既有调试/会话回归。
+CLI 实际导出三份产物并拒绝重复覆盖；Ruff、diff、本地文档链接、wheel 新模块通过。
+实现与后续交接记录随本轮 main 提交；没有商业 Vivado、Windows 或板卡实测。
+
+接下来优先闭合真实连接、构建、bit/ltx 配对；再做采样导出/波形与分析、本地倒计时/
+动作提示，以及更多项目控件。业务参数协议、CDC 和 ISP 算法继续由消费者 RTL 设计验证。
 
 ## 当前工作：ILA/VIO 首批（2026-10-03）
 

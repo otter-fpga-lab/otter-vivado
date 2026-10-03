@@ -1,0 +1,12 @@
+{
+  "kind": "vio_ip",
+  "name": "vio_isp",
+  "clock": "pixel_clk",
+  "inputs": [
+    {"name": "frame_count", "width": 16}
+  ],
+  "outputs": [
+    {"name": "gain", "width": 12, "initial": 256},
+    {"name": "bypass", "width": 1, "initial": 0}
+  ]
+}

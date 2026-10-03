@@ -1104,3 +1104,264 @@ if {[llength $__data] != 1} { error "Upload did not return exactly one ILA data 
 apply $__emit upload [list $__core_name [get_property NAME [lindex $__data 0]] \
     [apply $__get $__core STATUS.CORE_STATUS]]
 """
+
+# 生成文件由 implementation/synthesis 加载；错误必须中止该 run，而非伪装成成功。
+DESIGN_RESOLVE_NETS = r"""
+set __resolved [list]
+foreach __wanted $__names __pattern $__patterns {
+    set __matches [list]
+    foreach __net [get_nets -hierarchical -regexp $__pattern] {
+        if {[get_property NAME $__net] eq $__wanted} { lappend __matches $__net }
+    }
+    if {[llength $__matches] != 1} {
+        error "Otter debug requires exactly one net: $__wanted"
+    }
+    lappend __resolved [lindex $__matches 0]
+}
+"""
+
+DESIGN_CREATE_ILA = r"""
+foreach __existing [get_debug_cores -quiet] {
+    if {[get_property NAME $__existing] eq $__name} {
+        error "Otter debug core already exists: $__name"
+    }
+}
+set __port_by_name {{__core __suffix} {
+    set __matches [list]
+    foreach __candidate [get_debug_ports -of_objects $__core] {
+        if {[string equal -nocase [file tail [get_property NAME $__candidate]] $__suffix]} {
+            lappend __matches $__candidate
+        }
+    }
+    if {[llength $__matches] != 1} { error "Ambiguous or absent debug port: $__suffix" }
+    return [lindex $__matches 0]
+}}
+set_property MARK_DEBUG true [lrange $__resolved 1 end]
+set __core [create_debug_core $__name ila]
+set_property C_DATA_DEPTH $__depth $__core
+connect_debug_port [apply $__port_by_name $__core clk] [lindex $__resolved 0]
+set __offset 1
+set __index 0
+foreach __width $__widths {
+    if {$__index > 0} { create_debug_port $__core probe }
+    set __port [apply $__port_by_name $__core probe$__index]
+    set_property PORT_WIDTH $__width $__port
+    for {set __bit 0} {$__bit < $__width} {incr __bit} {
+        connect_debug_port -channel_start_index $__bit $__port [lindex $__resolved $__offset]
+        incr __offset
+    }
+    incr __index
+}
+"""
+
+# 不调用 current_design/open_run/read_xdc；只注册以后由所选 run 加载的 unmanaged Tcl。
+DESIGN_PREPARE_CONSTRAINTS = r"""
+apply {{} {
+__DECLARATIONS__
+set __fields [dict create file_created 0 registered 0]
+set __affected [list]
+set __mutating 0
+set __code [catch {
+    set __projects [current_project -quiet]
+    if {[llength $__projects] != 1} { error "Exactly one current project is required" }
+    set __project [lindex $__projects 0]
+    foreach __key {name directory part} {
+        set __value [get_property [string toupper $__key] $__project]
+        if {$__value eq ""} { error "Project identity is incomplete: $__key" }
+        dict set __fields $__key $__value
+    }
+    if {$__write} {
+        if {[dict get $__fields name] ne $__expected_name
+            || [file normalize [dict get $__fields directory]] ne \
+                [file normalize $__expected_directory]
+            || [dict get $__fields part] ne $__expected_part} {
+            error "Current project changed since inspection"
+        }
+    }
+    set __run [list]
+    set __runs [get_runs -quiet]
+    foreach __candidate $__runs {
+        if {[get_property NAME $__candidate] eq $__run_name} { lappend __run $__candidate }
+    }
+    if {[llength $__run] != 1} { error "Run name is missing or ambiguous: $__run_name" }
+    set __run [lindex $__run 0]
+    set __run_type [expr {$__synthesis ? "IS_SYNTHESIS" : "IS_IMPLEMENTATION"}]
+    if {![get_property $__run_type $__run]} { error "Run type does not match the debug plan" }
+    set __constrset [get_property CONSTRSET $__run]
+    set __filesets [list]
+    foreach __candidate [get_filesets -quiet] {
+        if {[get_property NAME $__candidate] eq $__constrset} { lappend __filesets $__candidate }
+    }
+    if {[llength $__filesets] != 1} { error "Run constraint set is missing or ambiguous" }
+    set __fileset [lindex $__filesets 0]
+    dict set __fields constrset $__constrset
+    foreach __candidate $__runs {
+        if {[get_property CONSTRSET $__candidate] eq $__constrset} {
+            lappend __affected [get_property NAME $__candidate]
+            if {[regexp -nocase {running|queued|launching} [get_property STATUS $__candidate]]} {
+                error "A run sharing this constraint set is active"
+            }
+        }
+    }
+    set __parent [file join [dict get $__fields directory] otter_debug]
+    if {![catch {file type $__parent} __parent_type] && $__parent_type ne "directory"} {
+        error "Debug destination parent is not a plain directory"
+    }
+    set __path [file normalize [file join $__parent $__filename]]
+    dict set __fields path $__path
+    if {![catch {file type $__path} __path_type]} {
+        error "Debug destination already exists"
+    }
+    foreach __file [get_files -quiet -of_objects $__fileset] {
+        if {[file normalize [get_property NAME $__file]] eq $__path} {
+            error "Debug file is already registered"
+        }
+    }
+    if {$__write} {
+        set __mutating 1
+        file mkdir [file dirname $__path]
+        set __stream [open $__path {WRONLY CREAT EXCL}]
+        dict set __fields file_created 1
+        set __write_code [catch {
+            fconfigure $__stream -encoding utf-8 -translation lf
+            puts -nonewline $__stream $__content
+        } __write_error]
+        close $__stream
+        if {$__write_code} { error $__write_error }
+        add_files -fileset $__constrset $__path
+        set __files [list]
+        foreach __file [get_files -quiet -of_objects $__fileset] {
+            if {[file normalize [get_property NAME $__file]] eq $__path} { lappend __files $__file }
+        }
+        if {[llength $__files] != 1} { error "Unable to resolve newly registered constraint file" }
+        set __file [lindex $__files 0]
+        dict set __fields registered 1
+        set_property USED_IN_SYNTHESIS $__synthesis $__file
+        set_property USED_IN_IMPLEMENTATION [expr {!$__synthesis}] $__file
+        set_property PROCESSING_ORDER LATE $__file
+        if {[get_property USED_IN_SYNTHESIS $__file] != $__synthesis
+            || [get_property USED_IN_IMPLEMENTATION $__file] != !$__synthesis
+            || [get_property PROCESSING_ORDER $__file] ne "LATE"} {
+            error "Constraint file property verification failed"
+        }
+        dict set __fields status constraints_added
+    } else {
+        dict set __fields status ready
+    }
+} __error]
+if {$__code} {
+    dict set __fields status [expr {$__mutating ? "partial" : "blocked"}]
+    dict set __fields error $__error
+}
+dict for {__key __value} $__fields {
+    binary scan [encoding convertto utf-8 $__value] H* __encoded
+    puts "VMCP_DESIGN_FIELD:$__key|$__encoded"
+}
+foreach __value $__affected {
+    binary scan [encoding convertto utf-8 $__value] H* __encoded
+    puts "VMCP_DESIGN_FIELD:affected_run|$__encoded"
+}
+puts "VMCP_DESIGN_DONE:1"
+}}
+"""
+
+
+# 不使用 format 的 IP 创建模板。
+DEBUG_IP_EXECUTE = r"""
+set __emit {{__kind __values} {
+    set __fields [list]
+    foreach __field $__values {
+        binary scan [encoding convertto utf-8 $__field] H* __encoded
+        lappend __fields $__encoded
+    }
+    puts "VMCP_DEBUG_IP_RECORD:$__kind|[join $__fields |]"
+}}
+set __stage preflight
+set __attempted 0
+set __created 0
+set __generated 0
+set __status ready
+set __error ""
+if {[catch {
+    set __projects [current_project -quiet]
+    if {[llength $__projects] != 1} {error "Exactly one current project is required"}
+    set __project [lindex $__projects 0]
+    set __directory [get_property DIRECTORY $__project]
+    if {$__directory eq ""} {error "Current project has empty directory"}
+    set __identity [dict create \
+        name [get_property NAME $__project] \
+        directory [file normalize $__directory] \
+        part [get_property PART $__project]]
+    dict for {__key __value} $__identity {
+        if {$__value eq ""} {error "Current project has empty $__key"}
+        if {[dict exists $__expected $__key] && [dict get $__expected $__key] ne $__value} {
+            error "Current project changed: $__key does not match expected_project"
+        }
+    }
+    apply $__emit project [list [dict get $__identity name] [dict get $__identity directory] \
+        [dict get $__identity part]]
+    foreach __candidate [get_ips -quiet] {
+        if {[get_property NAME $__candidate] eq $__name} {
+            error "An IP with this exact module name already exists; refusing reuse or overwrite"
+        }
+    }
+    set __definitions [list]
+    foreach __candidate [get_ipdefs -filter {UPGRADE_VERSIONS == ""}] {
+        set __vlnv [get_property VLNV $__candidate]
+        set __components [split $__vlnv :]
+        if {[llength $__components] == 4 && [lindex $__components 0] eq "xilinx.com" && \
+            [lindex $__components 1] eq "ip" && [lindex $__components 2] eq $__kind} {
+            lappend __definitions $__vlnv
+        }
+    }
+    if {[llength $__definitions] != 1} {
+        error "Expected exactly one current xilinx.com:ip:$__kind definition"
+    }
+    set __vlnv [lindex $__definitions 0]
+    apply $__emit ipdef [list $__vlnv]
+    if {$__apply} {
+        set __stage create_ip
+        set __attempted 1
+        set __created unknown
+        create_ip -vlnv $__vlnv -module_name $__name
+        set __matches [list]
+        foreach __candidate [get_ips -quiet] {
+            if {[get_property NAME $__candidate] eq $__name} {lappend __matches $__candidate}
+        }
+        if {[llength $__matches] != 1} {error "Created IP could not be resolved by exact name"}
+        set __ip [lindex $__matches 0]
+        set __created 1
+        set __stage configuration_capabilities
+        set __properties [list_property $__ip]
+        dict for {__property __value} $__configuration {
+            if {[lsearch -exact $__properties $__property] < 0} {
+                error "Created IP does not expose required property $__property"
+            }
+            apply $__emit property [list $__property]
+        }
+        set __stage set_configuration
+        set_property -dict $__configuration $__ip
+        set __stage verify_configuration
+        dict for {__property __value} $__configuration {
+            set __observed [get_property $__property $__ip]
+            apply $__emit readback [list $__property $__observed]
+            if {![string is entier -strict $__observed] || $__observed != $__value} {
+                error "Configuration readback mismatch for $__property"
+            }
+        }
+        set __stage generate_target
+        generate_target all $__ip
+        set __generated 1
+        set __stage complete
+        set __status created
+    }
+} __error]} {
+    set __status [expr {$__attempted ? "partial" : "blocked"}]
+    binary scan [encoding convertto utf-8 $__error] H* __encoded_error
+    puts "VMCP_DEBUG_IP_ERR:$__encoded_error"
+} else {
+    set __error ""
+}
+apply $__emit result [list $__status $__stage $__attempted $__created $__generated $__error]
+puts "VMCP_DEBUG_IP_DONE:1"
+"""

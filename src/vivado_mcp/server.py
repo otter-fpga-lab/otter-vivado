@@ -407,6 +407,7 @@ _prompts.register_prompts(mcp)
 #  导入工具模块，触发 @mcp.tool() 装饰器注册
 # --------------------------------------------------------------------------- #
 
+import vivado_mcp.tools.debug_design_tools  # noqa: E402, F401
 import vivado_mcp.tools.debug_tools  # noqa: E402, F401
 import vivado_mcp.tools.diagnostic_tools  # noqa: E402, F401
 import vivado_mcp.tools.flow_tools  # noqa: E402, F401

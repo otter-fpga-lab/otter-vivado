@@ -22,14 +22,14 @@ PyPI 上的同名包是上游发行版，Otter 功能按本仓源码入口安装
 
 **人和智能体操作同一份 Vivado 工程，观察同一次运行。**
 
-37 个 MCP 工具覆盖会话、综合、实现、真实进度、时序、XDC、IP、波形与烧录；其余 Vivado Tcl 能力由 `run_tcl`/`safe_tcl` 承载。原生 Vivado GUI 用于工程、Block Design、原理图与波形操作，本机网页提供只读运行观察，以及独立的 [ILA/VIO 调试面板](docs/HARDWARE_DEBUG.md)。首批调试支持已有硬件目标，自动插核和倒计时实验仍在后续计划中。
+40 个 MCP 工具覆盖会话、综合、实现、真实进度、时序、XDC、IP、波形与烧录；其余 Vivado Tcl 能力由 `run_tcl`/`safe_tcl` 承载。原生 Vivado GUI 用于工程、Block Design、原理图与波形操作，本机网页提供只读运行观察，以及独立的 [ILA/VIO 调试面板](docs/HARDWARE_DEBUG.md)。调试支持已有硬件目标，并提供 [ILA/VIO 工程准备](docs/DEBUG_DESIGN.md)；采样导出和倒计时实验仍在后续计划中。
 
-| 37 个 MCP 工具 | 8 个工作流 Prompt | 2 个会话 Resources | GUI / Tcl / attach 三种会话 |
+| 40 个 MCP 工具 | 8 个工作流 Prompt | 2 个会话 Resources | GUI / Tcl / attach 三种会话 |
 |---:|---:|---:|---:|
 
 > 本项目控制的是**你本机安装的 Vivado**，不是云端综合服务。命令在当前用户权限下执行；工具说明和诊断建议以中文为主。
 >
-> **English:** Otter Vivado provides local AMD Vivado project, execution, simulation, IP, status, and report tools for humans and agents. It includes 37 MCP tools, 8 workflow prompts, native GUI/headless/attach sessions, and a shared read-only run monitor. RTL authoring belongs to the separate coding product.
+> **English:** Otter Vivado provides local AMD Vivado project, execution, simulation, IP, status, and report tools for humans and agents. It includes 40 MCP tools, 8 workflow prompts, native GUI/headless/attach sessions, and a shared read-only run monitor. RTL authoring belongs to the separate coding product.
 
 **导航**：[快速开始](#快速开始) · [原生 GUI 与交付](docs/HUMAN_GUI_WORKFLOW.md) · [工具职责](#工具职责) · [工作流 Prompts](#工作流-prompts) · [工具列表](#工具列表) · [会话模式](#会话模式) · [架构](#架构) · [CLI](#cli-参考) · [反馈](#反馈与-bug-提交)
 
@@ -130,7 +130,7 @@ VIVADO_PATH = "D:/Xilinx/Vivado/2019.1/bin/vivado.bat"
 
 ### 5. 在空闲边界加载客户端配置
 
-首次配置后按客户端要求加载 MCP，可发现 37 个工具、8 个工作流 Prompt 和 2 个会话状态 Resource。已有活动构建时保留其 MCP 会话，完成后再重载；结束拥有 Vivado 子进程的 MCP 会关闭该进程。
+首次配置后按客户端要求加载 MCP，可发现 40 个工具、8 个工作流 Prompt 和 2 个会话状态 Resource。已有活动构建时保留其 MCP 会话，完成后再重载；结束拥有 Vivado 子进程的 MCP 会关闭该进程。
 
 ### 6. 冒烟验证
 
@@ -172,7 +172,7 @@ BD、仿真、硬件调试和 IP 配置可通过 `run_tcl`/`safe_tcl` 使用当�
 ## 特性
 
 - **三种会话模式**：GUI 可视化、Tcl 无头运行，以及只连接现有 GUI 的 attach
-- **37 个 MCP 工具** — 覆盖 Vivado 执行、运行观察、诊断、离线解析和外部检查工具联动
+- **40 个 MCP 工具** — 覆盖 Vivado 执行、运行观察、诊断、离线解析和外部检查工具联动
 - **8 个证据驱动工作流** — 每个流程都要求新鲜基线、最小安全修改、复测门禁与明确停止条件
 - **一条命令自检** — `doctor` 只读定位环境问题，`doctor --fix` 才执行受限、可备份的修复
 - **可靠的长任务协议** — 综合/实现支持 `wait=False` 立即返回 job id，再由 `get_run_progress` 查询
@@ -282,6 +282,18 @@ get_run_progress(run_name="synth_1", session_id="default")
 
 首批面向原生 Hardware Manager 已打开、已加载匹配探针的设备。人工与 AI 使用同一 MCP
 返回的页面；CLI 也可独立使用。用法、合成演示、边界和后续能力见 [硬件调试指南](docs/HARDWARE_DEBUG.md)。
+
+### ILA/VIO 工程准备
+
+| 工具 | 说明 |
+|------|------|
+| `plan_debug_design` | 离线生成 IP 创建、RTL 例化片段或精确网表约束 |
+| `inspect_debug_design` | 只读核对工程身份、run/约束集或已安装 IP 定义 |
+| `prepare_debug_design` | 创建并配置 IP，或注册专用调试约束；保留部分失败现场 |
+
+人工入口 `python -m vivado_mcp debug-prepare --spec design.json`；默认只生成计划。
+`--output-dir` 保存消费者文件，`--apply` 准备已有 GUI 工程。创建产物之后仍需接入 RTL、
+构建并核对 bit/ltx，见 [工程准备指南](docs/DEBUG_DESIGN.md)。
 
 ### 新手引导 & 工程摸底
 | 工具 | 说明 |
@@ -535,7 +547,7 @@ safe_tcl("set_property PACKAGE_PIN {0} [get_ports {1}]", args=["W5", "clk"])
 ```mermaid
 flowchart LR
     Agent["Cursor / Claude Code / Codex / Antigravity"] -->|"stdio MCP"| MCP["vivado-mcp"]
-    MCP --> Tools["37 Tools"]
+    MCP --> Tools["40 Tools"]
     MCP --> Prompts["8 Workflow Prompts"]
     MCP --> Resources["2 Session Resources"]
     Tools --> Tcl["SubprocessSession\nmode=tcl"]

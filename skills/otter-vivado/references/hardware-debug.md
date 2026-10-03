@@ -1,8 +1,8 @@
 # ILA/VIO 与工程调试面板
 
-首批只操作已有 Hardware Manager 打开的明确 target/device。不会打开 JTAG target、
-烧录或自动插核。使用实际 MCP 工具 schema；完整用法与 JSON 样例在源码根
-`docs/HARDWARE_DEBUG.md`、`examples/debug/panel.json`。
+板上调试只操作已有 Hardware Manager 打开的明确 target/device，不会打开 JTAG target
+或烧录。工程准备另有结构化入口。使用实际 MCP schema；完整用法与 JSON 样例在源码根
+`docs/HARDWARE_DEBUG.md`、`docs/DEBUG_DESIGN.md`、`examples/debug/`。
 
 1. 复用现有 Vivado 会话，用 `open_debug_panel` 为人提供本机 URL。人和 AI 共用
    该服务；另一个 CLI/MCP 进程的控制权不会自动同步。独立人工入口为
@@ -24,6 +24,17 @@
 探针、无效绑定不可写。不猜定点格式、单位或参数生效时刻。描述放消费者工程，工具库
 只维护通用控件与操作实现。`open_debug_panel(panel_path=...)` 可加载该描述。
 
-需要自动插核、采样导出分析、倒计时或声音提示时，应明确这些仍是后续工作，不把现有
+工程准备先用 `plan_debug_design` 选择 ila_ip/vio_ip/ila_netlist/mark_debug；描述、
+例化模板与生成约束留在消费者工程。`inspect_debug_design` 返回 ready 后，使用其完整
+project 身份调用 `prepare_debug_design`。只创建 IP 或注册约束，不会改业务 RTL或启动
+构建；constraints_added 不代表已插核，created 不代表已接入 RTL。缺失/重名 net 会使
+加载约束的实际 run 失败；partial 或未知时先核对现场，不重放。再用已有构建、报告入口
+验证连接、时序、资源与配套 bit/ltx，不能用准备成功代替这些证据。人工可用
+`debug-prepare --spec ...` 离线规划，`--output-dir` 保存新文件，`--apply` 准备已有 GUI。
+
+专用界面的布局与风格由生成智能体按用户偏好决定；库负责可用控件、绑定、操作状态和
+基本可用性。当前 JSON 只支持已有 slider/toggle，不能承诺任意自定义 HTML 都可直接加载。
+
+需要采样导出分析、倒计时或声音提示时，应明确这些仍是后续工作，不把现有
 ILA workflow prompt 或合成演示当成已实现的功能。精确动态配合最终需要硬件触发/帧标记；
 网页与 JTAG 不提供周期精确的时序。业务 RTL 改造沿用 Coding，处理器软件调试沿用 Vitis。

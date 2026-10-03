@@ -105,6 +105,12 @@ def main() -> None:
     p_debug.add_argument("--target", help="精确的已打开 Hardware Manager target 名称。")
     p_debug.add_argument("--device", help="明确 target 内的完整 device 名称。")
     p_debug.add_argument("--json", action="store_true", help="输出一次调试状态并退出。")
+    p_prepare = sub.add_parser("debug-prepare", help="离线生成调试工程计划，或准备已有 GUI 工程。")
+    p_prepare.add_argument("--spec", required=True, help="消费者工程中的调试设计 JSON 描述。")
+    p_prepare.add_argument("--port", type=int, default=9999, help="已有 GUI 的协议端口。")
+    p_prepare_mode = p_prepare.add_mutually_exclusive_group()
+    p_prepare_mode.add_argument("--apply", action="store_true", help="检查并准备当前 GUI 工程。")
+    p_prepare_mode.add_argument("--output-dir", help="离线保存计划和模板，仅创建新文件。")
     p_connect = sub.add_parser("connect", help="一次接入源码 MCP 与原地 Skill 目录引用。")
     p_connect.add_argument(
         "--client", nargs="+", choices=("cursor", "claude-code", "codex", "antigravity", "all"),
@@ -120,6 +126,20 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    if args.cmd == "debug-prepare":
+        import asyncio
+
+        from vivado_mcp.debug_prepare_cli import run_debug_prepare_cli
+
+        try:
+            asyncio.run(run_debug_prepare_cli(args))
+        except KeyboardInterrupt:
+            pass
+        except (ValueError, RuntimeError, OSError) as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            sys.exit(1)
+        return
 
     if args.cmd == "debug":
         import asyncio

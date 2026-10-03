@@ -1,0 +1,10 @@
+{
+  "kind": "ila_ip",
+  "name": "ila_isp",
+  "clock": "pixel_clk",
+  "depth": 4096,
+  "probes": [
+    {"name": "frame_valid", "width": 1},
+    {"name": "pixel_data", "width": 24}
+  ]
+}
