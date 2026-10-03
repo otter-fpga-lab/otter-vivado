@@ -3,8 +3,8 @@
 Status: OPEN
 Target: otter-fpga-lab/otter-vivado
 Basis: Hub main 0e9c375e；topics/20261002_vivado-progress-and-ross/TASK.md
-Next: 按四客户端原地接入入口核对本机链接发现与空闲重载；继续在 Draft PR #1 接续，不触发活动 Vivado 重启
-Result: 首轮真实观察流程已交付；本轮增加四客户端同源链接接入与 Ross 参考任务路由，接入定向 57 passed
+Next: 按用户最新授权合入 PR #1 后默认 main 接续；仅在实际 Windows/Vivado 补定向现场验收，不重启活动构建
+Result: 已补 Windows 路径/编码兼容、原生 GUI 工程交付与报告数值可视化；本轮定向 231 passed / 7 skipped，未宣称真实 EDA 或 Windows PASS
 
 ## 接手与边界
 
@@ -20,7 +20,8 @@ main 已有 wait=False、get_run_progress、报告解析器；缺本机持续展
 100% 与任意 Complete 提前终止是本轮需修的真实缺口。
 
 只改本产品和对应 Hub 议题。Ross 与本产品并列可选；不改旧贡献分支，不触碰
-Coding/Library，不操作板卡、不自动合并/发布/改变可见性。
+Coding/Library，不操作板卡、不发布或改变可见性。本轮用户后续明确授权适合就合入，
+之后默认 main 开发；这覆盖前轮“保留 Draft、不合并”的默认安排，其他边界保持。
 
 ## 已完成工作块（2026-10-03）
 
@@ -135,3 +136,55 @@ CLI 预检/写入/幂等复查、共享 JSON 链接、已有路径、配置冲�
 已有环境只需用该环境解释器执行 `python -m vivado_mcp connect --client all`；
 日常改源无需再次运行接入命令。重大接入取舍续记到
 [Hub Draft PR #5](https://github.com/lingshuncangqiong/otter-agent-hub/pull/5) 的 Vivado 议题。
+
+## Windows、原生 GUI 与工具定位（2026-10-03，用户授权合入）
+
+用户明确 Windows 为主要使用环境，要求工程能交给人用 Vivado GUI 打开、加强可视化、
+定位为 Vivado 工具能力，并允许合入本轮 PR；以后本产品默认 main 日常开发，真实并行或
+隔离/上游投稿需要时才另开分支。此次接续已有 PR #1，从远端 `ef86d16` 继续，无 reset。
+
+本批完成：
+
+- GUI 和 install 共用 ASCII/UTF-8 Tcl 引导命令，避免中文、空格、`$`、`[]` 路径展开；
+  install/uninstall 仅编辑注入块，保留已有 init 的 ANSI/UTF-8、BOM、CRLF 与其他内容。
+  报告读取支持 Windows 系统 ANSI，并避免 UTF-8 截断汉字触发错误回退。
+- 样例使用原生磁盘 `create_project` + `import_files`，源和约束存入消费工程；根据真实
+  当前工程目录输出存在的 `.xpr`。不覆盖/关闭已有工程、不启动 run，中途失败保留现场。
+  [GUI 指南](docs/HUMAN_GUI_WORKFLOW.md) 提供同一 GUI 操作、重开、依赖核对和原生归档。
+- 面板新增已发现 `.xpr` 路径、WNS/TNS/WHS/THS 和资源 Used/Available/Util% 图表；
+  全部取共享查询/现有解析器。缺失为未知，不给内存工程或回放伪造 GUI 就绪结论，
+  全局质量仍 unknown。可选工程元数据失败不影响有效 run 状态。
+- README、包说明、Skill 和贡献指南明确工程/执行/仿真/IP/状态/报告职责；RTL 编码归
+  Coding，原生 GUI 和网页各自承担已有功能。默认安装 main，保留 NJ、Apache-2.0、
+  包名/版本、fork 与旧贡献分支。Ross 仍并列可选，无二进制依赖。
+- 实际读取 AMD UG835 2026.1 的 create_project/import_files/current_project/open_project/
+  archive_project 正文，结合 Ross `2cdc9eef` 工具参考；版本和证据链接在 GUI 指南，
+  不将 Ross Linux-only display 说成 Windows 已支持。
+
+本轮定向验证（Linux / Python 3.12.14 / 真实 Tcl、Chromium；EDA API 为明确测试桩）：
+
+```bash
+PYTHONPATH=.venv/lib/python3.12/site-packages:src python -m pytest \
+  tests/test_install_encoding.py tests/test_gui_bootstrap.py tests/test_tcl_utils.py \
+  tests/test_session_encoding.py tests/test_doctor.py tests/test_connect.py \
+  tests/test_windows_runtime.py tests/test_project_observation.py tests/test_run_monitor.py \
+  tests/test_flow_progress.py tests/test_probe_then_attach.py -q -rs
+PYTHONPATH=.venv/lib/python3.12/site-packages:src python -m pytest \
+  tests/test_demo_project.py tests/test_monitor_http.py -q -rs
+.venv/bin/ruff check src/ tests/
+git diff --check
+```
+
+分别 **192 passed / 7 skipped** 和 **39 passed**。跳过项为 5 个需要真实 Windows 的
+junction/.bat/ANSI 运行测试和 2 个需中文 Windows CP936 的编码测试；没有 Windows PASS。
+真实 Chromium 桌面/390 手机验证数值、未知降级、Windows 路径文本、XSS、失联保留快照，
+无页面/控制台错误。Tcl 测试验证消费源导入、迁移后输入仍在、预检保护、可选元数据和
+编码边界；它们不能证明真正 Vivado 可重开。Ruff、diff、文档链接与 32 工具清单核对通过。
+
+未测/阻塞：真实 Windows/Vivado GUI/Tcl/attach、客户端链接发现、完整 `.xpr` 重开和报告
+格式/性能仍按 GUI/RUN_MONITOR 指南现场验证，不占用 Coding 测试。GitHub Actions API
+返回 0 workflows / 0 runs；读取启用设置返回凭据权限 403，未获得云端 Windows runner。
+修改 GitHub About 简介同样返回 `Resource not accessible by integration` (403)；
+README/包说明定位已更新，About 待有仓库设置权限的入口改为相同工具定位。
+
+合入与 main 的实际远端恢复点将在操作完成后记录于本节；历史验证按各批次保留。

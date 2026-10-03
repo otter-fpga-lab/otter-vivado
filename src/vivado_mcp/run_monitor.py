@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import copy
 import re
 import time
@@ -21,7 +22,7 @@ from vivado_mcp.analysis.run_progress_parser import (
 from vivado_mcp.analysis.timing_parser import parse_timing_summary
 from vivado_mcp.analysis.util_parser import parse_utilization
 from vivado_mcp.tcl_scripts import QUERY_RUN_PROGRESS
-from vivado_mcp.vivado.tcl_utils import validate_identifier
+from vivado_mcp.vivado.tcl_utils import decode_vivado_output, validate_identifier
 
 TARGET_STEPS = ("synth_design", "route_design", "write_bitstream")
 _REPORT_LIMIT = 16
@@ -53,6 +54,8 @@ def parse_snapshot(raw: str, run_name: str, target_step: str) -> dict:
         "current_phase": rp.current_phase(),
         "directory": meta.get("dir", ""),
         "project": meta.get("project", ""),
+        "project_file": meta.get("project_file", ""),
+        "project_mode": meta.get("project_mode", "unknown"),
         "version": meta.get("version", ""),
         "top": meta.get("top", ""),
         "elapsed": meta.get("elapsed", ""),
@@ -85,7 +88,17 @@ def read_reports(run: dict) -> list[dict]:
             stat = path.stat()
             with path.open("rb") as stream:
                 data = stream.read(_REPORT_BYTES + 1)
-            text = data[:_REPORT_BYTES].decode("utf-8", errors="replace")
+            chunk = data[:_REPORT_BYTES]
+            try:
+                # 有界读取可能停在 UTF-8 多字节字符中间；未到 EOF 时保留完整前缀，
+                # 避免仅因截断而把整份 UTF-8 报告错误判成 Windows ANSI。
+                text = codecs.getincrementaldecoder("utf-8")().decode(
+                    chunk, final=len(data) <= _REPORT_BYTES,
+                )
+            except UnicodeDecodeError:
+                # 与会话输出共用 Windows 系统 ANSI 回退。
+                text = decode_vivado_output(chunk)
+            text = text.lstrip("\ufeff")
         except OSError:
             continue
         name = path.name.lower()

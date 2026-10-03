@@ -22,6 +22,9 @@
     .cards{display:grid;grid-template-columns:1.35fr 1fr 1fr;gap:14px;margin-bottom:18px}.metric{font-size:24px;font-weight:650;line-height:1.35;margin:7px 0;overflow-wrap:anywhere}
     .quality{font-size:20px}.quality[data-quality="met"],.quality[data-quality="within_budget"]{color:#24734e}
     .quality[data-quality="unmet"],.quality[data-quality="over_budget"]{color:#ae4133}
+    .gui-project{margin-bottom:18px}.gui-project .path{font-size:13px;margin:0 0 8px}.gui-project .label{text-transform:none}.report-metrics{margin-top:18px;border-top:1px solid #e5ebe6;padding-top:2px}
+    .timing-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:12px 0}.timing-value{font-size:22px;font-weight:650;display:block;overflow-wrap:anywhere}.timing-value[data-negative="true"]{color:#ae4133}
+    .resource-table td{vertical-align:middle}.resource-table .percent{min-width:100px}.resource-table progress{margin:4px 0 0;height:7px;accent-color:#567b8c}
     .split{display:grid;grid-template-columns:1.25fr 1fr;gap:18px;margin-bottom:18px}.stack{display:grid;gap:18px}
     .facts{display:grid;grid-template-columns:110px minmax(0,1fr);gap:9px 12px;margin:0}.facts dt{color:#647672;font-size:12px}.facts dd{margin:0;overflow-wrap:anywhere}
     progress{width:100%;height:9px;display:block;accent-color:#347d60;margin:12px 0}progress[hidden]{display:none}
@@ -36,7 +39,7 @@
     button:hover,button[aria-pressed="true"]{background:#dcece0;border-color:#568268}button:focus-visible{outline:3px solid #307a98;outline-offset:3px}
     details{margin-top:14px}summary{cursor:pointer;font-size:12px;color:#426552;margin-bottom:8px}footer{margin-top:20px;font-size:11px;color:#647672}
     @media(max-width:800px){main{padding:22px 16px}.meta{grid-template-columns:repeat(2,minmax(0,1fr))}.cards{grid-template-columns:1fr 1fr}.cards .panel:first-child{grid-column:1/-1}.split{grid-template-columns:1fr}.panel{padding:18px}h1{font-size:23px}}
-    @media(max-width:420px){header{align-items:flex-start;gap:8px}.tag{font-size:10px;padding:4px 8px}.metric{font-size:21px}.facts{grid-template-columns:80px minmax(0,1fr)}}
+    @media(max-width:420px){header{align-items:flex-start;gap:8px}.tag{font-size:10px;padding:4px 8px}.metric{font-size:21px}.facts{grid-template-columns:80px minmax(0,1fr)}.timing-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.resource-table .percent{min-width:70px}}
   </style>
 </head>
 <body>
@@ -49,6 +52,7 @@
     <div><span class="label">工具版本</span><div id="version" class="value">—</div></div>
     <div><span class="label">Run / 目标步骤</span><div id="run-target" class="value">—</div></div>
   </section>
+  <section class="panel gui-project" aria-label="Vivado GUI 工程"><h2>Vivado GUI 工程</h2><p id="gui-project-state" class="label">未确认</p><p id="gui-project-file" class="path">未确认 .xpr 工程路径</p><p id="gui-project-hint" class="muted">等待现场工程信息。</p></section>
   <section class="cards" aria-label="执行与质量状态">
     <div class="panel"><span class="label">执行状态</span><p id="state" class="metric">未知</p><p id="status" class="muted">STATUS: 未提供</p></div>
     <div class="panel"><span class="label">时序结论</span><p id="timing" class="metric quality">未知</p><p class="muted">由有效报告判定；运行完成不代表通过。</p></div>
@@ -70,7 +74,16 @@
     <p class="muted">只读展示已生成文件；报告新鲜度与执行状态分别呈现。</p>
     <div class="table-wrap"><table><thead><tr><th>报告</th><th>阶段</th><th>新鲜度</th><th>文件更新时间</th><th>大小</th></tr></thead><tbody id="report-list"></tbody></table></div>
     <p id="report-empty" class="muted">暂无报告。生成失败、未生成或无法读取的结果保持未知。</p>
-    <div id="report-detail" hidden><h3 id="report-title">报告内容</h3><p id="report-reason" class="muted"></p><p id="report-path" class="path"></p><details><summary>结构化摘要</summary><pre id="report-summary"></pre></details><h3>报告原文</h3><pre id="report-text"></pre></div>
+    <div id="report-detail" hidden><h3 id="report-title">报告内容</h3><p id="report-context" class="muted"></p><p id="report-reason" class="muted"></p><p id="report-path" class="path"></p>
+      <div class="report-metrics">
+        <section id="timing-metrics" hidden aria-label="本报告时序数值"><h3>本报告时序数值 <small>ns</small></h3><div class="timing-grid">
+          <div><span class="label">WNS · Setup 最差裕量</span><span id="report-wns" class="timing-value">未知</span></div><div><span class="label">TNS · Setup 总负裕量</span><span id="report-tns" class="timing-value">未知</span></div>
+          <div><span class="label">WHS · Hold 最差裕量</span><span id="report-whs" class="timing-value">未知</span></div><div><span class="label">THS · Hold 总负裕量</span><span id="report-ths" class="timing-value">未知</span></div>
+        </div><p id="timing-parse-note" class="muted"></p></section>
+        <section id="resource-metrics" hidden aria-label="本报告资源占用"><h3>本报告资源占用</h3><div class="table-wrap"><table class="resource-table"><thead><tr><th>资源</th><th>Used · 已用</th><th>Available · 可用</th><th>Util% · 占比</th></tr></thead><tbody id="resource-list"></tbody></table></div><p id="resource-parse-note" class="muted"></p></section>
+        <p id="report-metrics-unknown" class="muted">尚无可识别的时序或资源摘要；请查看报告原文。</p>
+      </div>
+      <details><summary>结构化数据</summary><pre id="report-summary"></pre></details><h3>报告原文</h3><pre id="report-text"></pre></div>
   </section>
   <footer>页面仅读取后台缓存。刷新或关闭页面不会启动、暂停或结束 Vivado 任务。工程路径、日志与报告仅供本机查看。</footer>
 </main>
@@ -88,6 +101,83 @@ let displayError = "";
 const stateNames = {running: "运行中", queued: "排队中", complete: "已完成", completed: "已完成", stage_complete: "阶段已完成（目标未完成）", idle: "未启动", failed: "失败", error: "失败", interrupted: "已中断", cancelled: "已取消", not_started: "未启动", waiting: "等待中", unknown: "未知"};
 const connectionNames = {connected: "已连接", busy: "会话忙碌", disconnected: "连接失联", error: "采样失败", waiting: "等待采样"};
 const freshnessNames = {fresh: "新鲜", current: "当前运行", stale: "可能过期", unknown: "未知", unverified: "尚未核实", mismatched: "与当前运行不符", missing: "未生成", unreadable: "不可读取"};
+function paintGUIProject(data, run) {
+  const projectFile = typeof run.project_file === "string" ? run.project_file : "";
+  const mode = String(run.project_mode ?? "").toLowerCase();
+  const nonProject = ["non-project", "non_project", "false", "0"].includes(mode);
+  const hasProjectFile = /\.xpr$/i.test(projectFile) && /^(?:[a-z]:[\\/]|\\\\|\/)/i.test(projectFile);
+  if (data.source === "replay") {
+    put("gui-project-state", "回放样本 · 非现场工程确认");
+    put("gui-project-file", hasProjectFile ? `样本路径：${projectFile}` : "未确认 .xpr 工程路径（回放样本）");
+    put("gui-project-hint", "仅回放样本，不能据此确认现场工程。此页面不会打开本机 Vivado 或任何工程。");
+  } else if (mode === "in_memory") {
+    put("gui-project-state", "内存工程 · 无持久 .xpr 交付");
+    put("gui-project-file", "未确认 .xpr 工程路径（内存工程）");
+    put("gui-project-hint", "此会话使用内存工程，尚无已确认可由 GUI 打开的持久 .xpr 工程文件。");
+  } else if (nonProject) {
+    put("gui-project-state", "非 Project 模式");
+    put("gui-project-file", "未确认 .xpr 工程路径（非 Project 模式）");
+    put("gui-project-hint", "当前使用非 Project 流程，不能将工程名称当作可直接打开的 GUI 工程。");
+  } else if (data.source === "live" && hasProjectFile) {
+    put("gui-project-state", "已发现原生工程文件");
+    put("gui-project-file", projectFile);
+    put("gui-project-hint", data.session_mode === "gui" ? "请在同一 Vivado GUI 会话中查看工程与报告。需要定位工程时使用 File > Project > Open；运行期间不要让第二个实例同时写入同一工程。尚未验证依赖完整性或 GUI 实际打开结果。" : "在 Vivado 中使用 File > Project > Open 定位此工程。运行期间不要让第二个实例同时写入同一工程；已有 GUI 会话时在同一窗口查看。尚未验证依赖完整性或 GUI 实际打开结果。");
+  } else {
+    put("gui-project-state", "未确认");
+    put("gui-project-file", "未确认 .xpr 工程路径");
+    put("gui-project-hint", "尚无已确认的现场 .xpr 路径；工程名称与运行目录不能代替可打开的 GUI 工程。");
+  }
+}
+function paintReportMetrics(report) {
+  const summary = report.summary || {};
+  const isTiming = summary.kind === "timing";
+  const isResources = summary.kind === "utilization";
+  byId("timing-metrics").hidden = !isTiming;
+  byId("resource-metrics").hidden = !isResources;
+  byId("report-metrics-unknown").hidden = isTiming || isResources;
+  if (isTiming) {
+    const values = summary.summary || {};
+    const recognized = values.parse_status === "ok";
+    for (const key of ["wns", "tns", "whs", "ths"]) {
+      const valid = recognized && Number.isFinite(values[key]);
+      put(`report-${key}`, valid ? values[key].toFixed(3) : "未知");
+      byId(`report-${key}`).dataset.negative = String(valid && values[key] < 0);
+    }
+    const note = recognized ? "数值来自此报告的 Design Timing Summary；不自动提升全局时序结论。" : (values.parse_status === "no_timing_data" ? "此报告没有可分析的时序数据；未知值不显示为 0。" : "未识别此报告的时序摘要；未知值不显示为 0。");
+    put("timing-parse-note", note);
+  }
+  if (isResources) {
+    const body = byId("resource-list");
+    const resources = lines(summary.resources);
+    body.replaceChildren();
+    for (const resource of resources) {
+      const row = document.createElement("tr");
+      const used = Number.isFinite(resource.used) && resource.used >= 0 ? resource.used.toLocaleString("zh-CN") : "未知";
+      const available = Number.isFinite(resource.available) && resource.available >= 0 ? resource.available.toLocaleString("zh-CN") : "未知";
+      for (const value of [resource.name || "未命名资源", used, available]) {
+        const cell = document.createElement("td");
+        cell.textContent = value;
+        row.append(cell);
+      }
+      const percent = document.createElement("td");
+      percent.className = "percent";
+      const valid = Number.isFinite(resource.percent) && resource.percent >= 0;
+      const text = document.createElement("span");
+      text.textContent = valid ? `${resource.percent}%` : "未知";
+      percent.append(text);
+      if (valid && resource.percent <= 100) {
+        const bar = document.createElement("progress");
+        bar.max = 100;
+        bar.value = resource.percent;
+        bar.setAttribute("aria-label", `${resource.name || "资源"} 报告占比`);
+        percent.append(bar);
+      }
+      row.append(percent);
+      body.append(row);
+    }
+    put("resource-parse-note", resources.length ? "Used、Available 与 Util% 均来自此报告。占比不是资源预算达标结论；缺失数值保持未知。" : "尚无可识别的资源占用数据；请查看报告原文，不以 0 占用代替未知。");
+  }
+}
 function paintConnection() {
   const data = currentSnapshot || {};
   const connection = displayError ? "disconnected" : (data.connection || "waiting");
@@ -103,10 +193,12 @@ function showReport(report) {
   if (!report) return;
   selectedReport = report.path || report.name;
   put("report-title", report.name, "报告内容");
+  put("report-context", `阶段：${report.stage || "未知"} · 新鲜度：${freshnessNames[report.freshness] || report.freshness || "未知"} · 仅解释本报告`);
   put("report-reason", report.reason, "新鲜度尚未确认");
   put("report-path", report.path);
   put("report-summary", report.summary ? JSON.stringify(report.summary, null, 2) : "暂无结构化摘要");
   put("report-text", report.text, "暂无可读取的报告原文");
+  paintReportMetrics(report);
   for (const button of byId("report-list").querySelectorAll("button")) button.setAttribute("aria-pressed", String(button.dataset.report === selectedReport));
 }
 function paintReports(reports) {
@@ -141,6 +233,7 @@ function paint(data) {
   put("source", data.source === "replay" ? "回放数据 · 非现场" : "现场快照 · 只读");
   put("session", `${data.session_id || "未知"} / ${data.session_mode || "未知"}`);
   put("project", run.project);
+  paintGUIProject(data, run);
   put("version", run.version);
   put("run-target", `${data.run_name || "未知"} / ${data.target_step || "未指定"}`);
   put("state", stateNames[run.state] || run.state || "未知");

@@ -108,6 +108,16 @@ def tcl_quote(value: str) -> str:
     return f'"{value}"'
 
 
+def tcl_source_utf8(path: str) -> str:
+    """生成 ASCII source 命令，原样还原 UTF-8 路径并显式读取 UTF-8 Tcl。
+
+    Windows 启动脚本可能按 ANSI 读取；十六进制路径避免 Unicode 乱码，
+    同时不让路径中的 $ / [] 被 Tcl 当作代码展开。兼容 Tcl 8.5。
+    """
+    path_hex = path.replace("\\", "/").encode("utf-8").hex()
+    return f"source -encoding utf-8 [encoding convertfrom utf-8 [binary format H* {path_hex}]]"
+
+
 # --------------------------------------------------------------------------- #
 #  哨兵协议
 # --------------------------------------------------------------------------- #

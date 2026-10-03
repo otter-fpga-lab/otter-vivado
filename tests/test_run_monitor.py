@@ -121,6 +121,26 @@ def test_report_reads_are_bounded_and_symlinks_excluded(tmp_path):
     assert "256 KiB" in report["reason"]
 
 
+def test_report_utf8_bom_and_non_ascii_text_preserve_design_check(tmp_path):
+    report = tmp_path / "demo_timing_summary_routed.rpt"
+    report.write_bytes("Design : other\nPath : D:/项目/实现\n".encode("utf-8-sig"))
+    value, = read_reports({"directory": str(tmp_path), "top": "demo"})
+    assert value["freshness"] == "mismatched"
+    assert "D:/项目/实现" in value["text"]
+    assert "\ufeff" not in value["text"]
+
+
+def test_truncated_report_does_not_reinterpret_utf8_as_ansi(tmp_path):
+    prefix = "Path : D:/项目\n".encode("utf-8")
+    # 最后一个汉字在读取边界只读到首字节，前面的中文仍必须正确展示。
+    data = prefix + b"x" * (256 * 1024 - len(prefix) - 1) + "中more".encode("utf-8")
+    (tmp_path / "truncated.rpt").write_bytes(data)
+    report, = read_reports({"directory": str(tmp_path)})
+    assert report["text"].startswith("Path : D:/项目\n")
+    assert "\ufffd" not in report["text"]
+    assert report["summary"] is None
+
+
 @pytest.mark.skipif(not shutil.which("tclsh"), reason="需要 Tcl 解释器验证脚本语法")
 def test_tcl_read_only_query_bounds_log_and_handles_real_file_errors(tmp_path):
     log = tmp_path / "runme.log"

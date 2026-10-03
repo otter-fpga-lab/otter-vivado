@@ -9,10 +9,10 @@ Otter Vivado 的插件体验由 **Skill + MCP + 运行面板**组成。Skill 与
 
 ## 一次接入四个客户端
 
-已有本仓源码时直接进入该目录；首次取得本分支源码可用：
+已有本仓源码时直接进入该目录；首次取得默认 `main` 源码可用：
 
 ```bash
-git clone -b feat/progress-view-study https://github.com/otter-fpga-lab/otter-vivado.git
+git clone -b main https://github.com/otter-fpga-lab/otter-vivado.git
 cd otter-vivado
 ```
 

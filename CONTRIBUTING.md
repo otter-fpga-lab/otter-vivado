@@ -1,13 +1,14 @@
 # 贡献指南
 
-感谢你对 vivado-mcp 的关注！以下是参与贡献的说明。
+Otter Vivado 延续 NJ 的 [vivado-mcp](https://github.com/mapleleavessssssss-wq/vivado-mcp)，
+保留作者、Apache-2.0 许可与上游贡献关系。以下说明区分本产品日常开发与上游投稿。
 
 ## 开发环境搭建
 
 ```bash
 # 克隆仓库
-git clone https://github.com/mapleleavessssssss-wq/vivado-mcp.git
-cd vivado-mcp
+git clone -b main https://github.com/otter-fpga-lab/otter-vivado.git
+cd otter-vivado
 
 # 创建虚拟环境
 python -m venv .venv
@@ -54,13 +55,24 @@ pytest
 pytest tests/test_tcl_utils.py -v
 ```
 
-## PR 流程
+## 本产品日常开发
 
-1. Fork 本仓库
-2. 创建功能分支 (`git checkout -b feature/my-feature`)
-3. 编写代码和测试
-4. 确保 `ruff check` 和 `pytest` 通过
-5. 提交 PR，描述你的更改
+用户已授权的本仓产品工作默认在 `main` 进行，按可审阅工作块提交；实际并行修改、需要
+隔离的试验或向上游投稿时再使用独立分支。接续已有任务时先看 [TASK.md](TASK.md)，
+保留现有分支/PR 的工作，不为切回默认分支丢弃未完成变更。
+
+1. 更新前执行 `git fetch origin`，核对 origin、HEAD、工作树与远端差异，保留同期修改；
+   不使用 reset 或强制覆盖回到历史基线。
+2. 阅读受影响实现，完成必要修改与定向验证。按影响范围运行测试；Tcl/会话改动同时考虑
+   GUI 与无头路径，没有 EDA/Windows 时明确现场待测范围。
+3. 把已完成内容、实际提交、验证结果与下一步写入产品 TASK，及时提交并推送。
+4. 需要隔离时建立或接续任务分支/PR；合并按用户当前授权执行，不自动发布包或操作设备。
+
+## 向原上游投稿
+
+1. 在 [原上游](https://github.com/mapleleavessssssss-wq/vivado-mcp) 的 fork/贡献关系下准备通用修复。
+2. 使用独立贡献分支，保留已有作者、许可、历史与贡献分支，不将产品专属包装混入上游修复。
+3. 遵循上游当前贡献要求，完成相关 `ruff check` 与测试，提交描述问题、行为变化和验证范围的 PR。
 
 ## 安全相关
 

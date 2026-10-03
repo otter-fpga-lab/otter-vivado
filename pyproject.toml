@@ -1,7 +1,7 @@
 [project]
 name = "vivado-mcp"
 version = "0.3.25"
-description = "Vivado MCP Server — AI 驱动的 FPGA 开发助手，支持 GUI 可视化 / 子进程无头双模式，自动诊断 CRITICAL WARNING"
+description = "Otter Vivado — 本机 Vivado 工程、执行、仿真、IP、真实运行状态与报告工具，支持原生 GUI 和 MCP"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
@@ -38,10 +38,11 @@ dependencies = [
 dev = ["pytest>=7.0", "pytest-asyncio>=0.21", "ruff>=0.4"]
 
 [project.urls]
-Homepage = "https://github.com/mapleleavessssssss-wq/vivado-mcp"
-Repository = "https://github.com/mapleleavessssssss-wq/vivado-mcp"
-Issues = "https://github.com/mapleleavessssssss-wq/vivado-mcp/issues"
-Changelog = "https://github.com/mapleleavessssssss-wq/vivado-mcp/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/otter-fpga-lab/otter-vivado"
+Repository = "https://github.com/otter-fpga-lab/otter-vivado"
+Feedback = "https://github.com/otter-fpga-lab/otter-vivado/pull/1"
+Changelog = "https://github.com/otter-fpga-lab/otter-vivado/blob/main/CHANGELOG.md"
+Upstream = "https://github.com/mapleleavessssssss-wq/vivado-mcp"
 
 [project.scripts]
 vivado-mcp = "vivado_mcp.__main__:main"

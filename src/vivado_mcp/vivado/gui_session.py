@@ -26,7 +26,7 @@ from pathlib import Path
 
 from vivado_mcp.tcl_scripts import QUERY_CURRENT_PROJECT
 from vivado_mcp.vivado.base_session import BaseSession, SessionState
-from vivado_mcp.vivado.tcl_utils import TclResult, clean_output
+from vivado_mcp.vivado.tcl_utils import TclResult, clean_output, tcl_source_utf8
 
 logger = logging.getLogger(__name__)
 
@@ -437,7 +437,7 @@ class GuiSession(BaseSession):
                     mode="w", suffix=".tcl", delete=False, encoding="utf-8"
                 ) as tmp:
                     tmp.write(f"set ::VMCP_PORT_PREF {target_port}\n")
-                    tmp.write(f'source "{script_path.as_posix()}"\n')
+                    tmp.write(tcl_source_utf8(script_path.as_posix()) + "\n")
                     tmp_script = tmp.name
                 self._tmp_script = tmp_script
                 # atexit 兜底:MCP 进程被强杀时仍会清理

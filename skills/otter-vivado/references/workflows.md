@@ -28,6 +28,16 @@
 
 同一 Vivado Tcl 会话顺序执行命令。长任务期间让已有运行继续，观察超时后保留 session/run，继续读状态；无需为取得结果重新 launch。
 
+## 原生 GUI 交接
+
+用户需要新建且可由 GUI 接续的工程时，默认使用磁盘 Project Mode，显式指定新目录、part/top、源和约束；不以 `-in_memory` 或临时 Tcl 状态代替持久工程。可运行样例是仓库 `examples/progress/create_demo.tcl`，现有工程则保留其原组织方式。
+
+Windows 本机操作优先使用用户实际安装的 Vivado GUI。交付时记录可打开的 `.xpr` 路径，或非工程流的 `.dcp`/重建 Tcl、源码与约束位置；同时给出 Vivado 版本、part/top、会话和完成阶段。检查外部文件引用是否仍可用，不把临时目录、浏览器 URL 或聊天记录当作唯一工程交付。
+
+GUI 使用已有 `start_session` 的 `gui`/`attach` 模式和 Vivado 工程命令，具体步骤读取仓库 `docs/HUMAN_GUI_WORKFLOW.md`（从 Skill 链接真实目标定位仓库）。打开工程、Block Design、原理图与波形使用原生 GUI；网页面板读取同一 run 的状态、日志与报告。界面能打开、目标阶段完成、时序通过与功能正确分别留证据，未在真实 Windows/Vivado 执行的项目明确列为待测。
+
+发现需要 RTL 功能修改时，将原始消息、源文件位置与复现条件交给负责该设计的 Coding 工作流；Vivado 工具侧继续提供项目操作与复测能力。已有 `.xpr`/源码不可因交付目的被自动重建或覆盖。
+
 ## 进度与报告
 
 需要人机共同观察时，`open_run_monitor` 返回运行 MCP 那台机器上的本机 URL；`get_run_snapshot` 读取同一缓存。两者只登记/读取观察器，不启动构建。首次 `waiting` 允许等待采样；`busy`、失联或错误时先看最后成功采样时间，保留原始原因。

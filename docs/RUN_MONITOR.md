@@ -38,6 +38,9 @@ open_run_monitor(run_name="impl_1", target_step="route_design", session_id="defa
 
 已有 `get_run_progress` 仍可单次查询。面板与 `get_run_snapshot` 共用同一观察器；
 默认 JSON 省略报告原文（面板可展开），需要时指定 `include_report_text=True`。
+面板也显示实际发现的原生 `.xpr` 路径，按
+[GUI 工程交接指南](HUMAN_GUI_WORKFLOW.md) 可由人继续操作；文件存在不代表源依赖完整
+或已经通过 GUI 打开测试。元数据不可用时仍保留有效 run 状态，不猜工程路径。
 原生 `PROGRESS` 为 0 就显示 0，空值显示未知。它是 Vivado run 原生属性，
 不保证代表当前目标或整个 FPGA 流程的完成比例，没有 ETA。
 `place_design Complete!` 不等于 route 完成；route 完成也不等于 write_bitstream 完成。
@@ -48,7 +51,7 @@ open_run_monitor(run_name="impl_1", target_step="route_design", session_id="defa
 ```tcl
 set __otter_demo_dir {D:/scratch/otter-progress-demo-new}
 set __otter_demo_part xc7a35tcpg236-1
-source {D:/source/otter-vivado/examples/progress/create_demo.tcl}
+source -encoding utf-8 {D:/source/otter-vivado/examples/progress/create_demo.tcl}
 ```
 
 将路径与 part 替换为本机全路径及实际已安装/有许可的器件。输出目录必须不存在，
@@ -88,6 +91,8 @@ python -m vivado_mcp monitor --replay examples/progress/stage-complete.txt --tar
 - 阶段是文件名线索；报告早于 `.vivado.begin.rst`、NEEDS_REFRESH 或 Design 不匹配
   都显示原因。时间较新仍不能证明本轮目标/约束匹配，标为未核实候选。
   报告摘要沿用现有 timing/utilization parser；全局时序/资源预算保持未知，不当签核工具。
+  选中报告可直接查看 WNS/TNS/WHS/THS 与资源用量图表；数值仅来自该报告的解析字段，
+  未识别/缺失的指标显示未知。Windows 报告与会话输出共用 UTF-8/系统 ANSI 解码策略。
 - 报告和日志只在本机随机路径页面展示；HTTP 只支持页面/缓存 GET，无 Tcl/文件写入口。
   同机其他用户若获得 URL 仍能查看，勿将工程链接公开分享。
 
@@ -126,5 +131,7 @@ head b40e62cd、`feat/multi-version-optimization` 不变。本实现从 main 独
 6. 留一份旧报告、不同 Design 和 placed 报告，确认 stale/mismatched/post-place；
    正常报告内容与原文件一致，无报告时保持未知。
 7. Windows 验证 Skill 链接权限与客户端实际发现；源码更新仅在空闲加载边界使用。
+8. 完成样例运行后按 [GUI 指南](HUMAN_GUI_WORKFLOW.md) 在原会话检查 Sources/Reports，
+   关闭原工程后重新打开 `.xpr`，确认已导入源码与约束仍可用；不要第二实例并发写同一工程。
 
 实际云端验证命令、结果与远端接续点见根 [TASK.md](../TASK.md)。

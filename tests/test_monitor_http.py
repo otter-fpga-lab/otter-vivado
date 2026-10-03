@@ -7,11 +7,14 @@ import re
 import shutil
 import time
 from http.client import HTTPConnection
+from pathlib import Path
 from unittest.mock import Mock
 from urllib.parse import urlsplit
 
 import pytest
 
+from vivado_mcp.analysis.timing_parser import parse_timing_summary
+from vivado_mcp.analysis.util_parser import parse_utilization
 from vivado_mcp.monitor_http import MonitorHTTP
 
 
@@ -298,5 +301,120 @@ def test_browser_renders_untrusted_text_and_preserves_last_snapshot(monitor, tmp
                 "展示连接失联", timeout=12000
             )
             assert page.locator("#status").inner_text() == "STATUS: write_bitstream Complete!"
+        finally:
+            browser.close()
+
+
+def test_browser_report_metrics_and_windows_gui_project_evidence(monitor, tmp_path):
+    """复用真实解析器和仓库报告样本，验证数值、未知降级与 GUI 证据界限。"""
+    playwright = pytest.importorskip("playwright.sync_api")
+    executable = shutil.which("chromium") or shutil.which("chromium-browser")
+    if executable is None:
+        pytest.skip("未安装 Chromium；HTTP 边界测试仍独立运行")
+    _, url, _, snapshot = monitor
+    fixtures = Path(__file__).parent / "fixtures"
+    timing_text = (fixtures / "sample_report_timing.txt").read_text(encoding="utf-8")
+    util_text = (fixtures / "sample_report_utilization.txt").read_text(encoding="utf-8")
+    project_file = r"C:\工程\telemetry\telemetry.xpr"
+    timing_report = {
+        "name": "timing_routed.rpt",
+        "stage": "post-route",
+        "freshness": "stale",
+        "reason": "样本报告早于运行开始标记，不参与全局结论",
+        "text": timing_text,
+        "summary": {"kind": "timing", **parse_timing_summary(timing_text).to_dict()},
+    }
+    util_report = {
+        "name": "utilization_routed.rpt",
+        "stage": "post-route",
+        "freshness": "unverified",
+        "reason": "报告来源尚未核实",
+        "text": util_text,
+        "summary": {"kind": "utilization", **parse_utilization(util_text).to_dict()},
+    }
+    snapshot.update(
+        {
+            "connection": "connected",
+            "session_mode": "gui",
+            "reports": [timing_report, util_report],
+            "quality": {"timing": "unknown", "resources": "unknown"},
+        }
+    )
+    snapshot["run"].update({"project_file": project_file, "project_mode": "unknown"})
+    with playwright.sync_playwright() as runtime:
+        browser = runtime.chromium.launch(
+            executable_path=executable, headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page(viewport={"width": 1440, "height": 1150})
+            errors = []
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            page.on("console", lambda msg: errors.append(msg.text) if msg.type == "error" else None)
+            page.goto(url)
+            playwright.expect(page.locator("#report-wns")).to_have_text("0.234")
+            assert page.locator("#report-tns").inner_text() == "0.000"
+            assert page.locator("#report-whs").inner_text() == "0.045"
+            assert page.locator("#report-ths").inner_text() == "0.000"
+            assert "可能过期" in page.locator("#report-context").inner_text()
+            assert page.locator("#timing").inner_text() == "未知"
+            assert page.locator("#gui-project-state").inner_text() == "已发现原生工程文件"
+            assert page.locator("#gui-project-file").inner_text() == project_file
+            hint = page.locator("#gui-project-hint").inner_text()
+            assert "File > Project > Open" in hint
+            assert "同一 Vivado GUI 会话" in hint
+            assert "不要让第二个实例同时写入" in hint
+            assert "尚未验证" in hint
+            assert page.locator('a[href^="file:"]').count() == 0
+            page.screenshot(path=str(tmp_path / "monitor-timing.png"), full_page=True)
+            page.get_by_role("button", name="utilization_routed.rpt", exact=True).click()
+            first_resource = page.locator("#resource-list tr").first
+            assert first_resource.locator("td").all_text_contents() == [
+                "Slice LUTs",
+                "1,440",
+                "20,800",
+                "6.92%",
+            ]
+            assert first_resource.locator("progress").get_attribute("value") == "6.92"
+            assert page.locator("#resources").inner_text() == "未知"
+            assert not page.locator("#timing-metrics").is_visible()
+            page.screenshot(path=str(tmp_path / "monitor-resources.png"), full_page=True)
+            page.set_viewport_size({"width": 390, "height": 844})
+            assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+            page.screenshot(path=str(tmp_path / "monitor-resources-mobile.png"), full_page=True)
+
+            # 解析器的非 ok 摘要含全零占位，展示必须保留未知。
+            timing_report["summary"] = {"kind": "timing", **parse_timing_summary("").to_dict()}
+            snapshot["run"]["project_mode"] = "in_memory"
+            page.reload()
+            playwright.expect(page.locator("#timing-parse-note")).to_contain_text("未识别")
+            for field in ("wns", "tns", "whs", "ths"):
+                assert page.locator(f"#report-{field}").inner_text() == "未知"
+            assert page.locator("#gui-project-state").inner_text() == "内存工程 · 无持久 .xpr 交付"
+            assert project_file not in page.locator("#gui-project-file").inner_text()
+            assert "File > Project > Open" not in page.locator("#gui-project-hint").inner_text()
+
+            # 某字段未知时不以 Used/Available 重新计算报告百分比。
+            util_report["summary"]["resources"][0]["percent"] = None
+            page.get_by_role("button", name="utilization_routed.rpt", exact=True).click()
+            page.reload()
+            page.get_by_role("button", name="utilization_routed.rpt", exact=True).click()
+            first_resource = page.locator("#resource-list tr").first
+            assert first_resource.locator("td").last.inner_text() == "未知"
+            assert first_resource.locator("progress").count() == 0
+
+            snapshot["source"] = "replay"
+            snapshot["run"]["project_mode"] = "unknown"
+            page.reload()
+            playwright.expect(page.locator("#gui-project-state")).to_contain_text("回放样本")
+            assert "样本路径" in page.locator("#gui-project-file").inner_text()
+            assert "File > Project > Open" not in page.locator("#gui-project-hint").inner_text()
+            snapshot["source"] = "live"
+            snapshot["run"]["project_file"] = ""
+            page.reload()
+            playwright.expect(page.locator("#gui-project-file")).to_have_text(
+                "未确认 .xpr 工程路径"
+            )
+            assert "File > Project > Open" not in page.locator("#gui-project-hint").inner_text()
+            assert errors == []
         finally:
             browser.close()
