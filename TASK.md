@@ -3,8 +3,53 @@
 Status: OPEN
 Target: otter-fpga-lab/otter-vivado
 Basis: 用户于 2026-10-03 确认板上调试、可视化和产品边界，并授权逐步实施；从 main 3750590 接续
-Next: 第 4 项本地实验编排（就绪、倒计时、动作标记、暂停/重做）；随后为工程控件语义和独立 ILA 停止。真实工程/板卡验证按现场需求补充
-Result: 第 3 项软件能力已接通：离线统计、声明的状态/握手检查、证据与下一轮取证 Skill；共 44 MCP 工具。消费者报告/页面由智能体生成；未进行真实 EDA/板卡验收
+Next: 第 5 项工程控件语义（枚举、定点、单位、预设等）；之后核对独立 ILA 停止能力。消费者页面、声音和真实板卡按现场需求验证
+Result: 第 4 项本地实验软件能力已接通：运行器、共享硬件步骤、就绪/倒计时/提示/标记/暂停/恢复/中止/显式重做与生成指引；共 47 MCP 工具。未新增固定网页，未进行真实 EDA/板卡/声音验收
+
+## 当前工作：第 4 项本地实验编排（2026-10-03）
+
+从干净 main `fbc9845fb8ae616ffcaad0c3295b7e7e1d89e0b1` 接续（上一轮采样分析提交）。
+用户明确要求开始下一项，继续按插件能力边界实现；本节随实现提交保存，不发布包。
+
+- 新增 `DebugExperiment` 和创建/快照/控制三个 MCP 入口，复用现有 DebugService。
+  消费者声明 ready/countdown/cue/debug/wait_capture 步骤，创建后尚未执行；首步必须
+  来自消费者本地人工确认，MCP 不代替实际就绪。计划固定，计时不依赖聊天往返。
+- 单调时钟倒计时支持暂停/恢复，提示与动作标记含序号、UTC 和单调相对时间。声音由
+  消费者页面按事件播放，运行器不声称已发声、人已动作或已与 FPGA 对齐。
+- 有限硬件步骤复用 revision、control 与短操作回执；固定目标/核 UUID/探针结构，
+  包括进入硬件执行前的再次核对。活动实验拒绝其它写入/选目标，控制权交接中止编排。
+  暂停/中止先等待已接受短操作，不停止 FPGA、不回滚 VIO，不重放已完成步骤或未知结果。
+- 新消费者目录保存计划/指纹/初始硬件快照，每轮独立目录保存逐事件 JSON 和 VCD 导出。
+  redo 要求上轮明确终止、之后显式 refresh、相关 ILA 明确 IDLE；用操作身份判断刷新先后，
+  不受系统时间回拨影响。旧轮保留，unknown 不可自动 redo，崩溃后不自动续跑。
+- 新增 [实验接口与边界](docs/DEBUG_EXPERIMENT.md) 和
+  [消费者实验生成参考](skills/otter-vivado/references/experiment.md)，更新 README、Skill
+  入口及 ILA Prompt。说明同进程/同服务适配、人工按钮、声音去重、旧页隔离与现场验证；
+  没有新增固定实验 UI 或任意页面加载服务器，不能只交 HTML 就宣称已接入。
+
+验证环境 Linux / Python 3.12.14 / MCP SDK 2.3.0，真实 asyncio，Tcl 解释器使用 EDA 替身。
+
+```bash
+source .venv/bin/activate
+pytest tests/test_debug_experiment.py tests/test_debug_experiment_tools.py \
+  tests/test_debug_service.py tests/test_debug_backend.py tests/test_debug_http.py \
+  tests/test_debug_cli.py tests/test_ila_capture.py tests/test_ila_analysis_cli.py \
+  tests/test_debug_bundle.py tests/test_debug_artifacts_cli.py tests/test_debug_design_tools.py \
+  tests/test_debug_prepare_cli.py tests/test_prompts.py tests/test_readme_hooks.py \
+  tests/test_version.py -q -rs -k 'not browser'
+ruff check src/ tests/
+git diff --check
+python -m pip wheel --no-deps . -w /workspace/scratch/otter-vivado-experiment-wheels
+```
+
+定向回归 **266 passed / 3 deselected**；3 项是未改网页对应的浏览器测试，不记为通过。
+随后补系统时间回拨的刷新边界并重跑实验/MCP/共享服务子集 **45 passed**；更新 Prompt
+后其子集 **6 passed**，与上述覆盖重叠，不相加。覆盖本地人工确认、暂停剩余时间、
+完成步骤不重放、接受硬件操作后中止/日志故障仍保留共享回执、身份变化与选目标保护、
+失联/关闭、等待采集晚到/超时、重做新目录/ILA 未停止拒绝、实际 MCP 导出链路。
+Ruff、diff、文档/Skill 链接与 wheel 模块检查通过；未改 Tcl、会话传输或 web/。
+没有真实板卡、Vivado、Windows、消费者浏览器/声音设备验证。completed 只是计划步骤
+结束，不代表有效采样、物理动作完成或硬件 PASS；下一项接续工程控件语义。
 
 ## 当前工作：第 3 项采样分析与智能体取证（2026-10-03）
 

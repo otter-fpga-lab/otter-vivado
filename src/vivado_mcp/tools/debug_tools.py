@@ -99,7 +99,74 @@ async def debug_action(
 
 @mcp.tool()
 async def close_debug_panel(session_id: str = "default", ctx: Context = None) -> str:
-    """释放调试页面和轮询；等待已接受短操作的回执，不停止 ILA 或关闭 Vivado。"""
+    """中止本地实验后续步骤并释放页面/轮询；保留短操作回执，不停止 ILA/Vivado。"""
     registry = ctx.request_context.lifespan_context.debug_services
     closed = await registry.release(session_id)
     return json.dumps({"status": "closed" if closed else "not_found"})
+
+
+@mcp.tool()
+async def create_debug_experiment(
+    spec: dict, output_dir: str, expected_revision: int,
+    session_id: str = "default", ctx: Context = None,
+) -> str:
+    """在已选择设备且 control=ai 的共享服务上创建本地实验，尚不执行步骤。
+
+    spec={title,steps:[{id,kind,...}]}；首步必须 ready，需消费者本地人工入口确认。
+    ready={label}；countdown={label,duration_ms}；cue={label,tone:'none'|'beep'}；
+    debug={action,params} 仅 configure_ila/write_vio/arm_ila/export_ila，导出目录自动生成；
+    wait_capture={core,timeout_ms}。时长1~600000ms、最多64步；详细约定见 DEBUG_EXPERIMENT.md。
+    output_dir 必须是新目录，保存计划/每轮事件/导出数据；expected_revision 来自调试快照。
+    倒计时是主机时间，声音由消费者播放，不保证 FPGA 精确触发。无固定实验页面。
+    """
+    from vivado_mcp.debug_experiment import DebugExperiment
+
+    try:
+        service = await _service(ctx, session_id)
+        experiment = DebugExperiment(service, spec, output_dir, expected_revision, owner="ai")
+        return json.dumps(experiment.snapshot(), ensure_ascii=False)
+    except (ValueError, RuntimeError, OSError) as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+async def get_debug_experiment(session_id: str = "default", ctx: Context = None) -> str:
+    """只读当前实验缓存，不查询设备；事件带 seq，消费者据此去重播放提示。
+
+    remaining_ms 仅为本地倒计时；paused/aborted 不代表 FPGA 停止，硬件短操作不能取消。
+    快照只保留最近100个事件；完整逐事件 JSON 位于消费者目录，不支持进程崩溃后自动续跑。
+    """
+    try:
+        registry = ctx.request_context.lifespan_context.debug_services
+        session = _require_session(ctx, session_id)
+        service = registry.last(session_id) if session is None else await registry.get(session)
+        if service is None or service.experiment is None:
+            raise ValueError("该会话没有实验；已有记录可从消费者目录读取")
+        return json.dumps(service.experiment.snapshot(), ensure_ascii=False)
+    except (ValueError, RuntimeError) as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+async def debug_experiment_action(
+    experiment_id: str,
+    action: Literal["start", "pause", "resume", "abort", "redo", "mark"],
+    params: dict, expected_revision: int,
+    session_id: str = "default", ctx: Context = None,
+) -> str:
+    """控制本地实验：start/pause/resume/abort={}；mark={label,frame_id?}。
+
+    expected_revision 是实验快照版本，区别于调试版本。redo={expected_debug_revision}：
+    上轮终止后显式 refresh、ILA 明确 IDLE 才可创建新轮；unknown 不自动重做。
+    暂停/中止等待已接受硬件短操作回执，不停止 FPGA、不回滚 VIO；恢复不重放完成步骤。
+    计时和后续步骤在本地运行，不依赖聊天往返；人工就绪确认只能来自消费者本地适配入口。
+    """
+    try:
+        service = await _service(ctx, session_id)
+        experiment = service.experiment
+        if experiment is None or experiment.id != experiment_id:
+            raise ValueError("实验身份不匹配，请读取当前实验")
+        return json.dumps(experiment.command(action, params, expected_revision, source="ai"),
+                          ensure_ascii=False)
+    except (ValueError, RuntimeError, OSError) as exc:
+        return _error(exc)

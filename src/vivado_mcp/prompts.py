@@ -257,7 +257,7 @@ def ila_hardware_debug() -> str:
         title="ILA 硬件调试",
         applies="需要在已实现 FPGA 上观察内部状态，规划/核对 ILA probes，并保证 bitstream 与 LTX 匹配。",
         not_for="没有可复现触发条件的无限抓取，或试图用 ILA 替代仿真、CDC 和 timing signoff。",
-        tools=("get_project_info", "get_utilization_report", "get_timing_report", "check_bitstream_readiness", "generate_bitstream", "parse_bit_header", "parse_ltx", "program_device", "get_debug_snapshot", "debug_action", "read_ila_waveform", "analyze_ila_capture", "run_tcl"),
+        tools=("get_project_info", "get_utilization_report", "get_timing_report", "check_bitstream_readiness", "generate_bitstream", "parse_bit_header", "parse_ltx", "program_device", "get_debug_snapshot", "debug_action", "read_ila_waveform", "analyze_ila_capture", "create_debug_experiment", "get_debug_experiment", "debug_experiment_action", "run_tcl"),
         prerequisites=(
             "明确硬件症状、触发条件、要证明/排除的假设、目标信号、所需前后触发窗口、采样时钟及预期事件频率；没有可证伪假设即 BLOCKED。",
             "用 `get_project_info` 确认器件与实现状态，用 `get_utilization_report` 评估 BRAM/LUT/时钟余量；确认新增 debug core 可能改变布局和 timing。",
@@ -269,6 +269,7 @@ def ila_hardware_debug() -> str:
             "Artifact gate：调用 `check_bitstream_readiness` 后才 `generate_bitstream`。分别用 `parse_bit_header` 和 `parse_ltx` 核对器件、时间/来源及 probe，固定记录 bit/ltx/commit 三元组；任何一项不匹配即 BLOCKED。",
             "Program gate：列出目标 hardware server/device 与 DNA/part 等可核对信息；用户明确确认后才调用 `program_device`。不得仅按列表第一个 target 编程。",
             "Capture：通过 `get_debug_snapshot` / `debug_action` 复用共享服务，明确控制权、target/device/ILA；携带最新 revision，在已授权范围内配置、arm，确认完整后 export_ila 到消费者新目录。保存配置、bit/ltx 标识与快照；unknown 核对现场，不自动重试。",
+            "Experiment：若需要人工动作、倒计时或暂停/重做，用 `create_debug_experiment`、`get_debug_experiment`、`debug_experiment_action` 和消费者本地适配层。ready 由现场人工确认，后续计时在本机运行；提示不是 FPGA 精确触发，暂停不等于停止 ILA，未知结果不自动重试。",
             "Analyze：用 `read_ila_waveform` 获取真实 id/width 映射，以消费者声明的状态编码、时钟边沿和取值时机调用 `analyze_ila_capture`。保存输入与规则指纹、检查结果和反例 tick；consistent 仅是窗口内声明规则一致，inconclusive/observed 不能算 PASS，工具建议不是可执行触发命令。",
             "Re-measure：根据证据每轮只更新一个假设或取证条件；把 VCD id 映射到实际 hw_probe 后，才在共享服务中执行下一轮已授权操作，每次使用新采样目录。报告与页面留在消费者工程。若两轮采集均不能区分假设，停止并说明缺少的可观测性。",
         ),

@@ -105,6 +105,7 @@ class DebugService:
         self._poller: asyncio.Task | None = None
         self._sampling = False
         self._http = None
+        self.experiment = None
         self._poll_interval = poll_interval
         self._state = {
             "source": source, "session_id": session.session_id,
@@ -137,7 +138,7 @@ class DebugService:
         if state != "ready":
             raise RuntimeError("Vivado 会话当前不可执行，请等待现有命令完成")
 
-    def submit(self, request: dict, *, source: str) -> dict:
+    def submit(self, request: dict, *, source: str, experiment=None) -> dict:
         """在所属事件循环中验证并启动操作，立即返回可查询的操作 ID。"""
         if source not in {"manual", "ai"}:
             raise ValueError("未知操作来源")
@@ -170,6 +171,17 @@ class DebugService:
                 raise RuntimeError("已有调试操作或采样正在执行，请读取状态后重试")
             if request["expected_revision"] != self._state["revision"]:
                 raise RuntimeError("状态已变化；请读取最新快照后重新操作")
+            lease = self.experiment
+            if experiment is not None and (experiment is not lease or not lease.active):
+                raise RuntimeError("实验执行身份已失效")
+            if lease is not None and lease.active and experiment is not lease:
+                if action == "control":
+                    if params["owner"] not in {"manual", "ai"}:
+                        raise ValueError("owner 仅支持 manual/ai")
+                    if params["owner"] != self._state["control"]:
+                        lease.interrupt("control_handoff")
+                elif action not in {"inventory", "refresh"}:
+                    raise RuntimeError("活动实验正在使用共享服务；先暂停观察或中止后再操作")
             if action == "control":
                 if params["owner"] not in {"manual", "ai"}:
                     raise ValueError("owner 仅支持 manual/ai")
@@ -190,7 +202,7 @@ class DebugService:
             self._state["busy"] = True
             self._state["revision"] += 1
             self._operation = self._loop.create_task(
-                self._execute(operation, copy.deepcopy(params))
+                self._execute(operation, copy.deepcopy(params), experiment)
             )
         return {"operation_id": operation["id"], "status": "running"}
 
@@ -207,7 +219,7 @@ class DebugService:
                 connection="connected", error=None,
             )
 
-    async def _execute(self, operation: dict, params: dict) -> None:
+    async def _execute(self, operation: dict, params: dict, experiment=None) -> None:
         action = operation["action"]
         mutation_started = False
         try:
@@ -241,6 +253,8 @@ class DebugService:
                 else:
                     if _topology(current) != _topology(before["hardware"]):
                         raise ValueError("设备或探针结构已变化，本次操作未执行；请核对新快照")
+                    if experiment is not None:
+                        experiment.validate_hardware(current)
                     kind = "vios" if action == "write_vio" else "ilas"
                     matches = [c for c in current[kind] if c["name"] == params["core"]]
                     if len(matches) != 1:
@@ -344,6 +358,8 @@ class DebugService:
 
     async def close(self) -> None:
         """释放本服务；不停止采集、不关闭 Hardware Manager/Vivado。"""
+        if self.experiment is not None:
+            self.experiment.interrupt("service_closed")
         self._closed = True
         if self._poller:
             self._poller.cancel()
@@ -352,6 +368,8 @@ class DebugService:
         if self._http:
             await asyncio.to_thread(self._http.close)
             self._http = None
+        if self.experiment is not None:
+            await self.experiment.close()
         # 已接受的短操作保留回执；不能取消后重新交给另一服务执行。
         await self.wait_idle()
 

@@ -15,7 +15,7 @@ async def test_mcp_registration_and_read_only_analysis(tmp_path):
     path = write_vcd(tmp_path / 'sample.vcd')
     before = path.read_bytes()
     tools = {tool.name: tool for tool in await mcp.list_tools()}
-    assert len(tools) == 44
+    assert len(tools) == 47
     assert set(tools['analyze_ila_capture'].input_schema['required']) == {'file_path', 'spec'}
     result = await mcp.call_tool('analyze_ila_capture', {'file_path': str(path), 'spec': SPEC})
     assert not result.is_error
