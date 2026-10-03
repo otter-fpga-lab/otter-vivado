@@ -373,6 +373,7 @@ if {[catch {current_project} __proj]} {
 # --------------------------------------------------------------------------- #
 
 QUERY_RUN_PROGRESS = """\
+if {{[catch {{
 set __run [get_runs -quiet {run_name}]
 if {{$__run eq ""}} {{
     puts "VMCP_RUN_ERROR:run '{run_name}' not found"
@@ -384,6 +385,33 @@ if {{$__run eq ""}} {{
     puts "VMCP_RUN:status=$__status"
     puts "VMCP_RUN:progress=$__progress"
     puts "VMCP_RUN:dir=$__dir"
+    puts "VMCP_RUN:version=[version -short]"
+    # 工程元数据为可选信息；旧版本/自定义 fileset 不应令真实 run 状态失效。
+    catch {{
+        set __project [current_project]
+        set __project_name [get_property NAME $__project]
+        puts "VMCP_RUN:project=$__project_name"
+        set __in_memory ""
+        if {{[lsearch -exact [list_property $__project] IS_IN_MEMORY] >= 0}} {{
+            set __in_memory [get_property IS_IN_MEMORY $__project]
+        }}
+        if {{$__in_memory eq "1" || [string equal -nocase $__in_memory true]}} {{
+            puts "VMCP_RUN:project_mode=in_memory"
+        }} else {{
+            # create_project 的命名约定；以当前 DIRECTORY 为准，且必须存在。
+            set __project_dir [get_property DIRECTORY $__project]
+            set __project_file [file join $__project_dir "$__project_name.xpr"]
+            if {{$__project_dir ne "" && [file isfile $__project_file]}} {{
+                puts "VMCP_RUN:project_file=[file normalize $__project_file]"
+            }}
+        }}
+    }}
+    catch {{puts "VMCP_RUN:top=[get_property TOP [get_filesets sources_1]]"}}
+    foreach __prop {{STATS.ELAPSED NEEDS_REFRESH}} __key {{elapsed needs_refresh}} {{
+        if {{![catch {{get_property $__prop $__run}} __value]}} {{
+            puts "VMCP_RUN:$__key=$__value"
+        }}
+    }}
     if {{[file exists $__log]}} {{
         set __size [file size $__log]
         set __mtime [file mtime $__log]
@@ -391,6 +419,14 @@ if {{$__run eq ""}} {{
         puts "VMCP_RUN:log_size=$__size"
         puts "VMCP_RUN:log_mtime=$__mtime"
         set __fp [open $__log r]
+        # 定时查询仅读取末尾 64 KiB，避免大日志阻塞 Vivado 主通道。
+        # 超出窗口时行号是窗口内相对值，不冒充整份日志的绝对行号。
+        set __offset [expr {{max(0, $__size - 65536)}}]
+        puts "VMCP_RUN:log_offset=$__offset"
+        if {{$__offset > 0}} {{
+            seek $__fp $__offset start
+            gets $__fp __discard
+        }}
         set __lines [list]
         while {{[gets $__fp __line] >= 0}} {{
             lappend __lines $__line
@@ -421,6 +457,10 @@ if {{$__run eq ""}} {{
         puts "VMCP_RUN:log_exists=0"
     }}
     puts "VMCP_RUN_DONE"
+}}
+}} __query_error]}} {{
+    if {{[info exists __fp]}} {{ catch {{close $__fp}} }}
+    puts "VMCP_RUN_ERROR:$__query_error"
 }}
 """
 

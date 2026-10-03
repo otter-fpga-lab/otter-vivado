@@ -1,0 +1,7 @@
+# SYNTHETIC REPLAY — route complete is not write_bitstream complete.
+VMCP_RUN:status=route_design Complete!
+VMCP_RUN:progress=100%
+VMCP_RUN:project=synthetic-demo
+VMCP_RUN:version=unverified-replay
+VMCP_RUN:log_exists=0
+VMCP_RUN_DONE

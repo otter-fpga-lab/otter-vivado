@@ -14,12 +14,13 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from mcp.server import MCPServer
 
 from vivado_mcp import prompts as _prompts
 from vivado_mcp.config import find_vivado
+from vivado_mcp.run_monitor import MonitorRegistry
 from vivado_mcp.vivado.session import VivadoSession
 from vivado_mcp.vivado.session_manager import SessionManager
 
@@ -52,6 +53,7 @@ _manager_ref: SessionManager | None = None
 class AppContext:
     """应用上下文，通过 lifespan 注入到所有工具函数中。"""
     session_manager: SessionManager
+    run_monitors: MonitorRegistry = field(default_factory=MonitorRegistry)
 
 
 @asynccontextmanager
@@ -72,11 +74,13 @@ async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
         vivado_path = ""
 
     manager = SessionManager(vivado_path=vivado_path)
+    app_context = AppContext(session_manager=manager)
     _manager_ref = manager
     try:
-        yield AppContext(session_manager=manager)
+        yield app_context
     finally:
         _manager_ref = None
+        await app_context.run_monitors.close()
         await manager.close_all()
 
 
@@ -404,6 +408,7 @@ import vivado_mcp.tools.diagnostic_tools  # noqa: E402, F401
 import vivado_mcp.tools.flow_tools  # noqa: E402, F401
 import vivado_mcp.tools.introspect_tools  # noqa: E402, F401
 import vivado_mcp.tools.ip_tools  # noqa: E402, F401
+import vivado_mcp.tools.monitor_tools  # noqa: E402, F401
 import vivado_mcp.tools.report_tools  # noqa: E402, F401
 import vivado_mcp.tools.session_tools  # noqa: E402, F401
 import vivado_mcp.tools.tcl_tools  # noqa: E402, F401

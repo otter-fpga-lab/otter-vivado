@@ -1,0 +1,18 @@
+# SYNTHETIC REPLAY — no Vivado execution. Fixed input; no simulated time-based progress.
+VMCP_RUN:status=route_design Running
+VMCP_RUN:progress=0%
+VMCP_RUN:dir=/synthetic/demo.runs/impl_1
+VMCP_RUN:project=synthetic-demo
+VMCP_RUN:version=unverified-replay
+VMCP_RUN:top=demo
+VMCP_RUN:elapsed=00:02:13
+VMCP_RUN:needs_refresh=0
+VMCP_RUN:log_exists=1
+VMCP_RUN:log_size=1024
+VMCP_RUN:log_mtime=1791000000
+VMCP_RUN:log_offset=0
+VMCP_RUN:total_lines=20
+VMCP_RUN_PHASE:12|Starting Routing
+VMCP_RUN_TAIL:19|WARNING: [Example 1-1] Synthetic warning, not a vendor run
+VMCP_RUN_TAIL:20|Phase 1 Build RT Design
+VMCP_RUN_DONE

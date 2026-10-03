@@ -30,6 +30,7 @@ from vivado_mcp.install import (
     install,
 )
 from vivado_mcp.vivado.gui_session import _locate_server_script, probe_vmcp_server
+from vivado_mcp.vivado.tcl_utils import tcl_source_utf8
 
 _SCHEMA_VERSION = 1
 _DEFAULT_PORT = 9999
@@ -405,12 +406,12 @@ def _collect_checks(
             init_content = (
                 init_tcl.read_text(encoding="utf-8", errors="replace") if init_tcl.is_file() else ""
             )
-            expected_script = _locate_server_script().as_posix()
+            expected_source = tcl_source_utf8(_locate_server_script().as_posix())
             has_marks = _BEGIN_MARK in init_content and _END_MARK in init_content
             current = (
                 has_marks
                 and f"set ::VMCP_PORT_PREF {port}" in init_content
-                and expected_script in init_content
+                and expected_source in init_content
             )
             if current:
                 checks.append(

@@ -1,0 +1,8 @@
+# SYNTHETIC REPLAY — failure preserves the reported 37.5%, never forces 100%.
+VMCP_RUN:status=route_design ERROR
+VMCP_RUN:progress=37.5%
+VMCP_RUN:project=synthetic-demo
+VMCP_RUN:version=unverified-replay
+VMCP_RUN:log_exists=0
+VMCP_RUN_TAIL:1|ERROR: [Example 1-2] Synthetic routing failure
+VMCP_RUN_DONE
