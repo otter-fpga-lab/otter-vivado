@@ -53,7 +53,9 @@ uv build --wheel --out-dir /tmp/otter-vivado-design-wheel
 跳过均需 Windows 或 CP936；未将其记为通过。覆盖特殊名称/位序、缺失/歧义 net 在
 变更前失败、工程切换、文件冲突、共享约束集、部分应用、协议失败和既有调试/会话回归。
 CLI 实际导出三份产物并拒绝重复覆盖；Ruff、diff、本地文档链接、wheel 新模块通过。
-实现与后续交接记录随本轮 main 提交；没有商业 Vivado、Windows 或板卡实测。
+实现已进入 main：[09d155f](https://github.com/otter-fpga-lab/otter-vivado/commit/09d155f6861e288ef00c0d13088d5234c9e5cd70)。
+18 个 blob 和完整 tree 与本地验证版本一致；本交接记录随后更新，接续取最新 HEAD。
+没有商业 Vivado、Windows 或板卡实测。
 
 接下来优先闭合真实连接、构建、bit/ltx 配对；再做采样导出/波形与分析、本地倒计时/
 动作提示，以及更多项目控件。业务参数协议、CDC 和 ISP 算法继续由消费者 RTL 设计验证。
