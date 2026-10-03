@@ -3,8 +3,8 @@
 Status: OPEN
 Target: otter-fpga-lab/otter-vivado
 Basis: Hub main 0e9c375e；topics/20261002_vivado-progress-and-ross/TASK.md
-Next: 实现共享状态观察器、本机只读面板与定向验证，提交 Draft PR
-Result: 已领取；开发分支 feat/progress-view-study，从实际 origin/main 60b13cf 开始
+Next: 提交本工作块和 Draft PR；按 docs/RUN_MONITOR.md 在实际 Windows/Vivado 版本做现场验证
+Result: 真实观察器、只读面板、CLI/MCP/Skill 原地接入及样例已实现；云端定向 315 passed / 6 skipped
 
 ## 接手与边界
 
@@ -22,14 +22,71 @@ main 已有 wait=False、get_run_progress、报告解析器；缺本机持续展
 只改本产品和对应 Hub 议题。Ross 与本产品并列可选；不改旧贡献分支，不触碰
 Coding/Library，不操作板卡、不自动合并/发布/改变可见性。
 
-## 当前工作块
+## 已完成工作块（2026-10-03）
 
-- 复用现有会话和 Tcl 协议，后台定时只读采样，浏览器和 MCP 共用事实。
-- 独立显示目标完成、阶段完成、失败、未知进度、忙碌和失联。
-- 读取已有日志和报告，显示源文件、阶段与新鲜度；不通过查询生成报告或切换设计。
-- CLI、MCP、Skill 共用源码；普通更新原地引用，活动会话在正常边界加载新版。
+- 复用现有会话和 QUERY_RUN_PROGRESS，5 秒后台采样；新增 open_run_monitor /
+  get_run_snapshot 和 monitor CLI，浏览器只读同一缓存。忙/超时/失联保留最后时间，
+  不自动重连、reset、cancel、relaunch；关闭面板不关闭 Vivado。
+- 按 synth_design / route_design / write_bitstream 目标判断完成；不再合成初始 0%
+  或失败 100%。取消、阶段完成、未知值分开；慢观察查询不会中断原构建等待。
+- runme.log 读取限末尾 64 KiB；已有报告限该目录前 16 份、每份前 256 KiB。
+  新鲜度、Design 不匹配和阶段线索可追溯，复用 timing/utilization parser；不混入
+  当前其他 design，未知来源不升级全局 PASS，不把运行完成等同签核。
+- 修复只读 attach 退出误删用户 PID 标记。展示 HTTP 只绑定 loopback、随机路径，
+  Host/Origin 受限，无执行/写入接口，页面文本不执行日志/报告中的 HTML。
+- connect 一次登记源码 MCP + Skill 目录链接，复用已有配置备份实现，不复制业务库，
+  不注入/重启 Vivado；已有冲突入口拒绝覆盖。保持原作者/包 metadata/许可不变。
+- README 提供入口；docs/RUN_MONITOR.md 提供可运行 workflow、官方/Ross 对照和现场步骤；
+  examples/progress 有独立消费工程源码及明确标注的固定合成回放。
+
+## 后端决定
+
+采用现有 main 会话/解析器 + 薄显示层。Ross 2026.9.1 / 2cdc9eef 文档提供
+status/log/history 与独立监控通道，实测声明为 2026.1；其 skills 插件与 MCP 二进制
+独立分发、客户端可能缓存，不代表旧版 Vivado/Windows display 已实测。本产品与 Ross
+并列可选，不建立依赖、不宣布替代，不分发其二进制。官方 UG835/UG893 2026.1
+确认中间 step 可完成、run 完成仍可能时序失败，具体链接留在使用文档。
+
+上游 PR #5 读取时仍 OPEN、head b40e62cd。此次只读借鉴其 review 的阶段/报告来源
+约束，没有修改旧分支/PR 或联系维护者。
 
 ## 验证与下一动作
 
-当前尚未完成验证；云端未发现 Vivado/Ross/GUI/板卡。后续在此记录实际命令、
-结果、远端 commit/PR，以及准确现场待测步骤。模拟输入不作为真实 EDA PASS。
+实际环境：Linux / Python 3.12.14 / MCP SDK 2.3.0；安装 editable 开发依赖，
+有 tclsh 和 Chromium，没有运行 Vivado、Ross 或板卡。
+
+定向命令：
+
+```bash
+PYTHONPATH=.venv/lib/python3.12/site-packages:src python -m pytest \
+  tests/test_run_monitor.py tests/test_monitor_http.py tests/test_flow_progress.py \
+  tests/analysis/test_run_progress_parser.py tests/test_report_tools.py \
+  tests/test_diagnostic_tools.py tests/test_protocol_regression.py tests/test_session.py \
+  tests/test_probe_then_attach.py tests/test_connect.py tests/test_doctor.py tests/test_prompts.py -q
+.venv/bin/ruff check src/ tests/
+git diff --check
+.venv/bin/python -m pip wheel --no-deps . -w <temporary-wheel-directory>
+```
+
+- 定向 pytest：315 passed / 6 skipped；保留平台条件跳过，无全产品/厂商矩阵扩测。
+  覆盖运行/成功/失败/取消/阶段未达目标、空进度、Tcl错误、busy/失联、迟到响应不串台、
+  日志读取边界、陈旧/不匹配/未知报告、接入冲突和同源幂等。
+- 同批包含真实 Chromium 桌面 1440 / 手机 390 宽渲染、XSS 文本、展示失联保留快照；
+  无页面/控制台错误。Python 标准库 HTTP 边界和只读行为通过。模拟 EDA 输入不算 EDA PASS。
+- ruff 全部源码/测试通过；diff 无空白错误。wheel 构建成功并确认包含 HTML、CLI、
+  MCP monitor 模块及原 Tcl server 资源；未发布包。
+- CLI 固定回放实际可运行：route Complete + write_bitstream 目标显示 stage_complete，
+  原生 100% 保留但不冒充目标完成；失败样本保持 37.5%。
+
+未测/限制：实际 Vivado 2019.1 或用户当前版本的 GUI/Tcl/attach，Windows 文件编码、
+状态属性/日志/报告命名与性能，Windows symlink/junction 权限及客户端真实 Skill 发现，
+Ross 二进制、完整签核/bitstream/硬件。精确现场流程见 docs/RUN_MONITOR.md 最后一节，
+不要求抢占 Coding 本机测试。展示质量卡当前保持 unknown，报告仅带来源供人工核查。
+
+## GitHub 恢复点
+
+分支：`feat/progress-view-study`，base `main` @ 60b13cf。
+已保存远端领取提交：`ced7425d770c7ff6647dbee84938d527ebcb8b5c`。
+完整实现和 Draft PR 接续点在工作块提交后补记。Git HTTPS push 在本环境返回 401；
+使用现有授权的 GitHub Git Data API 上传同一 blob/tree/commit 并逐项比对 SHA、
+仅 fast-forward 更新本分支，不改全局凭据或旧贡献分支。

@@ -15,6 +15,7 @@ import time
 
 from mcp.server.mcpserver import Context
 
+from vivado_mcp.analysis.run_progress_parser import progress_percent, run_state
 from vivado_mcp.analysis.warning_parser import parse_diag_counts, parse_pre_bitstream
 from vivado_mcp.server import _NO_SESSION, _require_session, _safe_execute, mcp
 from vivado_mcp.tcl_scripts import (
@@ -35,69 +36,81 @@ _POLL_INTERVAL_SEC = 2.0
 #  内部辅助：综合 / 实现 / bitstream 共享的轮询逻辑(单一来源,勿复制)
 # --------------------------------------------------------------------------- #
 
+def _session_is_busy(session) -> bool:
+    """活跃会话的在途查询应继续持有响应，不因旁路采样中断构建等待。"""
+    state = getattr(session, "state", None)
+    return getattr(state, "value", state) == "busy" and session.is_alive
+
+
 async def _poll_run_until_done(
     session,
     run_name: str,
     timeout_sec: float,
     ctx: Context,
+    target_step: str | None = None,
 ) -> tuple[str, str, str, str]:
-    """每 2s 轮询 run STATUS/PROGRESS 直到终态(Complete/ERROR)或超时。
+    """每 2s 查询状态，直到目标完成、失败、取消或观察超时。
 
     Tcl 片段在 tcl_scripts.POLL_RUN_STATUS(单一定义);本 helper 是
     _launch_and_wait 和 generate_bitstream 的共用轮询循环。
 
     Returns:
         ``(outcome, final_status, final_progress, final_elapsed)``,
-        outcome ∈ {"done", "timeout"}。outcome=="done" 时已上报 100% 进度。
+        outcome ∈ {"done", "timeout"}。只上报实际 PROGRESS，不推算百分比。
 
     Raises:
-        轮询 execute 抛出的异常原样上抛,由调用方格式化错误消息。
+        除活跃会话忙碌外，execute 异常原样上抛，由调用方格式化错误消息。
     """
-    deadline = time.time() + timeout_sec
+    deadline = time.monotonic() + timeout_sec
     final_status = "UNKNOWN"
-    final_progress = "0%"
+    final_progress = ""
     final_elapsed = ""
-    last_progress_int = 0
+    last_progress = None
 
-    await ctx.report_progress(progress=0, total=100)
-
-    while time.time() < deadline:
-        poll = await session.execute(
-            POLL_RUN_STATUS.format(run_name=run_name), timeout=15.0
-        )
+    while time.monotonic() < deadline:
+        if _session_is_busy(session):
+            await asyncio.sleep(_POLL_INTERVAL_SEC)
+            continue
+        try:
+            poll = await session.execute(
+                POLL_RUN_STATUS.format(run_name=run_name), timeout=15.0
+            )
+        except RuntimeError:
+            # 检查状态与获得 session 锁之间，另一条查询可能进入 BUSY。
+            # 只重试仍活跃的忙会话；真正的 Tcl/断连错误仍交给调用方处理。
+            if _session_is_busy(session):
+                await asyncio.sleep(_POLL_INTERVAL_SEC)
+                continue
+            raise
+        if poll.is_error:
+            raise RuntimeError(f"Vivado 状态查询失败: {poll.output[:500]}")
 
         line = next(
             (ln for ln in poll.output.splitlines() if ln.startswith("VMCP_POLL|")),
             None,
         )
-        if line:
-            parts = line[len("VMCP_POLL|"):].split("|")
-            if len(parts) >= 2:
-                final_status = parts[0]
-                final_progress = parts[1]
-                final_elapsed = parts[2] if len(parts) >= 3 else ""
+        if line is None:
+            raise RuntimeError("Vivado 未返回 VMCP_POLL 状态标记；run 未取消，可继续查询。")
+        parts = line[len("VMCP_POLL|"):].split("|")
+        if len(parts) < 2 or not parts[0].strip():
+            raise RuntimeError("Vivado 返回的 VMCP_POLL 状态标记不完整。")
+        final_status = parts[0].strip()
+        final_progress = parts[1].strip()
+        final_elapsed = parts[2].strip() if len(parts) >= 3 else ""
 
-        # 进度更新
-        try:
-            progress_int = int(final_progress.rstrip("%").strip() or "0")
-        except ValueError:
-            progress_int = last_progress_int
-        if progress_int != last_progress_int:
-            await ctx.report_progress(progress=progress_int, total=100)
-            last_progress_int = progress_int
+        # 无效或缺失的百分比保持未知，不合成初始 0% 或终态 100%。
+        percent = progress_percent(final_progress)
+        if percent is not None and percent != last_progress:
+            if ctx is not None:
+                await ctx.report_progress(progress=percent, total=100)
+            last_progress = percent
 
-        # 终态判断：Complete! 表示成功；ERROR 表示失败；其余继续轮询
-        if "Complete" in final_status:
-            break
-        if "ERROR" in final_status.upper():
-            break
+        state = run_state(final_status, target_step)
+        if state in {"completed", "failed", "cancelled"}:
+            return ("done", final_status, final_progress, final_elapsed)
 
         await asyncio.sleep(_POLL_INTERVAL_SEC)
-    else:
-        return ("timeout", final_status, final_progress, final_elapsed)
-
-    await ctx.report_progress(progress=100, total=100)
-    return ("done", final_status, final_progress, final_elapsed)
+    return ("timeout", final_status, final_progress, final_elapsed)
 
 
 async def _query_fileset_overrides(session) -> list[str]:
@@ -160,6 +173,7 @@ async def _launch_and_wait(
     label: str,
     ctx: Context,
     wait: bool = True,
+    target_step: str | None = None,
 ) -> str:
     """原子启动 run；按 wait 选择立即返回或轮询、open_run、诊断。
 
@@ -225,12 +239,17 @@ async def _launch_and_wait(
     # ------------------- 2. 轮询 -------------------
     try:
         outcome, final_status, final_progress, final_elapsed = (
-            await _poll_run_until_done(session, run_name, timeout_sec, ctx)
+            await _poll_run_until_done(
+                session, run_name, timeout_sec, ctx, target_step=target_step
+            )
         )
     except Exception as e:
         return f"[ERROR] 轮询 {label} 状态失败: {e}"
     if outcome == "timeout":
-        return f"[ERROR] {label}超时（{timeout_minutes} 分钟），最后状态: {final_status}"
+        return (
+            f"[ERROR] 等待{label}超时（{timeout_minutes} 分钟），最后状态: {final_status}。"
+            "run 未取消，可继续查询。"
+        )
 
     # ------------------- 3. B4 修复：自动 open_run -------------------
     # 综合/实现完成后自动打开设计，让紧随其后的 report_* / report_io 能工作。
@@ -238,7 +257,8 @@ async def _launch_and_wait(
     # 注意:catch 吞异常后外层 return_code=0,所以不能只看 is_error。
     # 必须把 $__open_err 的内容 puts 出来,Python 侧检测 VMCP_OPEN_ERR: 前缀。
     open_note = ""
-    if "Complete" in final_status and "ERROR" not in final_status.upper():
+    final_state = run_state(final_status, target_step)
+    if final_state == "completed":
         try:
             open_result = await session.execute(
                 f"if {{[catch {{ open_run {run_name} }} __open_err]}} "
@@ -265,10 +285,13 @@ async def _launch_and_wait(
     result_parts: list[str] = [
         f"--- {label}结果 ---",
         f"状态: {final_status}",
-        f"进度: {final_progress}",
+        f"进度: {final_progress or '(未知)'}",
         f"耗时: {final_elapsed}",
     ]
     result_parts.extend(override_lines)
+    if final_state in {"failed", "cancelled"}:
+        state_label = "已取消" if final_state == "cancelled" else "失败"
+        result_parts.insert(0, f"[ERROR] {label}{state_label}。")
     if open_note:
         result_parts.append(open_note)
 
@@ -349,7 +372,8 @@ async def run_synthesis(
         return _NO_SESSION.format(sid=session_id)
 
     return await _launch_and_wait(
-        session, run_name, jobs, timeout_minutes, "综合", ctx, wait=wait
+        session, run_name, jobs, timeout_minutes, "综合", ctx,
+        wait=wait, target_step="synth_design",
     )
 
 
@@ -385,7 +409,8 @@ async def run_implementation(
         return _NO_SESSION.format(sid=session_id)
 
     return await _launch_and_wait(
-        session, run_name, jobs, timeout_minutes, "实现", ctx, wait=wait
+        session, run_name, jobs, timeout_minutes, "实现", ctx,
+        wait=wait, target_step="route_design",
     )
 
 
@@ -490,21 +515,24 @@ async def generate_bitstream(
     # 轮询(与 _launch_and_wait 共用 _poll_run_until_done,单一来源)
     try:
         outcome, final_status, final_progress, final_elapsed = (
-            await _poll_run_until_done(session, impl_run, timeout_sec, ctx)
+            await _poll_run_until_done(
+                session, impl_run, timeout_sec, ctx, target_step="write_bitstream"
+            )
         )
     except Exception as e:
         return f"[ERROR] 轮询比特流状态失败: {e}"
     if outcome == "timeout":
         return (
-            f"[ERROR] 生成比特流超时({timeout_minutes} 分钟)。"
-            f"最后状态: {final_status},进度: {final_progress}"
+            f"[ERROR] 等待比特流生成超时({timeout_minutes} 分钟)。"
+            f"最后状态: {final_status},进度: {final_progress or '(未知)'}。"
+            "run 未取消，可继续查询。"
         )
 
-    if "ERROR" in final_status.upper():
+    if run_state(final_status, "write_bitstream") != "completed":
         return (
-            f"[ERROR] 生成比特流失败。\n状态: {final_status}\n"
-            f"进度: {final_progress}\n耗时: {final_elapsed}\n"
-            "建议:运行 get_critical_warnings impl_1 查看详情。"
+            f"[ERROR] 生成比特流未完成。\n状态: {final_status}\n"
+            f"进度: {final_progress or '(未知)'}\n耗时: {final_elapsed}\n"
+            f"建议:运行 get_critical_warnings(run_name='{impl_run}') 查看详情。"
         )
 
     # 查比特流输出目录
@@ -526,7 +554,7 @@ async def generate_bitstream(
     result_text = (
         f"--- 比特流生成结果 ---\n"
         f"状态: {final_status}\n"
-        f"进度: {final_progress}\n"
+        f"进度: {final_progress or '(未知)'}\n"
         f"耗时: {final_elapsed}\n"
         f"比特流目录: {bit_dir}"
     )

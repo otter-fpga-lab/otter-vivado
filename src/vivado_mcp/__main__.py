@@ -86,7 +86,46 @@ def main() -> None:
         help="--fix 要配置的 MCP 客户端（默认 all）。",
     )
 
+    p_monitor = sub.add_parser("monitor", help="只读观察已有 GUI run，或打开明确回放面板。")
+    p_monitor.add_argument("--port", type=int, default=9999, help="已有 GUI 的协议端口。")
+    p_monitor.add_argument("--run", default="impl_1", help="实际 run 名称。")
+    p_monitor.add_argument(
+        "--target", default="route_design",
+        choices=("synth_design", "route_design", "write_bitstream"),
+        help="要观察的完成目标，不能将中间步骤 Complete 当作该目标完成。",
+    )
+    p_monitor.add_argument("--replay", help="读取带 VMCP_RUN 标记的回放文本，不连接 EDA。")
+    p_monitor.add_argument("--json", action="store_true", help="输出一次结构化采样并退出。")
+    p_connect = sub.add_parser("connect", help="一次接入源码 MCP 与原地 Skill 目录引用。")
+    p_connect.add_argument("--client", choices=("codex", "claude-code"), default="codex")
+
     args = parser.parse_args()
+
+    if args.cmd == "monitor":
+        import asyncio
+
+        from vivado_mcp.monitor_cli import run_monitor_cli
+
+        try:
+            asyncio.run(run_monitor_cli(args))
+        except KeyboardInterrupt:
+            pass
+        except (ValueError, RuntimeError, OSError) as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    if args.cmd == "connect":
+        import json
+
+        from vivado_mcp.connect import connect_source
+
+        try:
+            print(json.dumps(connect_source(client=args.client), ensure_ascii=False, indent=2))
+        except (ValueError, RuntimeError, OSError) as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            sys.exit(1)
+        return
 
     # 无参数 或 "serve" → 启动 MCP server
     if args.cmd in (None, "serve"):

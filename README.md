@@ -1,4 +1,10 @@
-# vivado-mcp
+# Otter Vivado（基于 vivado-mcp）
+
+本仓是 NJ 的 [vivado-mcp](https://github.com/mapleleavessssssss-wq/vivado-mcp) 的保留历史
+fork，沿用 Apache-2.0、原作者与上游贡献关系。Otter 的首轮运行观察功能在独立分支开发：
+**[一次源码接入、真实进度面板、报告浏览与可运行样例](docs/RUN_MONITOR.md)**。
+开发交接见 [TASK.md](TASK.md)。下面保留上游工具使用说明；PyPI 安装的是上游发行版，
+本分支新增功能请按上述源码接入入口安装。
 
 [![PyPI version](https://img.shields.io/pypi/v/vivado-mcp)](https://pypi.org/project/vivado-mcp/)
 [![Python](https://img.shields.io/pypi/pyversions/vivado-mcp)](https://pypi.org/project/vivado-mcp/)

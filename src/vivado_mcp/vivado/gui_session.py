@@ -850,8 +850,12 @@ class GuiSession(BaseSession):
                         logger.warning("强杀 Vivado 进程异常: %s", e)
             self._proc = None
 
-        # 步骤 4:兜底清理 vivado_pid*.str(Vivado 强杀时不会自己删)
-        for pid_file in glob_mod.glob("vivado_pid*.str"):
+        # attach 仅断开连接，不拥有用户工作目录中的 PID 文件。
+        pid_files = (
+            glob_mod.glob("vivado_pid*.str")
+            if not self._attach_only and not self._attached_external else []
+        )
+        for pid_file in pid_files:
             try:
                 os.remove(pid_file)
                 logger.debug("已清理 %s", pid_file)
