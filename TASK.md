@@ -1,10 +1,10 @@
 # Otter Vivado：真实运行进度与报告查看
 
-Status: OPEN
+Status: CLOSED
 Target: otter-fpga-lab/otter-vivado
 Basis: Hub main 0e9c375e；topics/20261002_vivado-progress-and-ross/TASK.md
-Next: 默认 main 接续；按用户常用 2018.3/2024.2 优先、2020.2/2022.2 兼顾优化与定向验收；About 简介交哈基米协助
-Result: 已补浅/深色报告面板、多版本显式选择保护、独立报告采样与阶段降级；最新定向 383 passed / 6 skipped，未宣称真实 EDA 或 Windows PASS
+Next: 本轮按用户要求收口，等待实际使用反馈再定向修复；默认 main 接续，About 简介仍由哈基米协助
+Result: 已交付人机共用工程、真实进度/报告与多版本工具入口；末轮放宽自定义安装路径复用并保留跨面板主题，未宣称真实 EDA 或 Windows PASS
 
 ## 接手与边界
 
@@ -264,3 +264,46 @@ Ruff、diff、本地文档链接、README 与实际 33 个 MCP 工具一致性�
 独立样例的 run 状态与 timing/utilization 原文，再在 2020.2/2022.2 验证受影响路径。
 既有 Windows 中文/空格路径、客户端链接发现和实际磁盘性能仍需现场核对；不自动升级 IP、
 不动生产工程、不占用 Coding 的本机测试。About 继续由哈基米处理，不重复请求仓库设置权限。
+
+## 本轮收口，转实际使用反馈（2026-10-03）
+
+用户确认不同 Vivado 版本通常仍可共用工具，要求最后优化一轮后收口，后续遇到实际问题
+再处理。本节是当前接续状态；CLOSED 表示本轮交付结束，不代表全部版本/设备经过认证。
+从 main `a0b2c129571e54dd2d569c837f019aed016153f5` 继续，保留此前交付与旧贡献分支。
+
+- 核对代码没有四版本白名单；2018.3/2024.2 仍是常用维护重点。README、版本指南与
+  Skill 明确按实际命令/选项/报告差异处理，不因版本号不同拒绝使用或要求升级，也不把
+  四版本测试作为使用门槛。以前记录的现场清单改为按需选用，不继续主动铺开验证矩阵。
+- 修复自定义安装目录不含版本号时直接拒绝复用 GUI 的限制：先通过已有协议查询
+  `version -short`，成功取得实际版本后复用并显示来源。明确选择的已知版本不符、
+  查询错误/无效值/超时仍保护原 GUI，不启动替代实例、不停止活动运行。
+- 修复面板随机端口变化导致主题偏好丢失：仅将 system/light/dark 外观枚举保存在
+  本机 host-only Cookie 中，兼容已有 localStorage；存储不可用时仍可正常观察。
+  没有在 Cookie 中保存工程/路径/token，没有更改只读 HTTP 或 Vivado 控制能力。
+- 反馈模板改为实际会话/日志版本，不把 `.xpr` 的 Project Version 格式字段当工具版本；
+  优先已有快照和原始错误，不为整理反馈重跑构建/仿真。后续记录源码提交、实际环境、
+  最小复现及受影响能力即可，不要求用户先做一轮全面测试。
+
+About 文案继续交哈基米，入口和范围见上文。没有增加商业 EDA、Windows 或板卡实测记录；
+已有真实 GUI/工程重开、客户端链接等未测项保留为使用时按需核对，不阻塞本轮收口。
+
+末轮实现：main
+[`c8c7953166fe86f61913c20ba325711f72eaf7e2`](https://github.com/otter-fpga-lab/otter-vivado/commit/c8c7953166fe86f61913c20ba325711f72eaf7e2)。
+本节随后的交接提交一同推送 main；后续始终 fetch 最新 HEAD。
+
+定向验证：
+
+```bash
+.venv/bin/pytest tests/test_session_selection.py tests/test_probe_then_attach.py -q
+PYTHONPATH=.venv/lib/python3.12/site-packages:src python -m pytest \
+  tests/test_monitor_http.py -q -k browser
+.venv/bin/ruff check src/vivado_mcp/tools/session_tools.py \
+  src/vivado_mcp/vivado/gui_session.py tests/test_session_selection.py tests/test_monitor_http.py
+git diff --check
+```
+
+会话/连接 **54 passed**（最后仅调整临时安装路径夹具后，selection 子集 **16 passed**）；
+Chromium **4 passed / 29 deselected**。验证自定义路径与非四目标版本的协议连接、无效返回/
+错误/超时保留原 GUI，以及两个随机端口的主题继承、刷新与存储失败回退。协议服务为明确
+测试桩，不是 Vivado；未重跑前轮 383 项或其他 EDA 矩阵。修改文件 Ruff、diff、本地文档
+链接检查通过。用户确认的默认 main 开发、原作者/许可/fork 和旧贡献分支保持不变。
