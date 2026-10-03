@@ -1,0 +1,20 @@
+{
+  "title": "ISP 调试示例（合成演示）",
+  "controls": [
+    {
+      "kind": "slider",
+      "label": "增益寄存器原始值",
+      "core": "demo_vio",
+      "probe": "gain",
+      "min": 0,
+      "max": 4095,
+      "step": 1
+    },
+    {
+      "kind": "toggle",
+      "label": "算法旁路",
+      "core": "demo_vio",
+      "probe": "bypass"
+    }
+  ]
+}

@@ -1,10 +1,78 @@
-# Otter Vivado：真实运行进度与报告查看
+# Otter Vivado：人机共用 ILA/VIO 调试
 
-Status: CLOSED
+Status: OPEN
 Target: otter-fpga-lab/otter-vivado
-Basis: Hub main 0e9c375e；topics/20261002_vivado-progress-and-ross/TASK.md
-Next: 本轮按用户要求收口，等待实际使用反馈再定向修复；默认 main 接续，About 简介仍由哈基米协助
-Result: 已交付人机共用工程、真实进度/报告与多版本工具入口；末轮放宽自定义安装路径复用并保留跨面板主题，未宣称真实 EDA 或 Windows PASS
+Basis: 用户于 2026-10-03 确认板上调试、可视化和产品边界，并授权逐步实施；从 main 3750590 接续
+Next: 在本机核对首批 Hardware Manager 路径；继续自动插核/工程准备，再推进采样证据与本地人机配合实验
+Result: 首批共享调试服务、MCP/CLI、本地面板和消费者控件描述已实现；商业 Vivado/Windows/板卡未测
+
+## 当前工作：ILA/VIO 首批（2026-10-03）
+
+用户确认完整方向：自动规划/插入 ILA 与 VIO、配置并生成调试产物、板上控制与采集、
+AI 分析和人工分步接手；本地页面组织倒计时/动作提示，避免动态实验依赖聊天往返；
+AI 可以利用库内控件与操作接口，为消费者工程生成专用调试面板。
+
+边界：本仓维护 Vivado 工具操作、通用调试控件和流程。项目的参数含义、范围、面板配置
+与实验方案留在消费者工程；业务 RTL 修改沿用 Coding，处理器软件调试归 Vitis，
+组件选取/导出归 Studio，项目组织和领域方法归 Engineering Guide。共用可视化不代表
+产品合并。本轮没有改其他产品源码、上游或旧贡献分支，也没有操作真实设备。
+
+### 首批已完成
+
+- `HardwareDebugBackend` 精确枚举已连接/已打开 target/device、ILA/VIO 与探针，
+  复用同一个 BaseSession.execute。没有隐式连接、选择第一台设备、烧录或修改 current_*。
+- VIO 单个输出写入、宽度/范围核对、实际读回，并保存/恢复其他 GUI 暂存值。读回
+  不匹配记为 unknown；读回正确不等于业务参数已经生效。
+- ILA 基本触发比较值/位置设置、单窗口 arm/立即采样、完整采集上传至 Vivado。
+  首批没有独立停止、数据导出或浏览器波形；不以 upload 的停止副作用冒充停止操作。
+- `DebugService` 共用 revision、人工/AI 控制权、短操作回执、缓存及后台轮询。
+  busy/陈旧请求不排队，结果未知不自动重试；关闭/重开生命周期互斥，旧操作先收回执。
+  本服务控制权不拦截原生 GUI、run_tcl 或其他 CLI/MCP 进程，使用时须协调。
+- 四个 MCP 工具 `open_debug_panel/get_debug_snapshot/debug_action/close_debug_panel`；
+  `vivado-mcp debug` 独立 attach CLI。MCP 工具总数为 37，原运行观察器继续只读。
+- 本地页面提供精确设备选择、VIO 数值/滑杆/开关、ILA 配置与采集、状态和操作记录；
+  回环监听、同源写入、JSON 限制，无任意 Tcl 或任意路径执行入口。
+- 消费者可用有限 JSON 描述 slider/toggle，例子见 `examples/debug/panel.json`。
+  `debug --demo` 提供明确合成演示，不接触 EDA/硬件；等待触发不靠计时器伪造完成。
+
+唯一使用入口：[硬件调试指南](docs/HARDWARE_DEBUG.md)。Skill 路由已增加按需参考。
+Tcl 接口依据是官方 UG835/UG912 2022.2；具体链接在模板注释与使用指南。目标版本的实际
+属性、动态状态刷新、VIO 读回与 GUI 暂存交互仍需现场确认，文档依据不是板卡 PASS。
+
+### 本批验证
+
+环境：Linux、Python 3.12.14、MCP SDK 2.3.0、真实 Tcl 解释器与 Chromium。未安装或
+运行商业 Vivado、Windows、Ross 或板卡。执行：
+
+```bash
+.venv/bin/pytest tests/test_debug_service.py tests/test_debug_backend.py \
+  tests/test_debug_http.py tests/test_debug_cli.py tests/test_prompts.py -q
+.venv/bin/ruff check src/ tests/
+git diff --check
+uv build --wheel --out-dir /tmp/otter-vivado-debug-wheel
+```
+
+- 首批最终定向 **133 passed**：包含真实 Tcl 解释器中的硬件 API 测试桩、共享服务并发
+  与结果未知处理、HTTP 边界、CLI/Demo、MCP Prompt/注册及真实 Chromium 交互。
+- 较早同批扩大到原 monitor/lifecycle、Tcl 协议、GUI/stdio 会话与编码回归为
+  **266 passed / 8 skipped**；跳过均需真实 Windows 或 CP936。末轮只改动服务/页面后
+  已重新跑上面的 133 项，没有把跳过项或合成输入记为硬件 PASS。
+- Chromium 完整 Demo：选择合成设备、项目滑杆、开关、触发配置、立即采样、上传，共
+  7 次操作均收到了 succeeded 回执；桌面与手机无页面异常，截图留在临时输出而未入库。
+- 全仓 Ruff、diff、相关本地文档链接通过；实际 wheel 含新增模块与 debug.html；
+  真实 MCP 列出 37 工具。未发布软件包、未改本机客户端配置、未操作真实硬件。
+
+### 后续接续
+
+1. 本机用已有带 ILA/VIO 的非生产测试设计，核对发现、实际输出读回、触发、立即采集、
+   上传及原生 GUI 接续；先补实际使用版本，不扩成全版本/全板卡矩阵。
+2. 在同一实现继续调试工程准备：IP 配置、MARK_DEBUG/综合后插核、必要连接、构建及
+   bit/ltx 配对；不把业务 RTL 功能改造混入工具层。
+3. 采样导出、浏览器波形与基于数据的分析；再加本地就绪确认、倒计时/提示、动作标记、
+   暂停重做。精确对齐使用 FPGA 触发/帧标记，高速 ILA 不直接承诺连续六秒录制。
+4. 按项目需求扩展枚举、定点数、单位、预设、趋势和实际可读的板卡信息。
+
+以下为前轮运行观察与接入的历史记录，早先 CLOSED 仅指前轮交付收口。
 
 ## 接手与边界
 

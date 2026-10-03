@@ -98,6 +98,13 @@ def main() -> None:
     )
     p_monitor.add_argument("--replay", help="读取带 VMCP_RUN 标记的回放文本，不连接 EDA。")
     p_monitor.add_argument("--json", action="store_true", help="输出一次结构化采样并退出。")
+    p_debug = sub.add_parser("debug", help="人机共用 ILA/VIO 面板；连接已有 GUI 或显式演示。")
+    p_debug.add_argument("--port", type=int, default=9999, help="已有 GUI 的协议端口。")
+    p_debug.add_argument("--demo", action="store_true", help="合成演示，不连接 Vivado/板卡。")
+    p_debug.add_argument("--panel", help="消费者工程中的 JSON 控件描述。")
+    p_debug.add_argument("--target", help="精确的已打开 Hardware Manager target 名称。")
+    p_debug.add_argument("--device", help="明确 target 内的完整 device 名称。")
+    p_debug.add_argument("--json", action="store_true", help="输出一次调试状态并退出。")
     p_connect = sub.add_parser("connect", help="一次接入源码 MCP 与原地 Skill 目录引用。")
     p_connect.add_argument(
         "--client", nargs="+", choices=("cursor", "claude-code", "codex", "antigravity", "all"),
@@ -113,6 +120,20 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    if args.cmd == "debug":
+        import asyncio
+
+        from vivado_mcp.debug_cli import run_debug_cli
+
+        try:
+            asyncio.run(run_debug_cli(args))
+        except KeyboardInterrupt:
+            pass
+        except (ValueError, RuntimeError, OSError) as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            sys.exit(1)
+        return
 
     if args.cmd == "monitor":
         import asyncio

@@ -853,3 +853,254 @@ foreach __s $__samples {{
 }}
 puts "VMCP_PRE_BIT_DONE"
 """
+
+
+# --------------------------------------------------------------------------- #
+#  板上调试首批模板：只操作已经连接、打开的目标，不隐式连接/烧录/复位。
+#
+#  公开接口与属性依据（2022.2，未代替真实器件验证）：
+#  https://www.xilinx.com/support/documents/sw_manuals/xilinx2022_2/ug835-vivado-tcl-commands.pdf
+#  get_hw_targets/devices/ilas/vios/probes、commit_hw_vio、refresh_hw_vio、
+#  run_hw_ila、upload_hw_ila_data、wait_on_hw_ila。
+#  https://www.xilinx.com/support/documents/sw_manuals/xilinx2022_2/ug912-vivado-properties.pdf
+#  HW_TARGET.IS_OPENED、HW_ILA.STATUS.*、HW_PROBE.TYPE/PROBE_PORT_BIT_COUNT。
+#  UG835 没有公开 stop_hw_ila/refresh_hw_ila；本实现不猜测这些命令。
+#  以下正文不走 format；只有最外层 DEBUG_EXECUTE 的花括号需要双写。
+# --------------------------------------------------------------------------- #
+
+DEBUG_EXECUTE = """\
+apply {{{{}} {{
+    if {{[catch {{
+{script}
+    }} __error]}} {{
+        binary scan [encoding convertto utf-8 $__error] H* __hex
+        puts "VMCP_DEBUG_ERR:$__hex"
+    }} else {{
+        puts "VMCP_DEBUG_DONE:1"
+    }}
+}}}}
+"""
+
+DEBUG_COMMON = r"""
+# lambda 只活在本次 apply 的局部作用域，不覆盖用户 proc 或全局变量。
+set __get {{__object __property {__default ""}} {
+    if {[lsearch -exact [list_property $__object] $__property] < 0} {
+        return $__default
+    }
+    return [get_property $__property $__object]
+}}
+set __emit {{__kind __fields} {
+    set __encoded [list]
+    foreach __field $__fields {
+        binary scan [encoding convertto utf-8 $__field] H* __hex
+        lappend __encoded $__hex
+    }
+    puts "VMCP_DEBUG_RECORD:$__kind|[join $__encoded |]"
+}}
+set __select {{__objects __name} {
+    set __matches [list]
+    foreach __candidate $__objects {
+        if {[get_property NAME $__candidate] eq $__name} {
+            lappend __matches $__candidate
+        }
+    }
+    if {[llength $__matches] != 1} {
+        error "Expected exactly one object named '$__name'; found [llength $__matches]"
+    }
+    return [lindex $__matches 0]
+}}
+# 仅支持已验证属性的单窗口完整采集；空闲本身不代表有完整数据。
+set __complete {{__core __get} {
+    if {[apply $__get $__core STATUS.CORE_STATUS] ne "IDLE"} { return 0 }
+    set __depth [apply $__get $__core CONTROL.DATA_DEPTH]
+    set __samples [apply $__get $__core STATUS.SAMPLE_COUNT]
+    set __captured_depth [apply $__get $__core STATUS.DATA_DEPTH]
+    if {![string is integer -strict $__depth] || $__depth <= 0} { return 0 }
+    if {![string is integer -strict $__samples] || $__samples != $__depth} { return 0 }
+    if {![string is integer -strict $__captured_depth]
+        || $__captured_depth != $__depth} { return 0 }
+    return [expr {[apply $__get $__core CONTROL.WINDOW_COUNT] eq "1"
+        && [apply $__get $__core STATUS.WINDOW_COUNT] eq "1"}]
+}}
+# 硬件读回会覆盖 OUTPUT_VALUE，先保存并最后恢复 GUI 暂存值。
+set __read_vio {{__core __get} {
+    set __saved [dict create]
+    set __values [dict create]
+    foreach __candidate [get_hw_probes -of_objects $__core] {
+        if {[apply $__get $__candidate TYPE] eq "vio_output"} {
+            dict set __saved $__candidate [get_property OUTPUT_VALUE $__candidate]
+        }
+    }
+    set __rc [catch {
+        refresh_hw_vio -update_output_values $__core
+        foreach __candidate [get_hw_probes -of_objects $__core] {
+            set __type [apply $__get $__candidate TYPE]
+            if {$__type eq "vio_output"} {
+                dict set __values $__candidate [get_property OUTPUT_VALUE $__candidate]
+            } elseif {$__type eq "vio_input"} {
+                dict set __values $__candidate [get_property INPUT_VALUE $__candidate]
+            }
+        }
+    } __error]
+    set __restore_error ""
+    dict for {__candidate __value} $__saved {
+        if {[catch {set_property OUTPUT_VALUE $__value $__candidate} __restore]} {
+            append __restore_error " $__restore"
+        }
+    }
+    if {$__restore_error ne ""} { error "VIO staged value restore failed:$__restore_error" }
+    if {$__rc != 0} { error $__error }
+    return [list $__values $__saved]
+}}
+"""
+
+DEBUG_INVENTORY = r"""
+foreach __target [get_hw_targets] {
+    set __target_name [get_property NAME $__target]
+    set __open [apply $__get $__target IS_OPENED 0]
+    apply $__emit target [list $__target_name [expr {$__open ? 1 : 0}]]
+    if {$__open} {
+        foreach __device [get_hw_devices -of_objects $__target] {
+            apply $__emit device [list $__target_name [get_property NAME $__device] \
+                [apply $__get $__device PART]]
+        }
+    }
+}
+"""
+
+DEBUG_SELECT_DEVICE = r"""
+set __target [apply $__select [get_hw_targets] $__target_name]
+if {![apply $__get $__target IS_OPENED 0]} { error "Selected hardware target is not open" }
+set __device [apply $__select [get_hw_devices -of_objects $__target] $__device_name]
+"""
+
+DEBUG_INSPECT = r"""
+apply $__emit selected [list $__target_name $__device_name [apply $__get $__device PART]]
+foreach __core [get_hw_ilas -of_objects $__device] {
+    set __core_name [get_property NAME $__core]
+    apply $__emit ila [list $__core_name [apply $__get $__core UUID] \
+        [apply $__get $__core STATUS.CORE_STATUS] [apply $__get $__core CONTROL.DATA_DEPTH] \
+        [apply $__get $__core CONTROL.TRIGGER_POSITION] \
+        [apply $__get $__core STATUS.SAMPLE_COUNT] [apply $__complete $__core $__get] \
+        [apply $__get $__core CONTROL.WINDOW_COUNT] \
+        [apply $__get $__core CONTROL.TRIGGER_MODE] \
+        [apply $__get $__core CONTROL.TRIGGER_CONDITION]]
+    foreach __probe [get_hw_probes -of_objects $__core] {
+        apply $__emit ila_probe [list $__core_name [get_property NAME $__probe] \
+            [apply $__get $__probe PROBE_PORT_BIT_COUNT] \
+            [apply $__get $__probe TRIGGER_COMPARE_VALUE]]
+    }
+}
+foreach __core [get_hw_vios -of_objects $__device] {
+    set __core_name [get_property NAME $__core]
+    apply $__emit vio [list $__core_name [apply $__get $__core UUID]]
+    lassign [apply $__read_vio $__core $__get] __values __saved
+    foreach __probe [get_hw_probes -of_objects $__core] {
+        set __direction unknown
+        set __type [apply $__get $__probe TYPE]
+        if {$__type eq "vio_input"} { set __direction in }
+        if {$__type eq "vio_output"} { set __direction out }
+        set __value ""
+        set __staged ""
+        if {[dict exists $__values $__probe]} { set __value [dict get $__values $__probe] }
+        if {[dict exists $__saved $__probe]} { set __staged [dict get $__saved $__probe] }
+        apply $__emit vio_probe [list $__core_name [get_property NAME $__probe] \
+            $__direction [apply $__get $__probe PROBE_PORT_BIT_COUNT] $__value $__staged]
+    }
+}
+"""
+
+DEBUG_SELECT_ILA = r"""
+set __core [apply $__select [get_hw_ilas -of_objects $__device] $__core_name]
+"""
+DEBUG_SELECT_VIO = r"""
+set __core [apply $__select [get_hw_vios -of_objects $__device] $__core_name]
+"""
+DEBUG_CHECK_UUID = r"""
+if {$__expected_uuid ne "" && [apply $__get $__core UUID] ne $__expected_uuid} {
+    error "Debug core UUID changed; inspect the device again"
+}
+"""
+DEBUG_CHECK_IDLE = r"""
+if {[apply $__get $__core STATUS.CORE_STATUS] ne "IDLE"} {
+    error "ILA is running or its status is unknown; use the native Hardware Manager"
+}
+"""
+
+DEBUG_WRITE_VIO = r"""
+set __probe [apply $__select [get_hw_probes -of_objects $__core] $__probe_name]
+if {[apply $__get $__probe TYPE] ne "vio_output"} { error "Selected VIO probe is not an output" }
+set __width [apply $__get $__probe PROBE_PORT_BIT_COUNT]
+if {![string is integer -strict $__width] || $__width <= 0 || $__width > 65536} {
+    error "VIO probe width is unknown or unsupported"
+}
+set __number [expr "0x$__value_hex"]
+if {$__number < 0 || $__number >= (1 << $__width)} { error "VIO value exceeds probe width" }
+set __old_staged [get_property OUTPUT_VALUE $__probe]
+set_property OUTPUT_VALUE $__value_hex $__probe
+if {[catch {commit_hw_vio $__probe} __commit_error]} {
+    set_property OUTPUT_VALUE $__old_staged $__probe
+    error "VIO commit failed; hardware state may be unknown: $__commit_error"
+}
+if {[catch {lassign [apply $__read_vio $__core $__get] __values __saved} __read_error]} {
+    error "VIO commit succeeded but hardware readback failed: $__read_error"
+}
+apply $__emit write [list $__core_name $__probe_name $__width $__value_hex \
+    [dict get $__values $__probe] [get_property OUTPUT_VALUE $__probe] $__old_staged]
+"""
+
+DEBUG_CONFIGURE_ILA = r"""
+set __probe [apply $__select [get_hw_probes -of_objects $__core] $__probe_name]
+if {[apply $__get $__core CONTROL.TRIGGER_MODE] ne "BASIC_ONLY"} {
+    error "First-stage configuration requires BASIC_ONLY trigger mode; configure it in Vivado"
+}
+if {[lsearch -exact [list_property $__probe] TRIGGER_COMPARE_VALUE] < 0} {
+    error "Probe has no configurable trigger comparator"
+}
+if {$__trigger_position ne ""} {
+    set __depth [apply $__get $__core CONTROL.DATA_DEPTH]
+    if {![string is integer -strict $__depth] || $__depth <= 0
+        || $__trigger_position < 0 || $__trigger_position >= $__depth} {
+        error "Trigger position is outside the known ILA data depth"
+    }
+}
+set __old_trigger [get_property TRIGGER_COMPARE_VALUE $__probe]
+set __old_position [apply $__get $__core CONTROL.TRIGGER_POSITION]
+if {[catch {
+    set_property TRIGGER_COMPARE_VALUE $__trigger_value $__probe
+    if {$__trigger_position ne ""} {
+        set_property CONTROL.TRIGGER_POSITION $__trigger_position $__core
+    }
+} __configure_error]} {
+    set_property TRIGGER_COMPARE_VALUE $__old_trigger $__probe
+    if {$__trigger_position ne ""} {
+        set_property CONTROL.TRIGGER_POSITION $__old_position $__core
+    }
+    error $__configure_error
+}
+apply $__emit configure [list $__core_name $__probe_name \
+    [get_property TRIGGER_COMPARE_VALUE $__probe] \
+    [apply $__get $__core CONTROL.TRIGGER_POSITION]]
+"""
+
+DEBUG_ARM_ILA = r"""
+if {[apply $__get $__core CONTROL.WINDOW_COUNT] ne "1"} {
+    error "First-stage ILA capture supports one window; configure multi-window captures in Vivado"
+}
+if {$__immediate} {
+    run_hw_ila -trigger_now $__core
+} else {
+    run_hw_ila $__core
+}
+apply $__emit arm [list $__core_name [apply $__get $__core STATUS.CORE_STATUS]]
+"""
+
+DEBUG_UPLOAD_ILA = r"""
+if {![apply $__complete $__core $__get]} {
+    error "ILA capture is not confirmed complete (single window, IDLE, full sample count required)"
+}
+set __data [upload_hw_ila_data $__core]
+if {[llength $__data] != 1} { error "Upload did not return exactly one ILA data object" }
+apply $__emit upload [list $__core_name [get_property NAME [lindex $__data 0]] \
+    [apply $__get $__core STATUS.CORE_STATUS]]
+"""

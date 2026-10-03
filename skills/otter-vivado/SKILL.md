@@ -17,6 +17,7 @@ description: 操作 AMD Vivado 工程、启动综合与实现、查看真实运�
 |---|---|---|
 | 接续工程、综合或实现 | [workflows.md](references/workflows.md#工程与构建) | `list_sessions`、`start_session`、`run_synthesis`、`run_implementation` |
 | 看进度、日志或报告 | [workflows.md](references/workflows.md#进度与报告) | `open_run_monitor`、`get_run_snapshot`、`get_run_progress` |
+| 人机共用 ILA/VIO 板上调试、生成工程控件 | [hardware-debug.md](references/hardware-debug.md) | `open_debug_panel`、`get_debug_snapshot`、`debug_action` |
 | 交付工程给人用 GUI 接续 | [workflows.md](references/workflows.md#原生-gui-交接) | 工程路径、实际会话、文件与报告证据 |
 | 分析失败、约束或 IP；无 EDA 摸底 | [workflows.md](references/workflows.md#诊断与离线分析) | `get_critical_warnings`、`xdc_lint`、`inspect_ip_params`、`parse_xpr` |
 | 判断报告可信度、核对版本或查官方资料 | [evidence-and-docs.md](references/evidence-and-docs.md) | 当前 Vivado 帮助、本地官方文档、AMD 官方站点 |
