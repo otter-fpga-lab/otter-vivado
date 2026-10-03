@@ -128,3 +128,10 @@ CLI 预检/写入/幂等复查、共享 JSON 链接、已有路径、配置冲�
 未测：Windows 真实 junction/中文空格路径、四宿主实际 Skill 发现和缓存加载、Cursor
 跨原生/兼容目录同名入口显示、Antigravity 旧 MCP 路径在用户实际版本上的加载。
 这些保留为现场定向检查；没有本机安装/改动用户客户端，没有商业 EDA/Ross 执行。
+
+本轮实现已推送：`e42ab542dd7d3ec8ab48a3048fd9a524fd4038fa`，继续同一个
+[产品 Draft PR #1](https://github.com/otter-fpga-lab/otter-vivado/pull/1)。
+正式接入和更新说明集中于 [SOURCE_CONNECTION.md](docs/SOURCE_CONNECTION.md)，
+已有环境只需用该环境解释器执行 `python -m vivado_mcp connect --client all`；
+日常改源无需再次运行接入命令。重大接入取舍续记到
+[Hub Draft PR #5](https://github.com/lingshuncangqiong/otter-agent-hub/pull/5) 的 Vivado 议题。

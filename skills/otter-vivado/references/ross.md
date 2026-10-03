@@ -16,7 +16,7 @@
 
 Ross 的 [README](https://github.com/Xilinx/ross-ai-assistant/blob/2cdc9eef1b6b5b17fa45f5e4d468e5483a1c92de/README.md) 区分 skills 插件、Vivado MCP 分发包及 AI Extension；其 [插件安装说明](https://github.com/Xilinx/ross-ai-assistant/blob/2cdc9eef1b6b5b17fa45f5e4d468e5483a1c92de/docs/getting-started/install-plugin.md) 还明确了客户端差异：Claude Code/Codex 的 marketplace 安装会复制到缓存，Cursor 本地插件不接受指向其 local 目录外的链接，Antigravity 使用自己的 manifest schema。
 
-因此，“作为插件使用”并不保证客户端原生插件安装器会原地读取源码。本产品采用独立 Skill 目录链接与 editable Python 源码 MCP，满足多个脚手架共用一份内容的要求。Skill 链接和原生插件目录是不同的发现入口；不要把后者的规则或缓存更新承诺套给前者。同一客户端避免同时发现两份同名 Skill。实际发现、重载方式及 Windows 链接权限按客户端版本现场核对。
+因此，“作为插件使用”并不保证客户端原生插件安装器会原地读取源码。本产品采用独立 Skill 目录链接与 editable Python 源码 MCP，满足多个脚手架共用一份内容的要求。Skill 链接和原生插件目录是不同的发现入口；不要把后者的规则或缓存更新承诺套给前者。同名入口保持指向同一源码，不另装一份缓存版本；客户端跨兼容目录的去重、发现、重载和 Windows 链接权限按实际版本现场核对。
 
 ## 并列使用的边界
 

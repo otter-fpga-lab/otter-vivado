@@ -6,26 +6,10 @@
 
 ## 一次源码接入
 
-从正式仓库的本开发分支安装；以下操作由使用者在自己的机器执行：
-
-```powershell
-git clone -b feat/progress-view-study https://github.com/otter-fpga-lab/otter-vivado.git
-cd otter-vivado
-python -m venv .venv
-.venv\Scripts\python -m pip install -e .
-.venv\Scripts\python -m vivado_mcp connect --client codex
-```
-
-Linux 对应使用 `.venv/bin/python`。`connect --client claude-code` 同样可用。
-一次 connect 将本解释器的 MCP 入口和本仓 Skill 目录引用接入客户端，保留
-其他配置并备份被修改的配置文件；不同来源的同名入口/目录会明确报冲突。
-它不注入 Vivado、探测端口、重启 MCP 或停止运行。Windows 若不允许 symlink，
-错误会给出启用开发者模式或对该明确目录创建 junction 的步骤，不退化成复制快照。
-
-源码与 Skill 各仅一份。`git pull` 后 Skill 下次读取使用更新；已加载的 Python/
-模型上下文不承诺热更新。先让已有长任务完成，再在正常空闲边界重载 MCP。
-原生插件缓存会破坏原地引用时，这种 Skill 目录引用 + 源码 MCP 就是正式接入方式。
-本批保留原 Python 包名/CLI 与上游 metadata，不发布新包、不复制业务实现。
+先按 [一份源码接入多个客户端](SOURCE_CONNECTION.md) 安装，使用
+`connect --client all` 一次配置 Cursor、Claude Code、Codex 与 Antigravity。
+该文档集中说明目录链接、已有配置保留、Windows junction、自定义路径与日常更新。
+完成源码接入后，再按下列流程选择实际 Vivado 会话。
 
 GUI/attach 使用上游已有的协议注入：首次需要时显式执行 `vivado-mcp install`
 （会备份并修改指定 Vivado 的 init Tcl），按 README 选择实际安装路径。
@@ -114,8 +98,8 @@ python -m vivado_mcp monitor --replay examples/progress/stage-complete.txt --tar
 | 路线 | 已有证据 | 本轮选择 |
 |---|---|---|
 | 本 fork main 60b13cf / 0.3.25 | GUI/Tcl/attach、异步 run、解析器；README 基线 2019.1，2018.3/2022.2 仅局部现场 | 复用并加薄观察层；保留作者/许可/贡献历史 |
-| AMD Ross 2026.9.1 | [源码 2cdc9eef](https://github.com/Xilinx/ross-ai-assistant/tree/2cdc9eef1b6b5b17fa45f5e4d468e5483a1c92de)、[工具参考](https://github.com/Xilinx/ross-ai-assistant/blob/2cdc9eef1b6b5b17fa45f5e4d468e5483a1c92de/docs/reference/vivado-mcp-tools.md)：status/log/history、独立监控通道；getting-started 实测 2026.1 | 并列可选，不要求互相调用；未运行其二进制 |
-| Ross 插件/扩展 | [插件安装](https://github.com/Xilinx/ross-ai-assistant/blob/2cdc9eef1b6b5b17fa45f5e4d468e5483a1c92de/docs/getting-started/install-plugin.md)：skills 插件与 MCP 二进制分开，AI Extension 捆绑；客户端可能缓存 | 不复制外部分发包，也不声称 Windows display/旧版 Vivado 已验证 |
+| AMD Ross main | [源码 2cdc9eef](https://github.com/Xilinx/ross-ai-assistant/tree/2cdc9eef1b6b5b17fa45f5e4d468e5483a1c92de)、[工具参考](https://github.com/Xilinx/ross-ai-assistant/blob/2cdc9eef1b6b5b17fa45f5e4d468e5483a1c92de/docs/reference/vivado-mcp-tools.md)：状态/日志/历史与长命令监控；发布标签 2026.9.1 指向另一提交 c89c3328 | 并列可选；借鉴按需加载、版本核对和证据验证，详见 [Ross 参考](../skills/otter-vivado/references/ross.md)；未运行其二进制 |
+| Ross 插件/扩展 | [插件安装](https://github.com/Xilinx/ross-ai-assistant/blob/2cdc9eef1b6b5b17fa45f5e4d468e5483a1c92de/docs/getting-started/install-plugin.md)：skills 插件与 MCP 二进制分开，AI Extension 捆绑；各客户端有缓存/链接差异 | 本产品采用 [Skill 原位目录链接 + 源码 MCP](SOURCE_CONNECTION.md)，不复制外部分发包 |
 
 AMD UG835 2026.1：[get_runs](https://docs.amd.com/r/en-US/ug835-vivado-tcl-commands/get_runs)、
 [get_property](https://docs.amd.com/r/en-US/ug835-vivado-tcl-commands/get_property)、
