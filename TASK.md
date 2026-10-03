@@ -3,7 +3,7 @@
 Status: OPEN
 Target: otter-fpga-lab/otter-vivado
 Basis: Hub main 0e9c375e；topics/20261002_vivado-progress-and-ross/TASK.md
-Next: 提交本工作块和 Draft PR；按 docs/RUN_MONITOR.md 在实际 Windows/Vivado 版本做现场验证
+Next: 审阅 Draft PR #1；按 docs/RUN_MONITOR.md 在实际 Windows/Vivado 版本做现场验证
 Result: 真实观察器、只读面板、CLI/MCP/Skill 原地接入及样例已实现；云端定向 315 passed / 6 skipped
 
 ## 接手与边界
@@ -87,6 +87,11 @@ Ross 二进制、完整签核/bitstream/硬件。精确现场流程见 docs/RUN_
 
 分支：`feat/progress-view-study`，base `main` @ 60b13cf。
 已保存远端领取提交：`ced7425d770c7ff6647dbee84938d527ebcb8b5c`。
-完整实现和 Draft PR 接续点在工作块提交后补记。Git HTTPS push 在本环境返回 401；
+完整实现已推送：`14ce0d9c8b5fe5cad42b15bd5865b94f7b2fe8f8`。
+Draft PR：[otter-vivado #1](https://github.com/otter-fpga-lab/otter-vivado/pull/1)，
+base `main`，head `feat/progress-view-study`；未合并/发布。接续时 fetch 此分支最新 HEAD，
+不要回退到上述实现锚点。对应 Hub 仅回填 Vivado 议题，不改系列总表。
+
+Git HTTPS push 在本环境返回 401；
 使用现有授权的 GitHub Git Data API 上传同一 blob/tree/commit 并逐项比对 SHA、
 仅 fast-forward 更新本分支，不改全局凭据或旧贡献分支。
