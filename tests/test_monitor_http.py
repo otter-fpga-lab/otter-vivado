@@ -581,3 +581,74 @@ def test_browser_daily_workflow_keeps_focus_and_supports_themes_copy_and_search(
                 assert request_url in (url, url + "snapshot.json")
         finally:
             browser.close()
+
+
+def test_browser_theme_survives_new_monitor_ports_and_storage_failures(monitor):
+    """真实浏览器验证跨随机端口继承、旧偏好迁移及存储禁用回退。"""
+    playwright = pytest.importorskip("playwright.sync_api")
+    executable = shutil.which("chromium") or shutil.which("chromium-browser")
+    if executable is None:
+        pytest.skip("未安装 Chromium；HTTP 边界测试仍独立运行")
+    _, first_url, _, snapshot = monitor
+    second = MonitorHTTP(lambda: snapshot)
+    second_url = second.start()
+    assert urlsplit(first_url).port != urlsplit(second_url).port
+    try:
+        with playwright.sync_playwright() as runtime:
+            browser = runtime.chromium.launch(
+                executable_path=executable, headless=True, args=["--no-sandbox"]
+            )
+            try:
+                context = browser.new_context(color_scheme="light")
+                first = context.new_page()
+                first.goto(first_url)
+                # 迁移已有 origin 下的旧版偏好，另一个端口也应继承。
+                first.evaluate("localStorage.setItem('otter-vivado-theme', 'dark')")
+                first.reload()
+                playwright.expect(first.locator("html")).to_have_attribute("data-theme", "dark")
+                other = context.new_page()
+                other.goto(second_url)
+                playwright.expect(other.get_by_role("combobox", name="界面外观")).to_have_value(
+                    "dark"
+                )
+                other.reload()
+                playwright.expect(other.locator("html")).to_have_attribute("data-theme", "dark")
+                theme_cookies = [
+                    item
+                    for item in context.cookies()
+                    if item["name"] == "otter_vivado_monitor_theme"
+                ]
+                assert len(theme_cookies) == 1
+                cookie = theme_cookies[0]
+                assert cookie["domain"] == "127.0.0.1"
+                assert cookie["path"] == "/"
+                assert cookie["sameSite"] == "Strict"
+                assert cookie["value"] == "dark"
+
+                other.get_by_role("combobox", name="界面外观").select_option("system")
+                playwright.expect(other.locator("html")).to_have_attribute("data-theme", "light")
+                # 不做跨页面实时同步；重开/刷新才读取新的共享偏好。
+                playwright.expect(first.locator("html")).to_have_attribute("data-theme", "dark")
+                first.reload()
+                playwright.expect(first.get_by_role("combobox", name="界面外观")).to_have_value(
+                    "system"
+                )
+                playwright.expect(first.locator("html")).to_have_attribute("data-theme", "light")
+
+                blocked = browser.new_context(color_scheme="light")
+                blocked.add_init_script("""Object.defineProperty(document, 'cookie', {
+                    get() { throw new Error('cookie access denied'); },
+                    set() { throw new Error('cookie access denied'); }
+                });""")
+                fallback = blocked.new_page()
+                errors = []
+                fallback.on("pageerror", lambda error: errors.append(str(error)))
+                fallback.goto(first_url)
+                fallback.get_by_role("combobox", name="界面外观").select_option("dark")
+                fallback.reload()
+                playwright.expect(fallback.locator("html")).to_have_attribute("data-theme", "dark")
+                assert errors == []
+            finally:
+                browser.close()
+    finally:
+        second.close()

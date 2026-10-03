@@ -160,11 +160,29 @@ let reportDetailSignature = "";
 const reportRows = new Map();
 const reportKey = (report) => String(report.path || report.name || "未命名报告");
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
+const themeValues = ["system", "light", "dark"];
+const themeCookie = "otter_vivado_monitor_theme";
+function saveThemePreference(value) {
+  if (!themeValues.includes(value)) return;
+  // Cookie 仅保存外观枚举，host-only 路径使随机端口的新面板可继承偏好。
+  try { document.cookie = `${themeCookie}=${value}; Path=/; SameSite=Strict; Max-Age=31536000`; } catch (_) { /* 存储被禁用时继续使用本页偏好。 */ }
+  try { window.localStorage.setItem("otter-vivado-theme", value); } catch (_) { /* 保留兼容回退，不影响观察。 */ }
+}
 let themePreference = "system";
 try {
-  const stored = window.localStorage.getItem("otter-vivado-theme");
-  if (["system", "light", "dark"].includes(stored)) themePreference = stored;
-} catch (_) { /* 禁用存储不影响观察。 */ }
+  const cookie = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${themeCookie}=`));
+  const stored = cookie ? cookie.slice(themeCookie.length + 1) : null;
+  if (themeValues.includes(stored)) themePreference = stored;
+  else {
+    const legacy = window.localStorage.getItem("otter-vivado-theme");
+    if (themeValues.includes(legacy)) { themePreference = legacy; saveThemePreference(legacy); }
+  }
+} catch (_) {
+  try {
+    const legacy = window.localStorage.getItem("otter-vivado-theme");
+    if (themeValues.includes(legacy)) themePreference = legacy;
+  } catch (_) { /* 禁用存储不影响观察。 */ }
+}
 function applyTheme() {
   document.documentElement.dataset.theme = themePreference === "system" ? (systemTheme.matches ? "dark" : "light") : themePreference;
   byId("theme").value = themePreference;
@@ -172,7 +190,7 @@ function applyTheme() {
 applyTheme();
 byId("theme").addEventListener("change", (event) => {
   themePreference = event.target.value;
-  try { window.localStorage.setItem("otter-vivado-theme", themePreference); } catch (_) { /* 仅保留本页偏好。 */ }
+  saveThemePreference(themePreference);
   applyTheme();
 });
 systemTheme.addEventListener("change", applyTheme);

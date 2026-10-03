@@ -19,6 +19,7 @@ import importlib.resources
 import json
 import logging
 import os
+import re
 import socket
 import time
 import uuid
@@ -384,13 +385,16 @@ class GuiSession(BaseSession):
         self._attached_external = True
         if self._expected_version is not None:
             try:
-                if self._expected_version == "unknown":
-                    raise ValueError("无法从所选安装路径确定待核对的版本")
                 result = await asyncio.wait_for(
                     self._execute_impl("version -short"), timeout=timeout,
                 )
                 actual = result.output.strip()
-                if result.is_error or actual != self._expected_version:
+                if result.is_error or not re.fullmatch(r"20\d{2}\.\d+(?:\.\d+)?", actual):
+                    raise ValueError(
+                        f"version -short 未返回可识别版本（rc={result.return_code}）：{actual!r}"
+                    )
+                # 自定义目录无法提供版本约束；用实际查询结果明确标识所连 GUI。
+                if self._expected_version != "unknown" and actual != self._expected_version:
                     raise ValueError(
                         f"所选安装版本为 {self._expected_version}，端口中实际返回 {actual!r}"
                     )
@@ -445,6 +449,11 @@ class GuiSession(BaseSession):
                     "可能是你手动启动并装过 init.tcl 的 Vivado。"
                     "stop_session 不会关闭这个 GUI。"
                 )
+                if self._expected_version == "unknown":
+                    msg += (
+                        f"\n安装路径未提供版本约束；已查询当前 GUI 实际版本 "
+                        f"{self._runtime_version}。"
+                    )
                 logger.info(
                     "会话 '%s' attach 到外部 GUI(端口 %d),跳过 spawn",
                     self.session_id, self._connected_port,

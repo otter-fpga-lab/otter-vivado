@@ -70,9 +70,19 @@ async def test_explicit_missing_path_does_not_spawn_or_attach(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("actual", ["2018.3", "unknown", "2024.2"])
+@pytest.mark.parametrize("expected,actual,return_code,accepted", [
+    ("2024.2", "2018.3", 0, False),
+    ("2024.2", "unknown", 0, False),
+    ("2024.2", "2024.2", 0, True),
+    ("2019.1", "2019.1", 0, True),  # 维护目标不是运行版本白名单。
+    ("2024.2", "2024.2.1", 0, False),  # 已知版本仍精确核对，不放宽补丁。
+    ("unknown", "2023.1", 0, True),  # 自定义路径使用实际查询版本。
+    ("unknown", "", 0, False),
+    ("unknown", "invalid version", 0, False),
+    ("unknown", "2023.1", 1, False),
+])
 async def test_explicit_version_guard_uses_real_protocol_and_preserves_existing_gui(
-    actual, monkeypatch,
+    expected, actual, return_code, accepted, monkeypatch, tmp_path,
 ):
     commands = []
     writers = []
@@ -85,7 +95,8 @@ async def test_explicit_version_guard_uses_real_protocol_and_preserves_existing_
                 request = (await reader.readexactly(int.from_bytes(header, "big"))).decode()
                 commands.append(request)
                 output = actual if request == "version -short" else request
-                body = json.dumps({"rc": 0, "output": output}).encode()
+                rc = return_code if request == "version -short" else 0
+                body = json.dumps({"rc": rc, "output": output}).encode()
                 writer.write(len(body).to_bytes(4, "big") + body)
                 await writer.drain()
         except asyncio.IncompleteReadError:
@@ -96,16 +107,22 @@ async def test_explicit_version_guard_uses_real_protocol_and_preserves_existing_
 
     server = await asyncio.start_server(handle, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
-    session = GuiSession("D:/Xilinx/Vivado/2024.2/bin/vivado.bat", port=port,
-                         expected_version="2024.2")
+    installation = "eda/current" if expected == "unknown" else f"Vivado/{expected}"
+    executable = tmp_path / installation / "bin/vivado.bat"
+    executable.parent.mkdir(parents=True)
+    executable.touch()  # 仅真实路径夹具；现有协议测试服务替代 EDA，不执行此文件。
+    session = GuiSession(str(executable), port=port, expected_version=expected)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock())
     monkeypatch.setattr(session, "_current_project_hint", AsyncMock(return_value=""))
     try:
-        if actual == "2024.2":
-            await session.start(timeout=2)
+        if accepted:
+            banner = await session.start(timeout=2)
             assert session.mode == "attach"
-            assert session.status_dict()["runtime_version"] == "2024.2"
+            assert session.status_dict()["runtime_version"] == actual
             assert session.status_dict()["vivado_path_is_launch_candidate"]
+            if expected == "unknown":
+                assert "安装路径未提供版本约束" in banner
+                assert f"实际版本 {actual}" in banner
         else:
             with pytest.raises(RuntimeError, match="port=0"):
                 await session.start(timeout=2)
@@ -128,17 +145,6 @@ async def test_explicit_version_guard_uses_real_protocol_and_preserves_existing_
 
 
 @pytest.mark.asyncio
-async def test_unknown_selected_path_cannot_implicitly_reuse_gui(monkeypatch):
-    session = GuiSession("custom-launcher", expected_version="unknown")
-    reader, writer = object(), SimpleNamespace(close=lambda: None, wait_closed=AsyncMock())
-    monkeypatch.setattr(asyncio, "open_connection", AsyncMock(return_value=(reader, writer)))
-    monkeypatch.setattr(session, "_handshake", AsyncMock(return_value=True))
-    with pytest.raises(RuntimeError, match="无法从所选安装路径"):
-        await session._try_attach_existing(9876)
-    assert not session.is_alive
-
-
-@pytest.mark.asyncio
 async def test_selected_version_does_not_spawn_on_busy_or_unverified_existing_port(monkeypatch):
     session = GuiSession("selected-install", port=9876, expected_version="2024.2")
     writer = SimpleNamespace(close=lambda: None, wait_closed=AsyncMock())
@@ -152,7 +158,8 @@ async def test_selected_version_does_not_spawn_on_busy_or_unverified_existing_po
 
 
 @pytest.mark.asyncio
-async def test_version_query_timeout_only_closes_probe_connection(monkeypatch):
+@pytest.mark.parametrize("expected", ["2024.2", "unknown"])
+async def test_version_query_timeout_only_closes_probe_connection(monkeypatch, expected):
     release = asyncio.Event()
     commands = []
     handlers = []
@@ -178,7 +185,7 @@ async def test_version_query_timeout_only_closes_probe_connection(monkeypatch):
 
     server = await asyncio.start_server(handle, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
-    session = GuiSession("selected-install", expected_version="2024.2")
+    session = GuiSession("selected-install", expected_version=expected)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock())
     try:
         with pytest.raises(RuntimeError, match="原 GUI 保持运行"):

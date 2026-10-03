@@ -41,14 +41,17 @@ PyPI 上的同名包是上游发行版，Otter 功能按本仓源码入口安装
 
 Windows 是使用与兼容维护重点；当前云端自动化通过不等于商业 Vivado、Windows GUI 或板卡现场已通过。实际验证范围与待测步骤见 [TASK.md](TASK.md) 和 [GUI 指南](docs/HUMAN_GUI_WORKFLOW.md)。
 
-| Vivado 版本 | 用户支持目标 | 已有证据 | 本产品现场待测 |
+下表是维护重点与已有证据，不是可用版本白名单。其他版本也可使用相同入口；是否可用取决于
+该次任务需要的 Tcl 命令、器件/IP 与报告格式。遇到具体差异再定向处理，无需先跑完整版本矩阵。
+
+| Vivado 版本 | 维护重点 | 已有证据 | 相关现场检查 |
 |---|---|---|---|
 | **2018.3** | **优先维护，常用版本** | 本轮核对该版官方 Tcl/安装文档；历史 [上游 PR #1](https://github.com/mapleleavessssssss-wq/vivado-mcp/pull/1) 仅验证 IPDEF-only IP 元数据 | Windows GUI/Tcl/attach、构建、报告、原生工程重开 |
 | **2024.2** | **优先维护，常用版本** | 本轮核对该版官方 Tcl/安装/分析文档，未运行商业 EDA | 同上，兼顾不同器件的资源报告名称与数值 |
 | 2020.2 | 持续兼容 | 本轮核对该版官方核心 Tcl 命令与选项，未运行商业 EDA | 按同一最小工程定向复测 |
 | 2022.2 | 持续兼容 | 本轮核对官方 Tcl；历史 [上游 Issue #2](https://github.com/mapleleavessssssss-wq/vivado-mcp/issues/2) 为 Windows 10 GUI/XSim 局部现场记录 | 按同一最小工程定向复测，历史记录不代表完整通过 |
 | 2019.1 | 保留上游历史基线 | 原作者长期使用 GUI/Tcl/attach 与 FPGA 工具流程 | 保留回归，不用历史结果替代上述四版本验收 |
-| 其他版本 | 按实际任务评估 | 不自动扩大支持矩阵 | 先核对本机官方帮助和所需能力 |
+| 其他版本 | 同一套入口，不设版本白名单 | 以实际使用结果为准 | 遇到差异时核对本机帮助和受影响能力 |
 
 支持目标与实际通过记录分开维护；选版本、官方依据与验收范围见
 [版本兼容说明](docs/VERSION_COMPATIBILITY.md)。使用旧版工程不要求升级到新版 Vivado。
@@ -590,7 +593,7 @@ ruff check src/ tests/
    - 操作系统: 运行 `[System.Environment]::OSVersion.VersionString`(PowerShell)或 `systeminfo | findstr /B /C:"OS"`(cmd)
    - Python 版本: 运行 `python --version`
    - vivado-mcp 版本: 运行 `vivado-mcp version`(或 `pip show vivado-mcp`)
-   - Vivado 版本: 运行 `vivado -version`(若 vivado 在 PATH 中);否则从我项目的 .xpr 文件里抓 Project 标签
+   - Vivado 版本: 优先读取已有空闲会话的 `version -short`；忙时使用已有日志头，无法确认就记未知；`.xpr` 的 Project Version 是文件格式信息，不能当作实际运行版本
    - 当前 Vivado 进程: PowerShell 跑 `Get-Process | Where-Object { $_.ProcessName -like "*vivado*" }`
    - MCP 客户端类型(Claude Code / Cursor / Codex 等)及版本
    - 我使用的 Vivado 模式(`gui` / `tcl` / `attach`)
@@ -599,7 +602,7 @@ ruff check src/ tests/
    - 期望的行为是什么
    - 实际发生了什么
    - 复现步骤(从 `start_session` 开始的完整工具调用序列)
-   - 相关的工具输出 / 错误日志(优先 `get_critical_warnings` 或 `get_run_progress` 的输出)
+   - 相关的工具输出 / 错误日志(优先已有 `get_run_snapshot`、原始错误或日志片段；收集反馈不重跑构建或仿真)
 
 3. 输出用于产品 PR #1 讨论的 Markdown:
    - 标题: 简洁的问题概述,前缀可用 `[bug]` / `[feature]` / `[docs]`

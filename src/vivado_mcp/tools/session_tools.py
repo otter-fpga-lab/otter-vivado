@@ -187,8 +187,9 @@ async def start_session(
               实例就传 ``port=0`` 或显式不同端口。
             - ``attach`` 模式：要连接的现有 GUI 的显式端口(默认 9999)。
         vivado_path: 可选，明确选择 Vivado 可执行文件；失效即报错，不换版本。
-            gui 复用已有端口前核对 version -short，不符时保留原 GUI，改用 port=0
-            新开所选版本，或明确 mode='attach' 接受端口当前实例。留空时沿用默认发现。
+            gui 复用已有端口前核对 version -short；路径可识别版本且不符时保留原 GUI，
+            改用 port=0 新开所选版本，或明确 mode='attach' 接受端口当前实例。
+            自定义路径无法推断版本时，查询成功后可复用并显示实际版本。留空沿用默认发现。
         timeout: 启动超时秒数，GUI 模式建议 120+。默认 120。
     """
     manager = _get_manager(ctx)
