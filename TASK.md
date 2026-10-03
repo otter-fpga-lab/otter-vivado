@@ -4,7 +4,7 @@ Status: OPEN
 Target: otter-fpga-lab/otter-vivado
 Basis: Hub main 0e9c375e；topics/20261002_vivado-progress-and-ross/TASK.md
 Next: 默认 main 接续；按用户常用 2018.3/2024.2 优先、2020.2/2022.2 兼顾优化与定向验收；About 简介交哈基米协助
-Result: 已补 Windows 路径/编码兼容、原生 GUI 工程交付与报告数值可视化；本轮定向 231 passed / 7 skipped，未宣称真实 EDA 或 Windows PASS
+Result: 已补浅/深色报告面板、多版本显式选择保护、独立报告采样与阶段降级；最新定向 383 passed / 6 skipped，未宣称真实 EDA 或 Windows PASS
 
 ## 接手与边界
 
@@ -210,3 +210,57 @@ merge commit：`cf768a67f9e7982f21bbea2c946861c1adea9e8c`，保留全部原提�
 
   完成后在本节记录实际修改结果即可。README 与包说明已采用相同工具定位；About 待办
   不阻塞代码工作，也无需占用 Coding 的现场测试。
+
+## 日常体验与四版本兼容加固（2026-10-03，main）
+
+接续远端 main `b9a19ba0d16a4b7fcedc16bb656bf2f58c3cc157`，该提交已保存上述版本偏好
+和哈基米 About 交接。实现已提交并推送到 main：
+[`53cfa8ee2318ae17c1c5f10571554997b9eff9d4`](https://github.com/otter-fpga-lab/otter-vivado/commit/53cfa8ee2318ae17c1c5f10571554997b9eff9d4)。
+以后取 `origin/main` 最新 HEAD，不回退到锚点；原 PR #1 已合入，不另建重复 PR。
+
+已完成：
+
+- 面板参考 shadcn/ui 语义样式与 Radix Slate/Teal 配色，支持系统/浅色/深色、窄屏布局、
+  报告搜索和路径复制。刷新保留报告选择、键盘焦点和阅读位置；复制受限时可选择原路径。
+  仍为同源状态的本机只读页面，没有引入第二业务库或外部 CDN。所用配色的 MIT 许可保留在
+  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，随 wheel 一并安装。
+- `python -m vivado_mcp versions --json` 只读列出已知目录、PATH 与配置的候选安装。
+  路径推断版本与实际 `version -short` 证据明确区分；显式路径或 `VIVADO_PATH` 无效时
+  报错，不悄悄切版本。同一 session ID 不替换另一显式路径；自动接续固定端口 GUI 时，
+  显式版本不匹配/无法核实只关闭本次探测连接，保留原 GUI，提示独立实例或显式 attach。
+- STATUS 与报告文件读取分开发布。慢报告不拖住状态采样或 CLI 退出；独立显示
+  `reports_status`、读取时间、来源和错误，迟到的旧 run 报告丢弃。新增 `close_run_monitor`
+  释放观察器/HTTP，不停止 Vivado/run；失联停止轮询，仍保留最后快照供查看。
+- 复用资源解析器补充 CLB 名称与分数 BRAM，非法数值明确降级。时序阶段只取该份报告的
+  `Design State`，未知不借其他 run 状态补全；两个 READY 汇总也核对本报告阶段，
+  综合后/布局后/未知阶段保留数字并降级。它们仍是当前打开设计的有限检查，不代替签核。
+- 运行轮询允许可选 elapsed 属性缺失；重置命令使用官方完整 `reset_runs`。实际读取
+  四版本 UG835 与 2018.3/2024.2 UG973，固定版本依据、Windows 边界、工程不自动升级、
+  原生 GUI 交接和现场步骤集中在 [VERSION_COMPATIBILITY.md](docs/VERSION_COMPATIBILITY.md)。
+  Ross 保持并列可选，其文档中的 2026.1 测试声明不能外推为用户四版本已支持。
+
+验证环境为 Linux / Python 3.12.14；定向命令：
+
+```bash
+PYTHONPATH=.venv/lib/python3.12/site-packages:src python -m pytest \
+  tests/test_config.py tests/test_session_selection.py tests/test_session.py \
+  tests/test_probe_then_attach.py tests/test_doctor.py tests/test_run_monitor.py \
+  tests/test_monitor_lifecycle.py tests/test_monitor_http.py tests/test_project_observation.py \
+  tests/test_poll_compatibility.py tests/test_flow_progress.py \
+  tests/analysis/test_run_progress_parser.py tests/analysis/test_timing_parser.py \
+  tests/analysis/test_util_parser.py tests/test_report_tools.py -q -rs
+.venv/bin/ruff check src/ tests/
+git diff --check
+```
+
+结果 **383 passed / 6 skipped**。6 项跳过均为 `test_session.py` 中需要真实 Windows 的
+既有测试；没有将这些跳过记为通过。包含 3 个真实 Chromium 浅/深色及手机浏览器检查、
+Tcl 解释器测试、TCP 协议与慢磁盘子进程退出测试，EDA API/报告均为明确测试桩或样本。
+Ruff、diff、本地文档链接、README 与实际 33 个 MCP 工具一致性检查通过；实际构建 wheel
+并核对 UI、Tcl 与第三方许可文件存在。未扩大到全仓/全版本测试。
+
+未测/下一动作：没有商业 Vivado、Windows、Ross 或板卡运行结果。先在用户空闲时按兼容
+指南对 **2018.3 与 2024.2** 分别记录 OS/实际版本、GUI/Tcl/attach、原生 `.xpr` 重开、
+独立样例的 run 状态与 timing/utilization 原文，再在 2020.2/2022.2 验证受影响路径。
+既有 Windows 中文/空格路径、客户端链接发现和实际磁盘性能仍需现场核对；不自动升级 IP、
+不动生产工程、不占用 Coding 的本机测试。About 继续由哈基米处理，不重复请求仓库设置权限。
