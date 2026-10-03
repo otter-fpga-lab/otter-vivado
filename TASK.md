@@ -1,10 +1,55 @@
 # Otter Vivado：调试交付与智能体可视化能力
 
-Status: OPEN
+Status: CLOSED
 Target: otter-fpga-lab/otter-vivado
-Basis: 用户于 2026-10-03 确认板上调试、可视化和产品边界，并授权逐步实施；从 main 3750590 接续
-Next: 第 6 项核对独立 ILA 停止能力；消费者页面、声音和真实板卡按现场需求验证
-Result: 第 5 项工程控件语义已接通：枚举、补码/定点、单位换算、精确范围/步长、有序预设预览和共享单项写入；共 49 MCP 工具。未新增固定网页，未进行真实 EDA/板卡/消费者浏览器验收
+Basis: 用户于 2026-10-03 确认插件能力边界并授权逐步实施；现明确本轮结束即收口，真实情况后续使用时再验证
+Next: 无本轮待开发项；现场遇到具体需求或问题时再接续，不等待实机验收、不主动扩展验证矩阵
+Result: 六项计划均已处理并收口：前五项软件能力交付，第六项完成官方依据核对，明确插件不提供独立 ILA 停止。共 49 MCP 工具；不等同真实 EDA/板卡/消费者交互已验收
+
+## 本轮收口：第 6 项独立 ILA 停止核对（2026-10-03）
+
+从干净 main `d8bc13deff054a960f9f405f9bc5b81000c80585` 接续。用户明确要求完成本轮后
+结束，真实 Vivado、Windows、板卡、消费者页面/声音以后实际调用时顺手验证，不再挂为
+阻塞项。本节随收口实现提交保存；没有发布包或操作真实设备。
+
+| 项目 | 本轮结果 | 实现记录 |
+|---|---|---|
+| 1. 调试构建交付 | 已交付专用会话 DCP 导出、bit/ltx/报告清单与生成指引 | `234a4dd` |
+| 2. 采样导出与波形数据 | 已交付 VCD 导出与离线读取/分页 | `91e932d` |
+| 3. 采样分析与取证 | 已交付统计、声明规则与反例证据 | `fbc9845` |
+| 4. 本地实验编排 | 已交付就绪、倒计时、提示、标记、暂停/恢复/中止/重做 | `cd55063` |
+| 5. 工程控件语义 | 已交付枚举/定点/单位/预设预览与受约束写入 | `d8bc13d` |
+| 6. 独立 ILA 停止 | 已核对并明确当前插件不支持；提供原因、适用范围与处理路径 | 本次收口提交 |
+
+- 实际下载并读取 UG835 v2022.2 PDF：run_hw_ila 负责启动；reset_hw_ila 重置配置；
+  upload_hw_ila_data 会停止并上传、覆盖同核数据对象；wait_on_hw_ila 超时只结束等待。
+  未发现独立 stop_hw_ila 条目，不编造停止命令、不隐式上传或 reset 来替代。证据页码与
+  官方链接见 [ILA 停止核对](docs/ILA_STOP.md)。结论仅适用于当前插件/API 和已核对文档，
+  不声称所有版本均无其它能力，也没有动态探测实际 Vivado。
+- 快照保持 capabilities.stop_ila=false，新增 stop_ila_details；后端占位错误明确
+  上传/reset 的影响。MCP 工具数不变，未新增硬件动作、Tcl 命令、传输路径或固定页面。
+- Skill 指导消费者解释不可用原因；暂停/中止/超时/关页不等于硬件停止。实际有需要时
+  协调原生 Hardware Manager 处理，再显式 refresh 核对身份和状态，不自动重 arm/重做。
+
+验证环境 Linux / Python 3.12.14 / MCP SDK 2.3.0，Tcl 与硬件替身边界沿用前五项。
+
+```bash
+source .venv/bin/activate
+pytest tests/test_debug_capabilities.py tests/test_debug_backend.py \
+  tests/test_debug_service.py tests/test_debug_experiment.py tests/test_debug_experiment_tools.py \
+  tests/test_debug_controls.py tests/test_debug_controls_tools.py tests/test_debug_http.py \
+  tests/test_readme_hooks.py -q -rs -k 'not browser'
+ruff check src/ tests/
+git diff --check
+```
+
+定向回归 **216 passed / 3 deselected**；3 项为未改网页的浏览器测试，不记为通过。
+验证能力读取不查询/改写硬件、unsupported 请求不分发，保持后端不发停止/上传命令，
+并回归共享服务、实验、工程控件和 HTTP 边界。Ruff、diff、文档链接检查通过。
+
+本轮结束。真实设备/Windows/页面/声音尚未验收，按用户要求仅保留这个事实；不作为
+未完成开发项。以后调用时若出现具体问题，再带实际版本、命令/回执、文件与最小复现
+处理。以下章节为历史工作记录，其中“下一项/待现场验证”反映当时状态，以本节为准。
 
 ## 当前工作：第 5 项工程控件语义（2026-10-03）
 

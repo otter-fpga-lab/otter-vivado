@@ -112,7 +112,20 @@ class DebugService:
             "connection": "unobserved", "observed_at": None,
             "revision": 0, "control": "manual", "busy": False, "error": None,
             "inventory": {"targets": []}, "selection": None, "hardware": None,
-            "operations": [], "panel": None, "capabilities": {"stop_ila": False},
+            "operations": [], "panel": None, "capabilities": {
+                "stop_ila": False,
+                "stop_ila_details": {
+                    "status": "unsupported", "scope": "plugin_api",
+                    "reason_code": "no_documented_independent_stop",
+                    "reason": "已核对 UG835 v2022.2；上传会停止采集并覆盖数据对象，"
+                              "reset_hw_ila 会重置配置，均不能充当独立停止",
+                    "reference": "UG835 v2022.2: reset_hw_ila pp.1515-1516; "
+                                 "run_hw_ila p.1580; upload_hw_ila_data pp.1826-1827; "
+                                 "wait_on_hw_ila p.1843",
+                    "active_version_probed": False, "hardware_verified": False,
+                    "fallback": "native_hardware_manager_then_refresh",
+                },
+            },
         }
 
     def snapshot(self) -> dict:

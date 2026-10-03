@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased] — 2026-10-03 本轮收口与 ILA 停止核对
+
+- 核对 UG835 v2022.2：上传会停止并覆盖采样对象，reset 重置配置，均不作为独立停止。
+  保持 stop_ila=false，快照新增 stop_ila_details，明确插件范围、文档依据与原生处理路径。
+- 补齐消费者生成指引：暂停/中止/超时/关页不等于停止硬件；原生处理后显式刷新核对。
+  MCP 仍为 49 工具，不新增虚假 stop 接口或固定页面。
+- 本轮六项计划收口；真实 Vivado/Windows/板卡/消费者交互和声音按以后使用需求验证，
+  不作为本轮未完成项或发布/设备验收声明。
+
 ## [Unreleased] — 2026-10-03 工程控件语义
 
 - 新增 `resolve_debug_controls`、`write_debug_control`，共 49 MCP 工具。消费者显式

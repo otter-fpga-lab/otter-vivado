@@ -50,6 +50,8 @@ async def get_debug_snapshot(session_id: str = "default", ctx: Context = None) -
     先检查 connection/observed_at/revision/control，以及 operations 的最终状态。
     初次使用 debug_action(inventory) 枚举，select 明确 target/device；refresh 显式刷新。
     unknown 表示操作结果未完全确认，不能当作失败自动重试；重新核对设备状态。
+    capabilities.stop_ila=false 表示插件不支持独立停止；stop_ila_details 说明核对范围。
+    实验暂停/中止、等待超时与关闭页面均不停止 ILA；原生处理后显式 refresh 再核对。
     ILA status 是硬件原始状态，VIO 读回不证明业务逻辑已经采用参数。
     """
     try:

@@ -317,8 +317,11 @@ class HardwareDebugBackend:
     async def stop_ila(
         self, target: str, device: str, core: str, expected_uuid: str | None = None
     ) -> dict:
-        """公开 UG835 未提供 stop_hw_ila；不能把上传的停止副作用伪装成停止接口。"""
-        raise NotImplementedError("首批不支持单独停止 ILA，请在原生 Vivado Hardware Manager 操作")
+        """已核对 UG835 v2022.2；上传/重置均不能充当无附加效果的独立停止。"""
+        raise NotImplementedError(
+            "本插件不支持单独停止 ILA（已核对 UG835 v2022.2）；上传会覆盖采样数据对象，"
+            "reset_hw_ila 会重置配置。请在原生 Hardware Manager 明确处理后刷新状态"
+        )
 
     async def upload_ila(
         self, target: str, device: str, core: str, expected_uuid: str | None = None

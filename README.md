@@ -22,7 +22,7 @@ PyPI 上的同名包是上游发行版，Otter 功能按本仓源码入口安装
 
 **人和智能体操作同一份 Vivado 工程，观察同一次运行。**
 
-49 个 MCP 工具覆盖会话、综合、实现、真实进度、时序、XDC、IP、波形与烧录；其余 Vivado Tcl 能力由 `run_tcl`/`safe_tcl` 承载。原生 Vivado GUI 用于工程、Block Design、原理图与波形操作，本机网页提供只读运行观察，以及独立的 [ILA/VIO 调试面板](docs/HARDWARE_DEBUG.md)。调试支持已有硬件目标，并提供 [ILA/VIO 工程准备](docs/DEBUG_DESIGN.md)；并支持 [构建产物离线核对](docs/DEBUG_ARTIFACTS.md)。现支持 [ILA 采样导出与离线波形数据](docs/ILA_WAVEFORM.md)，智能体据此在消费者工程生成页面；现提供 [本地实验运行器与生成指引](docs/DEBUG_EXPERIMENT.md)，以及 [工程控件语义与预设](docs/DEBUG_CONTROLS.md)。
+49 个 MCP 工具覆盖会话、综合、实现、真实进度、时序、XDC、IP、波形与烧录；其余 Vivado Tcl 能力由 `run_tcl`/`safe_tcl` 承载。原生 Vivado GUI 用于工程、Block Design、原理图与波形操作，本机网页提供只读运行观察，以及独立的 [ILA/VIO 调试面板](docs/HARDWARE_DEBUG.md)。调试支持已有硬件目标，并提供 [ILA/VIO 工程准备](docs/DEBUG_DESIGN.md)；并支持 [构建产物离线核对](docs/DEBUG_ARTIFACTS.md)。现支持 [ILA 采样导出与离线波形数据](docs/ILA_WAVEFORM.md)，智能体据此在消费者工程生成页面；现提供 [本地实验运行器与生成指引](docs/DEBUG_EXPERIMENT.md)，以及 [工程控件语义与预设](docs/DEBUG_CONTROLS.md)。独立 ILA 停止的 [核对结论与处理方式](docs/ILA_STOP.md) 已明确；本轮开发已收口，现场验证留待实际使用。
 
 | 49 个 MCP 工具 | 8 个工作流 Prompt | 2 个会话 Resources | GUI / Tcl / attach 三种会话 |
 |---:|---:|---:|---:|

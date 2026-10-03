@@ -14,7 +14,7 @@
 3. 已授权范围内，`write_vio` 写一个实际输出；`configure_ila` 设置一个探针比较值与
    可选触发位置；`arm_ila` 开始等待触发或立即采集；`upload_ila` 只上传完整单窗口。
    `export_ila` 上传并导出 VCD；按 [波形参考](waveform.md) 读取数据、生成消费者页面。
-   仍没有独立停止接口。
+   独立停止已核对：插件不支持，读取 capabilities.stop_ila_details；见下方停止边界。
 4. `unknown` 表示结果可能已经部分生效，不自动重试。先检查设备并显式 `refresh`；
    VIO 读回匹配也不证明业务逻辑已经采用参数，仍需设计提供帧标记或应答。
 5. 人接手后 AI 停止写入。此控制权只协调本服务；原生 GUI、`run_tcl`、其它进程
@@ -54,3 +54,17 @@ project 身份调用 `prepare_debug_design`。只创建 IP 或注册约束，不
 `docs/DEBUG_ARTIFACTS.md`。`blocked` 表示明确不一致/解析失败，`incomplete` 表示缺少
 离线核对证据，`consistent` 仅表示所提供的离线检查一致。`pairing` 始终为 `unverified`；
 不得把 LTX UUID、同名/同目录文件或 SHA256 当作 .bit 内核身份或板卡 PASS。
+
+## 独立停止的生成边界
+
+本轮已核对 UG835 v2022.2：run_hw_ila 启动采集，reset_hw_ila 重置配置；
+upload_hw_ila_data 会停止并上传，还会覆盖对应数据对象，不能包装成无附加效果的停止。
+完整依据与页码见源码根 `docs/ILA_STOP.md`；不推断所有版本，也不声称已探测当前 Vivado。
+
+消费者读取 capabilities.stop_ila=false 及 stop_ila_details，解释不可用原因，不生成
+伪停止按钮。暂停/中止、等待超时、关闭页面均不是停止 FPGA。用户实际需要处理时，先
+中止本地编排并等待已接受操作回执，协调原生 Hardware Manager 操作，再显式 refresh
+核对设备身份和实际状态；不自动 reset、上传部分数据、立即触发或重 arm。
+
+真实环境按以后使用需求现场确认，不再挂成本轮未完成开发项。没有使用需求时不提前搭建
+全版本/全平台验收矩阵；实际出现差异再记录版本、命令帮助、日志与最小复现。
