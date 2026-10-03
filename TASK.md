@@ -3,8 +3,8 @@
 Status: OPEN
 Target: otter-fpga-lab/otter-vivado
 Basis: Hub main 0e9c375e；topics/20261002_vivado-progress-and-ross/TASK.md
-Next: 审阅 Draft PR #1；按 docs/RUN_MONITOR.md 在实际 Windows/Vivado 版本做现场验证
-Result: 真实观察器、只读面板、CLI/MCP/Skill 原地接入及样例已实现；云端定向 315 passed / 6 skipped
+Next: 按四客户端原地接入入口核对本机链接发现与空闲重载；继续在 Draft PR #1 接续，不触发活动 Vivado 重启
+Result: 首轮真实观察流程已交付；本轮增加四客户端同源链接接入与 Ross 参考任务路由，接入定向 57 passed
 
 ## 接手与边界
 
@@ -95,3 +95,36 @@ base `main`，head `feat/progress-view-study`；未合并/发布。接续时 fet
 Git HTTPS push 在本环境返回 401；
 使用现有授权的 GitHub Git Data API 上传同一 blob/tree/commit 并逐项比对 SHA、
 仅 fast-forward 更新本分支，不改全局凭据或旧贡献分支。
+
+## 四客户端原地接入优化（2026-10-03，按用户后续偏好）
+
+用户确认产品作为完整插件能力使用，偏好 Cursor / Claude Code / Codex / Antigravity
+通过符号链接读取同一源码。本批继续 `feat/progress-view-study` / Draft PR #1，
+开始时远端和工作树均在 `1eb8d62` 且干净，不另建产品或重写运行后端。
+
+已完成：
+
+- `connect --client all` 或选择多个客户端，一次预检/接入；`--check` 完全只读。
+  Cursor 默认与 Codex 共用 `.agents/skills/otter-vivado`，保留已有 Cursor 原生入口；
+  Claude 用原生 Skill 目录，Antigravity 使用官方当前配置目录并识别既有旧布局。
+- `--skills-only`、单客户端 `--skills-dir/--config` 覆盖支持用户既有布局；Windows
+  auto 首选 symlink，仅缺少 symlink 特权时回退 junction，不复制 Skill/参考文件。
+- 已有配置 symlink 保留，多个客户端链接同一 JSON 时只写一次真实目标；其他服务器、
+  现有停用标记和搜索路径覆盖保留。冲突先报明，不覆盖目录、异源入口或同期配置变化。
+  `needs_attention` 区分已停用/导入路径覆盖，不能据此声称客户端已经可调用。
+- Ross main `2cdc9eef` 的按任务发现输入、按需读 references、用版本/消息签名查官方资料、
+  参数读回与证据复测已落实为本仓 Skill 路由。Ross release `2026.9.1` 实际指向
+  `c89c3328`，与 main 区分。未复制其二进制或引入运行依赖。
+- 普通用户级 Skill 链接 + editable MCP 是本轮正式接入方式。Ross 文档所述原生插件
+  缓存/链接限制使“四客户端插件缓存原地热更新”不可承诺；源内容只改一处，活动会话
+  不自动重启，MCP 模块在正常空闲加载边界更新。
+
+验证：`.venv/bin/pytest tests/test_connect.py tests/test_doctor.py -q` 为 **57 passed**；
+覆盖实际临时目录链接、一次修改 Skill 与 references 从所有入口读到新内容、四客户端
+CLI 预检/写入/幂等复查、共享 JSON 链接、已有路径、配置冲突、同期修改、停用状态，
+以及 Windows junction 参数/权限分支模拟。修改文件 Ruff 与 diff 检查通过；Skill
+引用的工具名与真实源码核对，Markdown 本地引用校验通过。没有重跑 EDA/全库矩阵。
+
+未测：Windows 真实 junction/中文空格路径、四宿主实际 Skill 发现和缓存加载、Cursor
+跨原生/兼容目录同名入口显示、Antigravity 旧 MCP 路径在用户实际版本上的加载。
+这些保留为现场定向检查；没有本机安装/改动用户客户端，没有商业 EDA/Ross 执行。

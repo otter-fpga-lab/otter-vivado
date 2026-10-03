@@ -97,7 +97,18 @@ def main() -> None:
     p_monitor.add_argument("--replay", help="读取带 VMCP_RUN 标记的回放文本，不连接 EDA。")
     p_monitor.add_argument("--json", action="store_true", help="输出一次结构化采样并退出。")
     p_connect = sub.add_parser("connect", help="一次接入源码 MCP 与原地 Skill 目录引用。")
-    p_connect.add_argument("--client", choices=("codex", "claude-code"), default="codex")
+    p_connect.add_argument(
+        "--client", nargs="+", choices=("cursor", "claude-code", "codex", "antigravity", "all"),
+        default=["codex"], help="可选择多个客户端，all 一次接入四个客户端。",
+    )
+    p_connect.add_argument("--check", action="store_true", help="只读核对路径与接入状态。")
+    p_connect.add_argument("--skills-only", action="store_true", help="只建立 Skill 链接。")
+    p_connect.add_argument("--skills-dir", help="单客户端的实际 Skill 父目录。")
+    p_connect.add_argument("--config", help="单客户端的实际 MCP 配置文件。")
+    p_connect.add_argument(
+        "--link-mode", choices=("auto", "symlink", "junction"), default="auto",
+        help="默认符号链接；Windows 缺少链接特权时 auto 使用目录 junction。",
+    )
 
     args = parser.parse_args()
 
@@ -118,10 +129,14 @@ def main() -> None:
     if args.cmd == "connect":
         import json
 
-        from vivado_mcp.connect import connect_source
+        from vivado_mcp.connect import connect_clients
 
         try:
-            print(json.dumps(connect_source(client=args.client), ensure_ascii=False, indent=2))
+            result = connect_clients(
+                clients=args.client, check=args.check, skills_only=args.skills_only,
+                skills_dir=args.skills_dir, config_path=args.config, link_mode=args.link_mode,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
         except (ValueError, RuntimeError, OSError) as exc:
             print(f"[ERROR] {exc}", file=sys.stderr)
             sys.exit(1)
