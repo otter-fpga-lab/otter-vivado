@@ -1095,12 +1095,15 @@ if {$__immediate} {
 apply $__emit arm [list $__core_name [apply $__get $__core STATUS.CORE_STATUS]]
 """
 
-DEBUG_UPLOAD_ILA = r"""
+DEBUG_UPLOAD_ILA_DATA = r"""
 if {![apply $__complete $__core $__get]} {
     error "ILA capture is not confirmed complete (single window, IDLE, full sample count required)"
 }
 set __data [upload_hw_ila_data $__core]
 if {[llength $__data] != 1} { error "Upload did not return exactly one ILA data object" }
+"""
+
+DEBUG_UPLOAD_ILA = DEBUG_UPLOAD_ILA_DATA + r"""
 apply $__emit upload [list $__core_name [get_property NAME [lindex $__data 0]] \
     [apply $__get $__core STATUS.CORE_STATUS]]
 """
@@ -1421,4 +1424,16 @@ dict for {__key __value} $__fields {
 }
 puts "VMCP_BUNDLE_DONE:1"
 }}
+"""
+
+# 使用紧邻的 DEBUG_UPLOAD_ILA_DATA 返回对象，不选择可能属于旧采样的缓存对象。
+DEBUG_EXPORT_ILA = r"""
+if {[file exists $__capture_path]} { error "Capture destination already exists" }
+write_hw_ila_data -vcd_file $__capture_path [lindex $__data 0]
+if {![file isfile $__capture_path] || [file size $__capture_path] == 0} {
+    error "ILA export produced no VCD data"
+}
+apply $__emit export [list $__core_name [get_property NAME [lindex $__data 0]] \
+    [apply $__get $__core UUID] [apply $__get $__core STATUS.SAMPLE_COUNT] \
+    [apply $__get $__core CONTROL.TRIGGER_POSITION] [version -short]]
 """

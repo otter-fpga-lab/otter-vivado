@@ -387,3 +387,74 @@ async def test_invalid_transport_or_application_response_is_not_success(output, 
 
     with pytest.raises(DebugBackendError):
         await HardwareDebugBackend(BrokenSession()).inventory()
+
+
+EXPORT_MOCK = r"""
+proc version {args} { return mock-2024.2 }
+proc write_hw_ila_data {option path data} {
+    puts "MOCK_CALL:[list write_hw_ila_data $option $path $data]"
+    if {$option ne "-vcd_file" || $data ne "data"} { error "Wrong export arguments" }
+    set __fd [open $path {WRONLY CREAT EXCL}]
+    puts $__fd {$timescale 1ns $end}
+    puts $__fd {$var wire 1 ! probe $end}
+    puts $__fd {$enddefinitions $end}
+    puts $__fd {#0}
+    puts $__fd {0!}
+    close $__fd
+    if {$::__fail eq "export"} { error "Export failed after partial output" }
+}
+"""
+
+
+async def test_export_current_capture_preserves_paths_and_receipt(tmp_path):
+    import hashlib
+    import json
+
+    from vivado_mcp.analysis.ila_waveform import read_ila_waveform
+
+    api, session = backend(EXPORT_MOCK)
+    directory = tmp_path / '中文 [x] $no; test'
+    result = await api.export_ila(TARGET, DEVICE, 'hw_ila_1', str(directory), 'ila-uuid')
+    assert result['status'] == 'succeeded'
+    assert result['data_object'] == 'hw_ila_data_1'
+    assert result['actual_uuid'] == 'ila-uuid'
+    assert result['sample_count'] == '16'
+    assert result['trigger_position'] == '4'
+    assert result['waveform']['sha256'] == hashlib.sha256(
+        (directory / 'capture.vcd').read_bytes()).hexdigest()
+    assert json.loads((directory / 'manifest.json').read_text()) == result
+    assert read_ila_waveform(str(directory / 'capture.vcd'))['events'][0]['value'] == '0'
+    calls = [line for line in session.output.splitlines() if line.startswith('MOCK_CALL:')]
+    assert len(calls) == 2
+    assert calls[0] == 'MOCK_CALL:upload_hw_ila_data ila'
+    assert calls[1].endswith(' data')
+    with pytest.raises(FileExistsError):
+        await api.export_ila(TARGET, DEVICE, 'hw_ila_1', str(directory), 'ila-uuid')
+
+
+@pytest.mark.parametrize('setup', [
+    'dict set __props ila STATUS.SAMPLE_COUNT 4',
+    'dict set __props ila STATUS.CORE_STATUS WAITING_FOR_TRIGGER',
+    'dict set __props ila CONTROL.WINDOW_COUNT 2',
+    'dict set __props ila UUID changed',
+])
+async def test_export_rejects_unconfirmed_capture_without_upload(tmp_path, setup):
+    import json
+
+    api, session = backend(EXPORT_MOCK + '\n' + setup)
+    directory = tmp_path / 'capture'
+    with pytest.raises(RuntimeError, match='不自动重试'):
+        await api.export_ila(TARGET, DEVICE, 'hw_ila_1', str(directory), 'ila-uuid')
+    assert 'MOCK_CALL:' not in session.output
+    assert not (directory / 'manifest.json').exists()
+    assert json.loads((directory / 'result.json').read_text())['status'] == 'unknown'
+
+
+async def test_partial_export_retains_file_and_no_success_manifest(tmp_path):
+    api, session = backend(EXPORT_MOCK + '\nset __fail export')
+    directory = tmp_path / 'partial'
+    with pytest.raises(RuntimeError, match='不自动重试'):
+        await api.export_ila(TARGET, DEVICE, 'hw_ila_1', str(directory))
+    assert (directory / 'capture.vcd').is_file()
+    assert not (directory / 'manifest.json').exists()
+    assert session.output.count('MOCK_CALL:upload_hw_ila_data') == 1

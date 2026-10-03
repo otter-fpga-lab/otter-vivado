@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased] — 2026-10-03 采样导出与波形数据
+
+- `debug_action(export_ila)` 经共享控制权/revision 导出完整单窗口 VCD，保存来源、
+  指纹与结果清单；使用本次上传对象、不覆盖文件、不自动重试未知结果。
+- 新增 `read_ila_waveform` MCP 和 `ila-waveform` CLI，提供信号目录、窗口及无损事件
+  分页，保留宽总线、x/z 和大整数 tick。MCP 共 43 工具，未发布包。
+- Skill 增加消费者波形页面生成流程；本批未修改固定网页。格式和协议替身测试通过
+  不等于实际 Vivado/Windows/板卡验证；自动分析和实验编排仍待后续。
+
 ## [Unreleased] — 2026-10-03 检查点交付与可视化职责
 
 - 新增 `export_debug_bundle` MCP 与 `debug-export` CLI，在专用空会话中从明确实现

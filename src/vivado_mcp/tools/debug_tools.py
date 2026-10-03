@@ -67,7 +67,7 @@ async def get_debug_snapshot(session_id: str = "default", ctx: Context = None) -
 async def debug_action(
     action: Literal[
         "inventory", "select", "refresh", "control", "write_vio",
-        "configure_ila", "arm_ila", "upload_ila",
+        "configure_ila", "arm_ila", "upload_ila", "export_ila",
     ],
     params: dict,
     expected_revision: int,
@@ -80,6 +80,8 @@ async def debug_action(
     control={owner:'ai'|'manual'}；write_vio={core,probe,value}（非负十进制或0x字符串）；
     configure_ila={core,probe,trigger_value,trigger_position?}（原生触发值语法）；
     arm_ila={core,immediate?}；upload_ila={core}（首批仅完整单窗口，上传至Vivado）。
+    export_ila={core,output_dir}：完整单窗口上传并导出到消费者新目录，返回 VCD/清单。
+    不覆盖文件；失败/unknown 保留现场，不自动重试；不启动新采集。
     expected_revision 必须取自最新 get_debug_snapshot。设备选择/硬件操作前显式切换
     control 为 ai，已授权范围内可逐步执行；交回人工后不能继续写。控制权仅覆盖本服务，
     不拦截原生 GUI/run_tcl/其它进程；使用那些入口时请协调操作。

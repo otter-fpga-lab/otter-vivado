@@ -3,8 +3,53 @@
 Status: OPEN
 Target: otter-fpga-lab/otter-vivado
 Basis: 用户于 2026-10-03 确认板上调试、可视化和产品边界，并授权逐步实施；从 main 3750590 接续
-Next: 按顺序推进第 2 项采样导出与波形数据接口/生成指引；真实工程空闲时验证检查点导出和板上配对。页面由智能体放到消费者工程，不扩建固定 UI
-Result: 第 1 项软件流程已补齐：Skill 串联已有构建工具、专用空会话检查点导出和交付包复核；共 42 MCP 工具。商业 Vivado/Windows/板卡仍未实测
+Next: 第 3 项 AI 数据分析闭环；随后依次是本地实验编排、工程控件语义和独立 ILA 停止。真实工程/板卡验证按现场需求补充
+Result: 第 2 项软件能力已接通：完整单窗口 VCD 导出、离线波形数据读取和消费者页面生成 Skill；共 43 MCP 工具。未新增固定网页；商业 Vivado/Windows/板卡未实测
+
+## 当前工作：第 2 项采样导出与波形数据（2026-10-03）
+
+用户要求继续下一项，沿用已明确的插件边界：接口、数据与生成方法放库内，页面由智能体
+在消费者工程生成。从干净 main `234a4ddbe8f0ae55f24b69ffb2627fa58beea502` 接续；
+这是上一轮检查点交付的实现提交。本节随本次实现提交保存，不发布包、不操作真实设备。
+
+- `debug_action(export_ila)` 复用同一 DebugService 控制权、revision、busy、目标和
+  UUID 检查。完整单窗口上传与 VCD 导出在同次 Tcl execute 中连续执行，使用该次上传
+  返回对象，不自动 arm/停止/烧录，不以旧对象冒充本次采集。
+- 消费者新目录保存 attempt、原始 VCD、成功 manifest 和 result；包含版本、核身份、
+  配置触发位置、采样数、文件 SHA256。部分失败/超时/取消保留 unknown，不覆盖/重放。
+  30 秒等待超时后仍需核对 Vivado；本地记录不证明 bit/ltx 配对或实际物理采样周期。
+- `read_ila_waveform` MCP 与 `ila-waveform` CLI 纯离线读取有限数字 VCD，提供别名信号
+  目录、窗口前保持值、含边界窗口和事件分页；宽总线、x/z、大 tick 都用字符串。
+  同刻多次变化保留顺序，expected_sha256 防止不同文件分页拼接，不抽点或假造初值。
+  文件/目录/位宽/响应有界；不支持的实数、字符串、dump 开关等明确阻断。
+- 新增 [波形接口说明](docs/ILA_WAVEFORM.md) 和
+  [波形生成 Skill 参考](skills/otter-vivado/references/waveform.md)，更新入口与 README。
+  既有参考页 HTTP 仍不接受任意导出路径；消费者自定义实时适配需共享同一服务。
+  本批没有修改 web/、绘制演示页面或冒充用户板卡数据。
+
+验证为 Linux / Python 3.12.14 / MCP SDK 2.3.0，真实 Tcl 解释器，EDA 命令为明确替身。
+
+```bash
+source .venv/bin/activate
+pytest tests/analysis/test_ila_waveform.py tests/test_ila_capture.py \
+  tests/test_debug_backend.py tests/test_debug_service.py tests/test_debug_http.py \
+  tests/test_debug_bundle.py tests/test_debug_artifacts_cli.py tests/test_debug_design_tools.py \
+  tests/test_debug_prepare_cli.py tests/test_protocol_regression.py tests/test_session.py \
+  tests/test_probe_then_attach.py tests/test_tcl_utils.py tests/test_prompts.py \
+  tests/test_readme_hooks.py tests/test_version.py -q -rs -k 'not browser'
+ruff check src/ tests/
+git diff --check
+python -m pip wheel --no-deps . -w /workspace/scratch/otter-vivado-waveform-wheels
+```
+
+定向回归 **372 passed / 6 skipped / 3 deselected**；6 项是已有 Windows-only 测试，
+3 项是未改页面对应的浏览器检查。随后补输出大小防护、散列移出事件循环，重跑读取器、
+导出后端和真实 MCP 的受影响子集 **86 passed**。不是相加的独立覆盖数。
+覆盖实际 MCP 导出至离线读取链路、共享控制权、原生 Tcl 引号、未完成/UUID 变更拒绝、
+部分导出、取消/超时不重放、分页/指纹变化和坏数据范围外也拒绝。
+Ruff、diff、本地文档链接与 wheel 模块检查通过；没有实际 EDA、Windows、板卡或
+真实 Vivado VCD 样本，因此仅软件流程完成，现场命令/属性/输出格式需按使用反馈核对。
+自动分析、协议/状态机推断、下一轮触发策略属于下一项，没有在本批宣称实现。
 
 ## 当前工作：第 1 项调试构建交付与插件边界（2026-10-03）
 

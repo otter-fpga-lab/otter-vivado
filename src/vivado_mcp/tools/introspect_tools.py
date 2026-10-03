@@ -106,3 +106,30 @@ async def check_debug_artifacts(
     except (OSError, ValueError) as exc:
         result = {"status": "blocked", "pairing": "unverified", "error": str(exc)}
     return json.dumps(result, ensure_ascii=False)
+
+
+@mcp.tool()
+async def read_ila_waveform(
+    file_path: str, signal_ids: list[str] | None = None,
+    start_tick: str = "0", end_tick: str | None = None,
+    offset: int = 0, limit: int = 1000, expected_sha256: str | None = None,
+) -> str:
+    """离线读取数字 VCD，为消费者波形页面/分析提供 JSON，不需要 Vivado 会话。
+
+    最多读取 32 MiB；4096 个声明/4096 位宽；不支持实数或字符串 VCD。
+    signal_ids 为文件内的标识符代码，[] 只取目录；null 选全部。
+    时间为非负十进制字符串 tick，值为保留 x/z 的全位宽二进制字符串。
+    start/end 均包含边界；initial_values_before_start 为开始前保持值，null 表示未知。
+    offset/limit 分页保留同刻变化，下一页使用 next_offset 与同一过滤条件，必须传回
+    expected_sha256 防止文件替换。只返回有限页，不抽点；truncated 不能当完整波形。
+    timescale 是文件标注，不证明物理采样周期；触发位置和采集完整性不能由 VCD 推断。
+    """
+    from vivado_mcp.analysis.ila_waveform import read_ila_waveform as read
+
+    try:
+        result = await asyncio.to_thread(
+            read, file_path, signal_ids, start_tick, end_tick, offset, limit, expected_sha256,
+        )
+    except (OSError, ValueError) as exc:
+        result = {"status": "blocked", "error": str(exc)}
+    return json.dumps(result, ensure_ascii=False)

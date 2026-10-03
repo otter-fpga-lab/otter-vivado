@@ -123,6 +123,15 @@ def main() -> None:
     p_export.add_argument("--port", type=int, required=True, help="专用空 GUI 会话的协议端口。")
     p_export.add_argument("--source-revision", help="声明的源码提交；不作为已验证的来源。")
     p_export.add_argument("--timeout", type=int, default=1800, help="等待秒数；超时不取消 Vivado。")
+    p_wave = sub.add_parser("ila-waveform", help="离线读取 VCD 为消费者波形 JSON。")
+    p_wave.add_argument("--file", required=True, help="数字 VCD 文件路径。")
+    p_wave.add_argument("--signal", action="append", help="精确 VCD 标识符，可重复指定。")
+    p_wave.add_argument("--catalog", action="store_true", help="仅信号目录，不返回事件。")
+    p_wave.add_argument("--start-tick", default="0")
+    p_wave.add_argument("--end-tick")
+    p_wave.add_argument("--offset", type=int, default=0)
+    p_wave.add_argument("--limit", type=int, default=1000)
+    p_wave.add_argument("--expected-sha256", help="分页时锁定首份文件指纹。")
     p_connect = sub.add_parser("connect", help="一次接入源码 MCP 与原地 Skill 目录引用。")
     p_connect.add_argument(
         "--client", nargs="+", choices=("cursor", "claude-code", "codex", "antigravity", "all"),
@@ -138,6 +147,22 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    if args.cmd == "ila-waveform":
+        import json
+
+        from vivado_mcp.analysis.ila_waveform import read_ila_waveform
+
+        try:
+            result = read_ila_waveform(
+                args.file, [] if args.catalog else args.signal,
+                args.start_tick, args.end_tick, args.offset, args.limit, args.expected_sha256,
+            )
+        except (ValueError, OSError) as exc:
+            print(json.dumps({"status": "blocked", "error": str(exc)}, ensure_ascii=False))
+            sys.exit(1)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        sys.exit(0)
 
     if args.cmd == "debug-export":
         import asyncio

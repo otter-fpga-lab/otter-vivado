@@ -250,3 +250,29 @@ def test_panel_description_size_shape_and_no_script_fields(tmp_path):
     path.write_bytes(b" " * 65537)
     with pytest.raises(ValueError, match="64 KiB"):
         load_panel(str(path))
+
+
+async def test_export_uses_shared_control_revision_and_uuid(service, tmp_path):
+    await select(service)
+    service.backend.export_ila = AsyncMock(return_value={'waveform': {'sha256': 'test'}})
+    params = {'core': 'ila', 'output_dir': str(tmp_path / 'new')}
+    revision = service.snapshot()['revision']
+    with pytest.raises(RuntimeError, match='控制权'):
+        service.submit({'action': 'export_ila', 'params': params,
+                        'expected_revision': revision}, source='ai')
+    await action(service, 'control', {'owner': 'ai'}, source='ai')
+    with pytest.raises(RuntimeError, match='状态已变化'):
+        service.submit({'action': 'export_ila', 'params': params,
+                        'expected_revision': revision}, source='ai')
+    result = await action(service, 'export_ila', params, source='ai')
+    assert result['status'] == 'succeeded'
+    service.backend.export_ila.assert_awaited_once_with(
+        'cable/serial', 'xc7_0', **params, expected_uuid='ila-uuid',
+    )
+    service.backend.export_ila.side_effect = TimeoutError('uncertain export')
+    result = await action(service, 'export_ila', params, source='ai')
+    assert result['status'] == 'unknown'
+    assert service.backend.export_ila.await_count == 2
+    with pytest.raises(RuntimeError, match='最新硬件状态'):
+        service.submit({'action': 'export_ila', 'params': params,
+                        'expected_revision': service.snapshot()['revision']}, source='ai')

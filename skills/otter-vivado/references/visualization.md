@@ -20,7 +20,7 @@
 | 运行状态和报告 | `get_run_snapshot` / `get_run_progress`；保留 session、run、目标阶段与来源 |
 | 调试交付检查 | `export_debug_bundle` 的结果、manifest 与 `check_debug_artifacts` JSON |
 | 调试控制与状态 | 同一个 `DebugService` 的 `snapshot()` / `submit()`，或已连接的 MCP 入口 |
-| 波形/采样分析 | 等实际采样导出能力提供可验证数据；当前上传结果仍在原生 Vivado 查看 |
+| 波形/采样分析 | `debug_action(export_ila)` 导出 VCD；`read_ila_waveform` 提供事件，见 [波形参考](waveform.md) |
 
 静态交付页面可以读取保存的 JSON，完整展示文件 SHA256、检查状态和未验证项，无需
 启动 Vivado 或网页后端。不要将 `exported`、`consistent` 或 `record_matches` 显示成

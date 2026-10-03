@@ -32,7 +32,7 @@ def test_cli_exit_codes_and_read_only(tmp_path, mode, code):
 
 async def test_real_mcp_registration_and_offline_call():
     registered = {tool.name: tool for tool in await mcp.list_tools()}
-    assert len(registered) == 42
+    assert len(registered) == 43
     schema = registered["check_debug_artifacts"].input_schema
     assert set(schema["required"]) == {"bit_path", "ltx_path"}
     result = await mcp.call_tool("check_debug_artifacts", {

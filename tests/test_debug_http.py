@@ -540,3 +540,12 @@ def test_browser_ila_capabilities_and_gui_staged_value(debug, browser):
         debug[3].assert_not_called()
     finally:
         page.close()
+
+
+def test_reference_http_does_not_accept_export_paths(debug):
+    status, _, _ = _post(debug, payload={
+        'action': 'export_ila', 'params': {'core': 'ila', 'output_dir': '/some/path'},
+        'expected_revision': 7,
+    })
+    assert status == 400
+    debug[3].assert_not_called()

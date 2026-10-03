@@ -341,3 +341,12 @@ class HardwareDebugBackend:
             "capture_complete": True,
             "exported": False,
         }
+
+    async def export_ila(
+        self, target: str, device: str, core: str, output_dir: str,
+        expected_uuid: str | None = None,
+    ) -> dict:
+        """完整单窗口上传并导出 VCD；由共享服务协调，不隐式启动或停止采集。"""
+        from vivado_mcp.ila_capture import export_capture
+
+        return await export_capture(self, target, device, core, output_dir, expected_uuid)

@@ -20,8 +20,9 @@ _PARAMETERS = {
     "configure_ila": ({"core", "probe", "trigger_value"}, {"trigger_position"}),
     "arm_ila": ({"core"}, {"immediate"}),
     "upload_ila": ({"core"}, set()),
+    "export_ila": ({"core", "output_dir"}, set()),
 }
-_HARDWARE_WRITES = {"write_vio", "configure_ila", "arm_ila", "upload_ila"}
+_HARDWARE_WRITES = {"write_vio", "configure_ila", "arm_ila", "upload_ila", "export_ila"}
 
 
 def load_panel(path: str) -> dict:
