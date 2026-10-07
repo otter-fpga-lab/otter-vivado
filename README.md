@@ -1,6 +1,6 @@
 # Otter Vivado — Vivado 工具与人机共用工作流
 
-Otter Vivado 专注 **AMD Vivado 工具能力**：工程管理、Tcl 执行、综合/实现、仿真、IP、
+Otter Vivado 专注 **AMD Vivado 工具能力**：工程管理、Tcl 执行、本地与远程综合/实现、仿真、IP、
 真实运行状态与报告，以及原生 GUI 操作交接。RTL 设计与编码由 `otter-rtl-coding` 等上层
 产品负责，本产品为它们和人类提供可独立使用的执行与验证入口。
 
@@ -27,7 +27,7 @@ PyPI 上的同名包是上游发行版，Otter 功能按本仓源码入口安装
 | 49 个 MCP 工具 | 8 个工作流 Prompt | 2 个会话 Resources | GUI / Tcl / attach 三种会话 |
 |---:|---:|---:|---:|
 
-> 本项目控制的是**你本机安装的 Vivado**，不是云端综合服务。命令在当前用户权限下执行；工具说明和诊断建议以中文为主。
+> 本地会话控制当前机器安装的 Vivado；远程 CLI 控制显式配置的 Linux 主机。命令按实际用户权限执行，工程、报告与设备证据分别记录。
 >
 > **English:** Otter Vivado provides local AMD Vivado project, execution, simulation, IP, status, and report tools for humans and agents. It includes 49 MCP tools, 8 workflow prompts, native GUI/headless/attach sessions, and a shared read-only run monitor. RTL authoring belongs to the separate coding product.
 
@@ -36,7 +36,7 @@ PyPI 上的同名包是上游发行版，Otter 功能按本仓源码入口安装
 ## 环境要求
 
 - **Python ≥ 3.10**，Windows / Linux
-- **Xilinx Vivado**：必须安装在运行 vivado-mcp 的本机
+- **Xilinx Vivado**：本地会话需要本机安装；远程构建需要目标主机的明确安装，离线输入/报告检查不需要 EDA
 - **MCP Python SDK 2.x**：`pip` 自动安装；Python 3.10 另需自动安装的 `tomli`
 
 Windows 是使用与兼容维护重点；当前云端自动化通过不等于商业 Vivado、Windows GUI 或板卡现场已通过。实际验证范围与待测步骤见 [TASK.md](TASK.md) 和 [GUI 指南](docs/HUMAN_GUI_WORKFLOW.md)。
@@ -55,6 +55,18 @@ Windows 是使用与兼容维护重点；当前云端自动化通过不等于商
 
 支持目标与实际通过记录分开维护；选版本、官方依据与验收范围见
 [版本兼容说明](docs/VERSION_COMPATIBILITY.md)。使用旧版工程不要求升级到新版 Vivado。
+
+## 远程构建 CLI
+
+`vivado-mcp remote` 已承接原 `fpga-remote` 的工程快照、原生 Tcl、主机队列、报告与结果交付；不接入本地 GUI/TCP 会话，当前没有独立的远程 MCP 工具。入口、私人配置和动作边界见 [远程构建](docs/REMOTE_BUILD.md)。
+
+```text
+vivado-mcp remote --help
+vivado-mcp remote inspect --project /path/to/project --json
+vivado-mcp remote report --results /path/to/results
+```
+
+上面两项检查只读本地输入，不需要主机配置或 SSH。实际远程操作使用 `--config`、`OTTER_VIVADO_REMOTE_CONFIG` 或同仓忽略文件 `config/remote-hosts.local.json`；[样例](config/remote-hosts.example.json)没有私人地址或用户名。普通 CLI 使用不要求客户端注册，本轮接入形式留待后续安排。
 
 ## 快速开始
 
@@ -602,6 +614,7 @@ flowchart LR
 | `vivado-mcp monitor --port 9999 --run impl_1 --target route_design` | 只观察指定已有 GUI 的 run；详见 [运行观察](docs/RUN_MONITOR.md) |
 | `vivado-mcp version` | 显示 Otter Python 包版本 |
 | `vivado-mcp versions [--json]` | 只读列出本机 Vivado 安装候选与默认选择，不启动 EDA；详见 [版本兼容](docs/VERSION_COMPATIBILITY.md) |
+| `vivado-mcp remote <命令>` | 远程工程/原生 Tcl 构建、队列、状态、交付与离线报告；详见 [远程构建](docs/REMOTE_BUILD.md) |
 
 ## 开发
 

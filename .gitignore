@@ -78,3 +78,6 @@ vivado_mcp_requirements.md
 
 # 本地启动脚本(含个人 API token,各自维护)
 claude-start.bat
+
+# Personal remote-host configuration; never package or commit.
+/config/remote-hosts.local.json

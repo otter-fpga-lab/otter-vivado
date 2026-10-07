@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "name": "native-tcl-smoke",
+  "vivado_version": "2024.2",
+  "entry": "run.tcl",
+  "arguments": ["input/data.txt", "literal $value [command] {braces}", "", "中文"],
+  "inputs": ["input"],
+  "required_outputs": ["nested/arguments.txt", "copied.txt"],
+  "source_identity": {"purpose": "Native Tcl transport smoke; no synthesis or implementation"}
+}

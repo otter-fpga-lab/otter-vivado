@@ -7,6 +7,7 @@
     python -m vivado_mcp uninstall     # 从 Vivado_init.tcl 移除
     python -m vivado_mcp doctor        # 只读环境诊断
     python -m vivado_mcp version       # 显示版本
+    python -m vivado_mcp remote --help # 远程构建 CLI，不启动本地会话
     vivado-mcp install --port 9998     # 使用自定义端口
 """
 
@@ -19,11 +20,17 @@ from vivado_mcp import __version__
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "remote":
+        from vivado_mcp.remote_build.core import main as remote_main
+
+        sys.exit(remote_main(sys.argv[2:]))
+
     parser = argparse.ArgumentParser(
         prog="vivado-mcp",
         description="Vivado MCP Server — AI 驱动的 FPGA 开发助手。",
     )
     sub = parser.add_subparsers(dest="cmd", metavar="COMMAND")
+    sub.add_parser("remote", help="远程构建、排队、交付和离线报告；见 remote --help。")
 
     # serve (默认)
     sub.add_parser(

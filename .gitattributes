@@ -4,3 +4,9 @@
 tests/fixtures/*.wcfg -text
 # .bit 是二进制比特流头样本,禁任何转换/diff
 tests/fixtures/*.bit binary
+
+# Remote scripts must remain LF on Windows checkout and in wheels.
+src/vivado_mcp/remote_build/assets/*.sh text eol=lf
+src/vivado_mcp/remote_build/assets/*.tcl text eol=lf
+tests/remote_build/**/*.sh text eol=lf
+tests/remote_build/*.tcl text eol=lf

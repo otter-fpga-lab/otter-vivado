@@ -1,16 +1,36 @@
-# Otter Vivado：调试交付与智能体可视化能力
+# Otter Vivado：远程构建合入与既有能力维护
 
-Status: CLOSED
+Status: REMOTE_BUILD_MERGED_LOCAL（实现与离线验证完成；未推送、未接入客户端）
 Target: otter-fpga-lab/otter-vivado
-Basis: 用户于 2026-10-03 确认插件能力边界并授权逐步实施；现明确本轮结束即收口，真实情况后续使用时再验证
-Next: 无本轮待开发项；现场遇到具体需求或问题时再接续，不等待实机验收、不主动扩展验证矩阵
-Result: 六项计划均已处理并收口：前五项软件能力交付，第六项完成官方依据核对，明确插件不提供独立 ILA 停止。共 49 MCP 工具；不等同真实 EDA/板卡/消费者交互已验收
+Basis: 2026-10-07 用户授权先将 fpga-remote 合入本产品并验证；客户端接入形式另行讨论
+Next: 本轮提交后由工作区收口旧完整仓；后续接入或实际远程执行沿用用户新安排
+Result: 远程核心/资产/回归已归入 vivado_mcp.remote_build，现有 CLI 增加 remote；49 个 MCP 工具保持不变，没有空远程工具或本地会话套用
+
+## 远程构建合入（2026-10-07）
+
+起点为干净 main `105e5f8a2952f4593c6dce6eeb75a66be6bcea47`，保留此前本机 ahead 提交与恢复分支；来源是本机 `fpga-remote@e6ff98c2ec5bea07e440d694fa35602aa32eb74f`。按最新授权只做产品合并、验证和旧源码收口，没有运行 `connect/install` 或注册、启用任何客户端 Skill/MCP/Plugin。
+
+正式实现是 `src/vivado_mcp/remote_build/`：stdlib 核心与同包 bash/Tcl；现有 `vivado-mcp remote` 或 `python -m vivado_mcp.remote_build` 调用它。保留工程/原生 Tcl、workspace、主机队列、状态、报告、共享/SCP 交付和清理语义；不用本地 GUI/TCP session，也不增通用调度框架。使用说明见 [远程构建](docs/REMOTE_BUILD.md)与[原生 Tcl](docs/REMOTE_TCL.md)，Skill 仅增加实际 CLI 路由。
+
+原主机配置原样复制到忽略文件 `config/remote-hosts.local.json`，未显示或提交内容。默认同仓读取，`OTTER_VIVADO_REMOTE_CONFIG` 与显式 `--config` 可覆盖；公共 example 不含私人 IP/用户名/机器路径，wheel 只包含 example。缺配置明确说明；离线 `inspect/report --results` 不加载它、不调用 SSH/SCP。旧源码与全 Git 历史由工作区保留，恢复索引是 `Backups/20261007_fpga_remote_merge/`；不将私人旧历史合入本产品，也不保留旧路径桥接或固定 Python 版本的 PS1。
+
+两个必要边界修正：离线 main 不再无条件读取主机配置；包解压发现缺少 `tarfile.data_filter` 时在下载前明确拒绝，不采用无过滤回退。Windows Tcl 的空 env 赋值使原替身首轮失败，仅将测试夹具改为 `unset`，真实 Tcl driver 不变。
+
+| 本轮实际验证 | 结果与范围 |
+|---|---|
+| Windows / Python 3.13，`pytest tests/remote_build -q` | **44 PASS + 11 subtests PASS**：迁入原 37 项，新增 CLI 真实子进程、配置选择、离线输入/报告强制拒绝网络入口、资产定位/LF及解包缺能力回归；全部使用隔离夹具 |
+| 定向 Ruff / format、`pip check` | **PASS**；原 shell/报告三引号字面格式保留，长行例外只标注在这些字面结尾，没有改写生成脚本文本 |
+| 现有 Git Bash `runner_smoke.sh` | **PASS**：归档/checksum、共享发布、发布失败不伪报成功；真实本机 shell 与 fake Vivado，不调用商业工具 |
+| 现有 tclsh 五个 driver 替身 | `synth/route/bitstream/reference/synth_failure` **5 PASS**，覆盖阶段控制、reference、产物与失败传播；不代表 Vivado Tcl 或 EDA 通过 |
+| `pip wheel . --no-deps` 与仓外解包 | **PASS**：core/模块入口/bash/Tcl/example 入包，资产保持 LF，无私人配置；从解包目录读取模块/资产，根 CLI、直接模块 `--help` 与无配置离线 report 通过 |
+
+产品私有 `.venv` 已 editable 安装 `.[dev]`，CLI 及开发依赖就绪；这是开发/测试环境，不代表客户端接入。**NOT_RUN：真实 SSH 主机、共享盘、Vivado/EDA、生产工程、设备/板卡及客户端。** 没有新版本发布或 push，没有全量厂商/产品矩阵；下方历史证据继续按原范围保留。
 
 ## 本机整理恢复点（2026-10-07）
 
 本机正式源已归位；main 接续 origin/main 002793d。原贡献分支和 upstream 保留。retained/local-pre-reorganization@753ea17 保存原 ae41c64 及此前三处未提交工程保护修复；retained/main-before-reorganization 保存原本机 main。恢复分支仅为原始成果，不代表已验证或已合入当前产品；如后续需要相应功能，先与现行实现对照，不能整分支盲合。
 
-本轮只整理源码和旧入口，产品私有 venv 已退出活动使用，依赖信息和原环境在本机恢复/暂存批次。客户端由用户后续自行重装；未运行产品、EDA或板卡。配置/资料位置与总进度见 [Hub 整理 TASK](https://github.com/lingshuncangqiong/otter-agent-hub/blob/main/topics/20261002_otter-series-rollout/TASK.md)。
+该整理轮次只处理源码和旧入口，当时产品私有 venv 退出活动使用，依赖信息和原环境在本机恢复/暂存批次。本次远程合入的新开发环境与验证以上节为准；客户端仍由用户后续安排。配置/资料位置与总进度见 [Hub 整理 TASK](https://github.com/lingshuncangqiong/otter-agent-hub/blob/main/topics/20261002_otter-series-rollout/TASK.md)。
 
 ## 本轮收口：第 6 项独立 ILA 停止核对（2026-10-03）
 

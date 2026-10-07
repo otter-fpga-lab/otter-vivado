@@ -1,6 +1,6 @@
 ---
 name: otter-vivado
-description: 操作 AMD Vivado 工程、启动综合与实现、查看真实运行进度和报告、诊断工程与约束；人和智能体共用本机会话；指导智能体为消费者工程生成可视化。也支持无 Vivado 时读取 XPR、XCI、XDC 等已有资产。
+description: 操作 AMD Vivado 工程、本地或远程综合与实现、查看真实进度和报告、诊断工程与约束；人和智能体共用本机会话或显式远程任务；指导智能体为消费者工程生成可视化。也支持无 Vivado 时读取 XPR、XCI、XDC 和已有报告。
 ---
 
 # Otter Vivado
@@ -20,6 +20,7 @@ description: 操作 AMD Vivado 工程、启动综合与实现、查看真实运�
 | 用户目标 | 读取内容 | 已有入口 |
 |---|---|---|
 | 接续工程、综合或实现 | [workflows.md](references/workflows.md#工程与构建) | `list_sessions`、`start_session`、`run_synthesis`、`run_implementation` |
+| Linux 远程构建、原生 Tcl、队列与结果交付 | [远程构建](../../docs/REMOTE_BUILD.md)、[原生 Tcl](../../docs/REMOTE_TCL.md) | `vivado-mcp remote`；当前没有远程 MCP 工具 |
 | 看进度、日志或报告 | [workflows.md](references/workflows.md#进度与报告) | `open_run_monitor`、`get_run_snapshot`、`get_run_progress` |
 | 按工程生成页面/可视化 | [visualization.md](references/visualization.md) | 状态/报告 JSON、`DebugService`；可选参考页 |
 | 调试构建与产物交付 | [debug-delivery.md](references/debug-delivery.md) | 已有构建工具、`export_debug_bundle`、`check_debug_artifacts` |
@@ -33,7 +34,9 @@ description: 操作 AMD Vivado 工程、启动综合与实现、查看真实运�
 | 判断报告可信度、核对版本或查官方资料 | [evidence-and-docs.md](references/evidence-and-docs.md) | 当前 Vivado 帮助、本地官方文档、AMD 官方站点 |
 | 比较或配合 AMD Ross | [ross.md](references/ross.md) | 两套产品按任务并列选择 |
 
-先从工程、已有会话和文件中发现输入，再补无法发现的信息。执行前明确工程路径、实际 Vivado 版本、session、run 与目标阶段。所有完成结论都带真实状态或产物依据。
+先从工程、已有会话和文件中发现输入，再补无法发现的信息。本地执行明确工程、实际 Vivado 版本、session、run 与目标阶段；远程执行明确主机配置、workspace、工程/清单与 handle，不套本地会话字段。所有完成结论都带真实状态或产物依据。
+
+远程任务使用同一产品 CLI，可直接运行 `python -m vivado_mcp.remote_build`。先按任务区分本地离线检查与远程执行：`inspect`、`report --results` 不读主机配置、不连接 SSH；提交、查询远端和清理沿用任务已有的主机与动作授权。不要生成空 MCP 工具或为一次远程任务修改客户端配置。上表的产品 `docs/` 从 Skill 链接的真实目标定位仓根后读取。
 
 ## 原地接入与持续运行
 

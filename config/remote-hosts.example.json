@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "hosts": {
+    "example": {
+      "ssh_alias": "example-build-host",
+      "scheduler": "nohup",
+      "work_root": "/srv/vivado-builds",
+      "max_jobs": 4,
+      "max_parallel_builds": 1,
+      "warn_free_gib": 30,
+      "min_free_gib": 10,
+      "retention": {
+        "keep_succeeded": 1,
+        "keep_failed": 3,
+        "keep_other": 1
+      },
+      "tools": {
+        "vivado": {
+          "2024.2": "/opt/amd/Vivado/2024.2"
+        },
+        "petalinux": {}
+      },
+      "shared": {
+        "windows_root": "\\\\build-host\\share",
+        "linux_root": "/srv/vivado-share"
+      }
+    }
+  }
+}
