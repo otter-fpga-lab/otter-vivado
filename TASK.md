@@ -6,6 +6,12 @@ Basis: 用户于 2026-10-03 确认插件能力边界并授权逐步实施；现�
 Next: 无本轮待开发项；现场遇到具体需求或问题时再接续，不等待实机验收、不主动扩展验证矩阵
 Result: 六项计划均已处理并收口：前五项软件能力交付，第六项完成官方依据核对，明确插件不提供独立 ILA 停止。共 49 MCP 工具；不等同真实 EDA/板卡/消费者交互已验收
 
+## 本机整理恢复点（2026-10-07）
+
+本机正式源已归位；main 接续 origin/main 002793d。原贡献分支和 upstream 保留。retained/local-pre-reorganization@753ea17 保存原 ae41c64 及此前三处未提交工程保护修复；retained/main-before-reorganization 保存原本机 main。恢复分支仅为原始成果，不代表已验证或已合入当前产品；如后续需要相应功能，先与现行实现对照，不能整分支盲合。
+
+本轮只整理源码和旧入口，产品私有 venv 已退出活动使用，依赖信息和原环境在本机恢复/暂存批次。客户端由用户后续自行重装；未运行产品、EDA或板卡。配置/资料位置与总进度见 [Hub 整理 TASK](https://github.com/lingshuncangqiong/otter-agent-hub/blob/main/topics/20261002_otter-series-rollout/TASK.md)。
+
 ## 本轮收口：第 6 项独立 ILA 停止核对（2026-10-03）
 
 从干净 main `d8bc13deff054a960f9f405f9bc5b81000c80585` 接续。用户明确要求完成本轮后
