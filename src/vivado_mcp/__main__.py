@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from vivado_mcp import __version__
 
@@ -31,6 +32,9 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="cmd", metavar="COMMAND")
     sub.add_parser("remote", help="远程构建、排队、交付和离线报告；见 remote --help。")
+    p_plugin = sub.add_parser("plugin", help="生成绑定唯一源码的 Codex 插件壳，不安装宿主。")
+    p_plugin.add_argument("--client", choices=("codex",), required=True)
+    p_plugin.add_argument("--output", type=Path, required=True, help="新的绝对插件目录。")
 
     # serve (默认)
     sub.add_parser(
@@ -160,6 +164,18 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    if args.cmd == "plugin":
+        import json
+
+        from vivado_mcp.plugin import create_plugin
+
+        try:
+            print(json.dumps(create_plugin(args.client, args.output), ensure_ascii=False, indent=2))
+        except (ValueError, RuntimeError, OSError) as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            sys.exit(1)
+        return
 
     if args.cmd == "ila-analyze":
         from vivado_mcp.ila_analysis_cli import run_ila_analysis_cli

@@ -83,6 +83,20 @@ def _client_paths(client: str, config_path: Path | None) -> tuple[Path, Path, st
     return config_path or config, skills, note
 
 
+def _reject_codex_native_plugin(data: dict) -> None:
+    plugins = data.get("plugins", {})
+    if isinstance(plugins, dict) and any(
+        name.split("@", 1)[0] == "otter-vivado"
+        and isinstance(entry, dict)
+        and entry.get("enabled") is True
+        for name, entry in plugins.items()
+    ):
+        raise ValueError(
+            "Codex 已启用 Otter Vivado 原生插件，拒绝再创建普通 Skill/MCP 入口。"
+            "继续使用插件；接入其他客户端时显式从 --client 列表去掉 codex/all。"
+        )
+
+
 def _config_update(client: str, path: Path) -> tuple[bytes | None, str | None, str]:
     """只生成缺失入口，保留其他服务器和配置；不输出文件里的凭据。"""
     if os.path.lexists(path) and not path.is_file():
@@ -105,6 +119,8 @@ def _config_update(client: str, path: Path) -> tuple[bytes | None, str | None, s
         raise ValueError(f"{path} 配置无法验证：{exc}") from exc
     if not isinstance(data, dict) or not isinstance(data.get(key, {}), dict):
         raise ValueError(f"{path} 配置及 {key} 必须是对象/表，拒绝覆盖")
+    if client == "codex":
+        _reject_codex_native_plugin(data)
     servers = data.get(key, {})
     candidates = [
         (name, entry)
@@ -206,6 +222,10 @@ def _plan(client, source, skills_dir=None, config_path=None, skills_only=False):
         # 目标 Skill 目录已明确；不因完全不使用的 MCP 配置歧义阻止链接。
         config_path = Path.home() / ".gemini" / "config" / "mcp_config.json"
     config, default_skills, note = _client_paths(client, config_path)
+    if client == "codex" and skills_only and config.is_file():
+        if doctor.tomllib is None:
+            raise RuntimeError("当前 Python 缺少 TOML 解析器")
+        _reject_codex_native_plugin(doctor.tomllib.loads(config.read_text(encoding="utf-8-sig")))
     target = Path(skills_dir).expanduser() if skills_dir is not None else default_skills
     target = target.absolute() / "otter-vivado"
     skill_source = source / "skills" / "otter-vivado"

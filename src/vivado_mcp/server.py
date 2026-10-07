@@ -411,6 +411,7 @@ import vivado_mcp.tools.debug_design_tools  # noqa: E402, F401
 import vivado_mcp.tools.debug_tools  # noqa: E402, F401
 import vivado_mcp.tools.diagnostic_tools  # noqa: E402, F401
 import vivado_mcp.tools.flow_tools  # noqa: E402, F401
+import vivado_mcp.tools.guide_tools  # noqa: E402, F401
 import vivado_mcp.tools.introspect_tools  # noqa: E402, F401
 import vivado_mcp.tools.ip_tools  # noqa: E402, F401
 import vivado_mcp.tools.monitor_tools  # noqa: E402, F401

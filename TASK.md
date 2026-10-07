@@ -1,10 +1,30 @@
 # Otter Vivado：远程构建合入与既有能力维护
 
-Status: REMOTE_BUILD_MERGED_LOCAL（实现与离线验证完成；未推送、未接入客户端）
+Status: CODEX_SOURCE_PLUGIN_IMPLEMENTED_LOCAL（本机已原生安装/发现；源码入口与协议已验证，未推送）
 Target: otter-fpga-lab/otter-vivado
-Basis: 2026-10-07 用户授权先将 fpga-remote 合入本产品并验证；客户端接入形式另行讨论
-Next: 合并与旧仓退出已完成；后续先讨论Codex插件/Skill/MCP接入形式及旧入口，再按用户安排接入或执行远程任务
-Result: 远程核心/资产/回归已归入 vivado_mcp.remote_build，现有 CLI 增加 remote；49 个 MCP 工具保持不变，没有空远程工具或本地会话套用
+Basis: 2026-10-07 用户后续授权先接 Codex 原生插件，其他脚手架保持源码引用；本轮不改其他客户端或连接 EDA/远端
+Next: 本机插件协议已就绪；模型采用、GUI、SSH 与设备按后续实际任务分别验证
+Result: 四文件 Codex 入口壳绑定本仓私有 Python；新增只读 vivado_guide，实际 50 MCP 工具；远程执行继续使用同源 CLI
+
+## Codex 源绑定插件（2026-10-07）
+
+从干净 main `b527672614fc870cdc89da18b47edc98dedcd673` 接续，保留三个本机 ahead 提交及全部既有实现。`vivado-mcp plugin --client codex --output <新绝对目录>` 只生成 manifest、MCP 配置、简短 bootstrap Skill 与 README，不覆盖已有目标、不安装宿主或写全局配置。MCP 绑定本仓 `.venv` 的 editable 源；普通业务/长指南不进缓存。格式与来源见 [接入说明](docs/SOURCE_CONNECTION.md#codex-native-plugin)。
+
+新增 `vivado_guide` 的 `overview/remote/remote-tcl/reference` 明确路由，按次读当前源、返回真实源根/同源 CLI/内容指纹；reference 只接受白名单文件名并拒绝重定向/越界，不开放任意文件、不读 hosts 或凭据。Python 在正常重载边界更新，没有文件监听或热更新框架。已有本地与远程实现、workspace 和 GUI/TCP 职责保持；没有新远程执行 MCP 工具。
+
+Codex 已启用本插件时，旧 `connect` 的 Codex 源码接入（含 check/skills-only）在预检拒绝双重入口并说明去掉 codex/all；不改配置、不称 ready、不禁用已有插件。其它客户端源码方式保留。WorkBuddy 仅记录本机历史 `mcpServers`/Skill junction 事实及同源引用去向，本轮不改其配置、不新增未经验证的原生格式。
+
+| 本轮证据 | 实际范围 |
+|---|---|
+| 生成器、指南与真实 SDK stdio | 与现有远程 CLI 入口的定向集合 **20 PASS / 1 SKIP**：生成四文件；从隔离缓存 cwd 用原绑定 command/args 启动源 MCP，guide/list_sessions 通过；同一会话更新隔离源指南后取得新内容/指纹。生产指南没有临时探针 |
+| 路径与配置边界 | 任意 reference/路径拒绝，现有目录保留，非 editable 不创建目标；Codex 已启用插件的临时配置两种模式 **2 PASS**，拒绝普通入口并保持字节与目录不变；没有读取/修改真实其他客户端配置 |
+| Skill | 使用本机 skill-creator，简短入口只路由真实任务；`quick_validate` PASS，使用已有 PyYAML 解释器，未新增产品依赖 |
+| 主控原生宿主观察 | `codex plugin add otter-vivado@personal --json` 安装成功；实际缓存 `~/.codex/plugins/cache/personal/otter-vivado/0.3.25`。缓存四文件与生成壳一致，无 src/长 references；app-server 的 skills/list 发现 `otter-vivado:otter-vivado`，指定 MCP 从缓存配置启动，实际 50 工具 |
+| 主控真实安装缓存协议 | 以已装缓存 `.mcp.json` 为启动输入、cwd 为实际 cache，SDK initialize/list_tools=50、overview/remote/list_sessions **PASS**；overview 文本/指纹逐字匹配源，源根为当前 E 仓，session 为空。记录在工作区 `Backups/20261007_vivado_codex_plugin/installed-mcp-check.json`，无 EDA/SSH |
+
+主控核对实际配置只新增 `plugins.'otter-vivado@personal'.enabled=true`，personal marketplace 只增一项；没有普通 Vivado Skill 链接或独立 MCP 项，没有改变其他客户端。原生发现与 SDK 调用不等于模型稳定采用或 EDA/硬件验收；当前聊天工具快照未热注入，本回合没有通过模型工具目录调用该插件，不以隔离/原生协议证据冒充模型任务。
+
+本轮不启动 Vivado、SSH/Linux、共享盘或板卡；这些仍 **NOT_RUN**。Windows 文件 symlink 的独立重定向用例因 WinError 1314 缺权限 **SKIP**，未当成通过；其余路径白名单与 source-bound 证据按实际测试记录。既有远程流程与其历史验证继续复用，不重跑厂商矩阵。
 
 ## 远程构建合入（2026-10-07）
 

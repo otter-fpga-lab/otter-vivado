@@ -440,3 +440,15 @@ def test_cli_all_check_connect_and_idempotent_recheck(home, monkeypatch, capsys)
     after = json.loads(capsys.readouterr().out)
     assert after["status"] == "ready"
     assert all(not c["skill_changed"] and not c["config_changed"] for c in after["clients"])
+
+
+@pytest.mark.parametrize("skills_only", [False, True])
+def test_codex_native_plugin_refuses_duplicate_source_entry_before_writes(home, skills_only):
+    config = home / ".codex/config.toml"
+    config.parent.mkdir()
+    original = b'[plugins."otter-vivado@personal"]\nenabled = true\n'
+    config.write_bytes(original)
+    with pytest.raises(ValueError, match="Codex .*Skill/MCP"):
+        connect.connect_clients(("codex",), skills_only=skills_only)
+    assert config.read_bytes() == original
+    assert not (home / ".agents/skills").exists()

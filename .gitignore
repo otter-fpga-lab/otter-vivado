@@ -81,3 +81,6 @@ claude-start.bat
 
 # Personal remote-host configuration; never package or commit.
 /config/remote-hosts.local.json
+
+# Generated local plugin entry wrappers, not another product source.
+/out/plugins/

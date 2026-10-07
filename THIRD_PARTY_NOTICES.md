@@ -1,5 +1,9 @@
 # Third-party notices
 
+## Codex 本机插件入口
+
+2026-10-07 新增 source-bound Codex 入口与只读当前源指南。compatibility manifest 与路径引用依据 [OpenAI 官方插件文档](https://developers.openai.com/plugins/build/plugins)；参考已存在 Studio 的小入口壳思路，没有复制其业务实现或通用接入框架。简短引导 Skill 按本机 `skill-creator` 规范创建并执行 `quick_validate`，该工具没有复制为产品依赖。业务规范继续只在本产品原 Skill/docs 维护，宿主缓存只携带入口。
+
 ## 远程构建迁入来源
 
 2026-10-07 按用户授权从本机独立 `fpga-remote` 仓的 `e6ff98c2ec5bea07e440d694fa35602aa32eb74f` 迁入 stdlib 核心、bash/Tcl 和离线回归资产，正式位置为 `src/vivado_mcp/remote_build/` 与 `tests/remote_build/`。保留原流程与报告语义，新增产品 CLI 路由、私有配置位置和缺少安全解包能力时的明确拒绝；没有复制私人主机配置进源码或并入旧 Git 历史。

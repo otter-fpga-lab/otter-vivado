@@ -1,15 +1,34 @@
-# 一份源码接入多个客户端
+# 一份源码与客户端入口
 
 Otter Vivado 的插件体验由 **Skill + MCP + 运行面板**组成。Skill 与参考文件来自本仓
 `skills/otter-vivado/`，MCP/CLI/UI 共用本仓 Python 实现。客户端只保留目录链接和 MCP
-启动配置；日常修改源码后无需到 Cursor、Claude Code、Codex、Antigravity 各更新一遍。
+启动配置，或 Codex 原生插件的简短入口壳；日常修改源码后无需到各客户端复制业务。
 
-这种原地引用就是正式接入方式，不要求客户端原生插件市场，也没有同步器或第二份业务库。
+源码目录引用与 Codex 原生插件壳都是接入方式，按宿主选择一种，不并行注册重复能力；没有同步器或第二份业务库。
 本仓继续保留 NJ 的 vivado-mcp 作者、Apache-2.0 许可、fork 和上游贡献关系。
 同机安装多个 Vivado 时，按 [版本兼容说明](VERSION_COMPATIBILITY.md) 选择工程所需版本；
 客户端接入本身不要求升级 Vivado。
 
-## 一次接入四个客户端
+<a id="codex-native-plugin"></a>
+## Codex 原生插件
+
+使用产品私有环境生成一个新的绝对目录：
+
+```powershell
+.\.venv\Scripts\vivado-mcp.exe plugin --client codex --output <新的绝对插件目录>
+```
+
+生成器只创建 `.codex-plugin/plugin.json`、`.mcp.json`、简短 `skills/otter-vivado/SKILL.md` 和 README。目标已存在时拒绝覆盖，不安装到宿主、不写全局配置。MCP 使用本仓 `.venv` 的绝对 Python 路径与 `-B -m vivado_mcp`；这是已验证的 editable 源，运行目录即使是宿主缓存，也不改用缓存业务树。已有 `connect` 是另一种接入方式，不需同时运行。
+
+宿主按其本机 marketplace 与原生插件入口安装这个壳。2026-10-07 本机已用 `codex plugin add otter-vivado@personal --json` 安装；实测缓存位置为 `~/.codex/plugins/cache/personal/otter-vivado/0.3.25`，不是源壳目录。实际配置只增加本插件启用项，没有另外创建普通 Skill 链接或独立 `mcp_servers` 项；生成、原生发现、协议与模型采用分别以 [TASK](../TASK.md) 的证据为准。
+
+`vivado_guide` 按次读取当前源：`overview` 返回主 Skill、真实源根与同源 CLI；`remote/remote-tcl` 返回相应指南；`reference` 只接受工具返回的白名单文件名。它没有任意读文件参数，拒绝越界或重定向的源文件，不读 hosts、客户端配置或凭据。普通指南更新无需重装插件；Python 业务在正常空闲边界重载 MCP，不监听文件热更新，也不为刷新文字中断本地 Vivado 会话。源位置、解释器或引导协议改变时重新生成明确的新入口。
+
+兼容布局与 manifest 的 `./skills/`、`./.mcp.json` 引用依据 [OpenAI 官方插件文档](https://developers.openai.com/plugins/build/plugins)。这不是公开发布包，也不推定其他客户端支持同一原生格式。
+
+## 源码 Skill/MCP 接入
+
+Codex 已在所选配置中启用 `otter-vivado` 原生插件时，`connect`（含 `--check/--skills-only`）会拒绝新增普通入口并给出指引，不把已有插件误报为连接器 `ready`。需要接入其他客户端时显式指定它们，例如 `--client cursor claude-code antigravity`；`all` 包含 Codex，不能用于绕过这个重复入口检查。连接器不会禁用或删除已有插件。
 
 已有本仓源码时直接进入该目录；首次取得默认 `main` 源码可用：
 
@@ -62,6 +81,8 @@ python -m vivado_mcp connect --client cursor claude-code codex
 
 Cursor 和 Codex 默认共用同一个 Skill 链接，避免重复入口。已有配置文件本身是符号链接时，
 保留该链接并更新其真实目标；多个 JSON 配置共用同一真实文件时只写一次。
+
+WorkBuddy 的本机历史观察是 `~/.workbuddy/mcp.json` 顶层 `mcpServers`，Skill 在 `~/.workbuddy/skills`，曾用目录 junction 与 Python/Node 的源码命令。这支持按实际宿主配置使用同源 `python -m vivado_mcp` 和 Skill 引用，不证明原生插件格式或当前新入口已经实测。本轮没有修改 WorkBuddy 配置，也未新增 `workbuddy` client 枚举；现有 `--config/--skills-dir` 仅覆盖已支持客户端的路径与格式，不能当作 WorkBuddy 适配认证。
 
 Antigravity 若仅存在旧版 `~/.gemini/antigravity/mcp_config.json`，会接续旧布局的
 `skills` 目录并提示版本需核对；这不承诺新版 IDE 仍发现旧路径。新旧 MCP 配置同时存在时

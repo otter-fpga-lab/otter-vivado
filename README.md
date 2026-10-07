@@ -11,6 +11,8 @@ Otter Vivado 专注 **AMD Vivado 工具能力**：工程管理、Tcl 执行、�
 Skill、CLI/MCP 和 UI 共用一份实现。AMD Ross 与 Otter 并列可选，两者均可独立使用；
 参考依据见 [Ross 对照](skills/otter-vivado/references/ross.md)。开发接续见 [TASK.md](TASK.md)。
 
+Codex 原生插件使用四文件入口壳：MCP 绑定本仓私有 Python，简短 Skill 调用只读 `vivado_guide` 按次取得当前源指南。缓存只保存入口，不复制业务或长规范；生成与实际宿主安装分别记录。入口见[源码与插件接入](docs/SOURCE_CONNECTION.md#codex-native-plugin)。
+
 本仓是 NJ 的 [vivado-mcp](https://github.com/mapleleavessssssss-wq/vivado-mcp) 的保留历史
 fork，沿用原作者、Apache-2.0 和上游贡献关系。Python 包名与 CLI 保持 `vivado-mcp`；
 PyPI 上的同名包是上游发行版，Otter 功能按本仓源码入口安装。
@@ -22,14 +24,14 @@ PyPI 上的同名包是上游发行版，Otter 功能按本仓源码入口安装
 
 **人和智能体操作同一份 Vivado 工程，观察同一次运行。**
 
-49 个 MCP 工具覆盖会话、综合、实现、真实进度、时序、XDC、IP、波形与烧录；其余 Vivado Tcl 能力由 `run_tcl`/`safe_tcl` 承载。原生 Vivado GUI 用于工程、Block Design、原理图与波形操作，本机网页提供只读运行观察，以及独立的 [ILA/VIO 调试面板](docs/HARDWARE_DEBUG.md)。调试支持已有硬件目标，并提供 [ILA/VIO 工程准备](docs/DEBUG_DESIGN.md)；并支持 [构建产物离线核对](docs/DEBUG_ARTIFACTS.md)。现支持 [ILA 采样导出与离线波形数据](docs/ILA_WAVEFORM.md)，智能体据此在消费者工程生成页面；现提供 [本地实验运行器与生成指引](docs/DEBUG_EXPERIMENT.md)，以及 [工程控件语义与预设](docs/DEBUG_CONTROLS.md)。独立 ILA 停止的 [核对结论与处理方式](docs/ILA_STOP.md) 已明确；本轮开发已收口，现场验证留待实际使用。
+50 个 MCP 工具包含只读 `vivado_guide`，以及会话、综合、实现、真实进度、时序、XDC、IP、波形与烧录；其余 Vivado Tcl 能力由 `run_tcl`/`safe_tcl` 承载。原生 Vivado GUI 用于工程、Block Design、原理图与波形操作，本机网页提供只读运行观察，以及独立的 [ILA/VIO 调试面板](docs/HARDWARE_DEBUG.md)。调试支持已有硬件目标，并提供 [ILA/VIO 工程准备](docs/DEBUG_DESIGN.md)；并支持 [构建产物离线核对](docs/DEBUG_ARTIFACTS.md)。现支持 [ILA 采样导出与离线波形数据](docs/ILA_WAVEFORM.md)，智能体据此在消费者工程生成页面；现提供 [本地实验运行器与生成指引](docs/DEBUG_EXPERIMENT.md)，以及 [工程控件语义与预设](docs/DEBUG_CONTROLS.md)。独立 ILA 停止的 [核对结论与处理方式](docs/ILA_STOP.md) 已明确；本轮开发已收口，现场验证留待实际使用。
 
-| 49 个 MCP 工具 | 8 个工作流 Prompt | 2 个会话 Resources | GUI / Tcl / attach 三种会话 |
+| 50 个 MCP 工具 | 8 个工作流 Prompt | 2 个会话 Resources | GUI / Tcl / attach 三种会话 |
 |---:|---:|---:|---:|
 
 > 本地会话控制当前机器安装的 Vivado；远程 CLI 控制显式配置的 Linux 主机。命令按实际用户权限执行，工程、报告与设备证据分别记录。
 >
-> **English:** Otter Vivado provides local AMD Vivado project, execution, simulation, IP, status, and report tools for humans and agents. It includes 49 MCP tools, 8 workflow prompts, native GUI/headless/attach sessions, and a shared read-only run monitor. RTL authoring belongs to the separate coding product.
+> **English:** Otter Vivado provides local AMD Vivado project, execution, simulation, IP, status, and report tools for humans and agents. It includes 50 MCP tools, 8 workflow prompts, native GUI/headless/attach sessions, and a shared read-only run monitor. RTL authoring belongs to the separate coding product.
 
 **导航**：[快速开始](#快速开始) · [原生 GUI 与交付](docs/HUMAN_GUI_WORKFLOW.md) · [工具职责](#工具职责) · [工作流 Prompts](#工作流-prompts) · [工具列表](#工具列表) · [会话模式](#会话模式) · [架构](#架构) · [CLI](#cli-参考) · [反馈](#反馈与-bug-提交)
 
@@ -184,7 +186,7 @@ BD、仿真、硬件调试和 IP 配置可通过 `run_tcl`/`safe_tcl` 使用当�
 ## 特性
 
 - **三种会话模式**：GUI 可视化、Tcl 无头运行，以及只连接现有 GUI 的 attach
-- **49 个 MCP 工具** — 覆盖 Vivado 执行、运行观察、诊断、离线解析和外部检查工具联动
+- **50 个 MCP 工具** — 覆盖 Vivado 执行、运行观察、诊断、离线解析和外部检查工具联动
 - **8 个证据驱动工作流** — 每个流程都要求新鲜基线、最小安全修改、复测门禁与明确停止条件
 - **一条命令自检** — `doctor` 只读定位环境问题，`doctor --fix` 才执行受限、可备份的修复
 - **可靠的长任务协议** — 综合/实现支持 `wait=False` 立即返回 job id，再由 `get_run_progress` 查询
@@ -614,6 +616,7 @@ flowchart LR
 | `vivado-mcp monitor --port 9999 --run impl_1 --target route_design` | 只观察指定已有 GUI 的 run；详见 [运行观察](docs/RUN_MONITOR.md) |
 | `vivado-mcp version` | 显示 Otter Python 包版本 |
 | `vivado-mcp versions [--json]` | 只读列出本机 Vivado 安装候选与默认选择，不启动 EDA；详见 [版本兼容](docs/VERSION_COMPATIBILITY.md) |
+| `vivado-mcp plugin --client codex --output <新绝对目录>` | 只生成绑定源码的 Codex 插件壳；安装由宿主另行完成 |
 | `vivado-mcp remote <命令>` | 远程工程/原生 Tcl 构建、队列、状态、交付与离线报告；详见 [远程构建](docs/REMOTE_BUILD.md) |
 
 ## 开发

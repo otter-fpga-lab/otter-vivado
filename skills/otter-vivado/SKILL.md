@@ -40,6 +40,8 @@ description: 操作 AMD Vivado 工程、本地或远程综合与实现、查看�
 
 ## 原地接入与持续运行
 
-用同一源码目录的 Python 环境执行 `python -m pip install -e .`，再查看 `python -m vivado_mcp connect --help` 选择客户端。接入建立 Skill 目录引用并配置源码 MCP；普通更新只维护本仓。具体安装、GUI attach 与现场步骤见仓库 `docs/RUN_MONITOR.md`，从 Skill 链接的真实目标定位仓库。
+已有接入直接使用；Codex 原生插件的引导入口通过只读 `vivado_guide` 取得本文件与按需参考。普通指南更新按次读取，不能因读取本 Skill 再创建一份普通 Skill/MCP 入口。
+
+首次接入或改变源路径时，查看源根 `docs/SOURCE_CONNECTION.md` 选择 Codex 插件壳或现有 `connect` 源码引用；其它脚手架使用同源 CLI/MCP 与 Skill 引用，不复制业务。原生 GUI attach 与现场步骤见仓库 `docs/RUN_MONITOR.md`，从返回的源根或 Skill 链接真实目标定位仓库。
 
 Skill 在下一次读取时使用新内容；Python 模块和模型上下文在实际加载边界更新。活动构建继续使用现有会话，重载 MCP 留到空闲时。刷新面板、查询或源码更新不应触发停止、reset、重跑或替换会话。一次接入不等于修改 Vivado init Tcl；真实设备操作需要明确授权。
