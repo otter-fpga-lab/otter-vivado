@@ -3,7 +3,7 @@
 Status: REMOTE_BUILD_MERGED_LOCAL（实现与离线验证完成；未推送、未接入客户端）
 Target: otter-fpga-lab/otter-vivado
 Basis: 2026-10-07 用户授权先将 fpga-remote 合入本产品并验证；客户端接入形式另行讨论
-Next: 本轮提交后由工作区收口旧完整仓；后续接入或实际远程执行沿用用户新安排
+Next: 合并与旧仓退出已完成；后续先讨论Codex插件/Skill/MCP接入形式及旧入口，再按用户安排接入或执行远程任务
 Result: 远程核心/资产/回归已归入 vivado_mcp.remote_build，现有 CLI 增加 remote；49 个 MCP 工具保持不变，没有空远程工具或本地会话套用
 
 ## 远程构建合入（2026-10-07）
@@ -25,6 +25,8 @@ Result: 远程核心/资产/回归已归入 vivado_mcp.remote_build，现有 CLI
 | `pip wheel . --no-deps` 与仓外解包 | **PASS**：core/模块入口/bash/Tcl/example 入包，资产保持 LF，无私人配置；从解包目录读取模块/资产，根 CLI、直接模块 `--help` 与无配置离线 report 通过 |
 
 产品私有 `.venv` 已 editable 安装 `.[dev]`，CLI 及开发依赖就绪；这是开发/测试环境，不代表客户端接入。**NOT_RUN：真实 SSH 主机、共享盘、Vivado/EDA、生产工程、设备/板卡及客户端。** 没有新版本发布或 push，没有全量厂商/产品矩阵；下方历史证据继续按原范围保留。
+
+旧源码收口已完成：原完整仓与Git保留于工作区 `99_垃圾堆/20261007_fpga_remote_merged/fpga-remote/`，源HEAD仍为 `e6ff98c2ec5bea07e440d694fa35602aa32eb74f`；原主机配置与新忽略文件字节一致，根导航已改为本产品远程入口。旧位置移走后，已再次从产品私有入口执行 `vivado-mcp remote --help` 成功，工作区未留下旧路径兼容入口。本次运行实现提交为 `6310b17e26acc4fcde1edb4af9e1205d1e8a1687`；此后收口仅更新文档，不重跑已有效的回归。
 
 ## 本机整理恢复点（2026-10-07）
 
