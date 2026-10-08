@@ -1,10 +1,31 @@
 # Otter Vivado：远程构建合入与既有能力维护
 
-Status: SOURCE_CONNECTION_DIAGNOSTICS_REFINED_LOCAL（基于 Claude 修复完成定向回归，未推送）
+Status: ANTIGRAVITY_NATIVE_PLUGIN_VALIDATED_LOCAL（Claude 诊断成果保留，本机薄壳与只读协议通过，未推送）
 Target: otter-fpga-lab/otter-vivado
 Basis: 2026-10-08 用户批准保留 Claude 修复并优化工具便利性；Claude 已继续 HDMI 工程，本轮只维护工具仓
-Next: 日常任务按需使用诊断；具体宿主调用、GUI、SSH 与设备证据随实际任务取得
-Result: 配置登记与实际 MCP 运行证据分开；候选重复入口只告警且不自动改写，接受标准 -B 模块启动参数
+Next: 按实际需求使用同源入口；Antigravity 的既有 IDE 会话刷新/模型调用及 GUI、SSH、设备随真实任务取得证据
+Result: Antigravity 原生安装与四文本缓存 SDK 通过，50 工具；既有诊断边界与 Codex 四文本结果保留
+
+## Antigravity 同源薄插件（2026-10-08）
+
+基于干净 main `10e8cb2`，按用户批准增加 `plugin --client antigravity`，复用当前私有 editable
+环境、MCP 启动参数与 bootstrap。原生格式见[接入说明](docs/SOURCE_CONNECTION.md#antigravity-native-plugin)。
+只生成 `plugin.json`、`mcp_config.json`、短 Skill 与 README；manifest 只有 `name/description`，
+不复制业务或长指南，不建嵌套链接，生成器不登记宿主。既有 guide、会话与执行权限模型未改。
+
+- **PASS**：Windows 私有 Python 的生成/CLI/覆盖、相对路径、非 editable 与错误解释器保护
+  定向 **10 PASS**；修改文件 Ruff lint 通过，新格式无新增差异，HEAD 已有 CLI 格式不重排。
+  重新生成的 Codex 四文本与修改前 SHA256 全部相同，没有重装 Codex 或扩展其回归矩阵。
+- **PASS（主控本机）**：Antigravity native validate/install 成功，`agy plugin list` 登记本插件
+  的 skills/mcpServers；实际 `~/.gemini/config/plugins/otter-vivado` 只有四文本。
+  从该缓存配置运行 SDK，只读 `vivado_guide` 成功，50 工具；source_root/content/hash 等于正式源。
+  全局 `config.json/mcp_config.json/skills.json` 未变。
+- **证据**：工作区 `Backups/20261008_antigravity_workbuddy/antigravity.native.plugins.json`
+  与 `antigravity-otter-vivado-check.json`；恢复材料不是运行依赖。
+- **NOT_RUN**：已有 IDE 会话刷新、模型实际调用、EDA、GUI、SSH、业务工程与设备。
+  本轮不增加 WorkBuddy 格式；后续机制核对由主控接续，不以安装成功替代厂商或模型采用证据。
+
+生成壳与源工具按原生命周期更新。此批本地提交，不 push；既有 Claude 修复及下方验证继续按原范围保留。
 
 ## 接入诊断改进（2026-10-08）
 

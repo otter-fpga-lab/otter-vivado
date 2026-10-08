@@ -34,7 +34,7 @@ PyPI 上的同名包是上游发行版，Otter 功能按本仓源码入口安装
 
 ## 客户端接入
 
-客户端或脚手架接入先读[一份源码与客户端入口](docs/SOURCE_CONNECTION.md)：包含五个客户端的入口、命令和验证状态。Codex 使用原生插件壳，其他宿主按实际支持引用源 Skill/MCP；进入仓库不自动安装。
+客户端或脚手架接入先读[一份源码与客户端入口](docs/SOURCE_CONNECTION.md)：包含五个客户端的入口、命令和验证状态。Codex 和 Antigravity 可使用原生插件壳，其他宿主按实际支持引用源 Skill/MCP；进入仓库不自动安装。
 
 ## 环境要求
 
@@ -618,7 +618,7 @@ flowchart LR
 | `vivado-mcp monitor --port 9999 --run impl_1 --target route_design` | 只观察指定已有 GUI 的 run；详见 [运行观察](docs/RUN_MONITOR.md) |
 | `vivado-mcp version` | 显示 Otter Python 包版本 |
 | `vivado-mcp versions [--json]` | 只读列出本机 Vivado 安装候选与默认选择，不启动 EDA；详见 [版本兼容](docs/VERSION_COMPATIBILITY.md) |
-| `vivado-mcp plugin --client codex --output <新绝对目录>` | 只生成绑定源码的 Codex 插件壳；安装由宿主另行完成 |
+| `vivado-mcp plugin --client <codex 或 antigravity> --output <新绝对目录>` | 只生成所选宿主的同源插件壳；安装由宿主另行完成 |
 | `vivado-mcp remote <命令>` | 远程工程/原生 Tcl 构建、队列、状态、交付与离线报告；详见 [远程构建](docs/REMOTE_BUILD.md) |
 
 ## 开发

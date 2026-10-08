@@ -32,8 +32,10 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="cmd", metavar="COMMAND")
     sub.add_parser("remote", help="远程构建、排队、交付和离线报告；见 remote --help。")
-    p_plugin = sub.add_parser("plugin", help="生成绑定唯一源码的 Codex 插件壳，不安装宿主。")
-    p_plugin.add_argument("--client", choices=("codex",), required=True)
+    p_plugin = sub.add_parser(
+        "plugin", help="生成绑定唯一源码的 Codex/Antigravity 插件壳，不安装宿主。"
+    )
+    p_plugin.add_argument("--client", choices=("codex", "antigravity"), required=True)
     p_plugin.add_argument("--output", type=Path, required=True, help="新的绝对插件目录。")
 
     # serve (默认)

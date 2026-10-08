@@ -2,9 +2,9 @@
 
 Otter Vivado 的插件体验由 **Skill + MCP + 运行面板**组成。Skill 与参考文件来自本仓
 `skills/otter-vivado/`，MCP/CLI/UI 共用本仓 Python 实现。客户端只保留目录链接和 MCP
-启动配置，或 Codex 原生插件的简短入口壳；日常修改源码后无需到各客户端复制业务。
+启动配置，或 Codex/Antigravity 原生插件的简短入口壳；日常修改源码后无需到各客户端复制业务。
 
-源码目录引用与 Codex 原生插件壳都是接入方式，按宿主选择一种，不并行注册重复能力；没有同步器或第二份业务库。
+源码目录引用与原生插件壳都是接入方式，按宿主选择一种，不并行注册重复能力；没有同步器或第二份业务库。
 本仓继续保留 NJ 的 vivado-mcp 作者、Apache-2.0 许可、fork 和上游贡献关系。
 同机安装多个 Vivado 时，按 [版本兼容说明](VERSION_COMPATIBILITY.md) 选择工程所需版本；
 客户端接入本身不要求升级 Vivado。
@@ -16,7 +16,7 @@ Otter Vivado 的插件体验由 **Skill + MCP + 运行面板**组成。Skill 与
 | Codex | [原生同源插件壳](#codex-native-plugin)，与普通源绑定择一 | 2026-10-07 本机原生安装、Skill/MCP 发现和缓存入口 SDK 已验证；模型采用、EDA 另验。 |
 | Claude Code | `connect --client claude-code`，源 Skill + MCP | 2026-10-08 本机配置/Skill/CLI 健康检查已有证据，重启后当前会话发现已报告；实际工具调用回执尚未确认。 |
 | Cursor | `connect --client cursor`，源 Skill + MCP | 同源引用已有实现与自动化；真实宿主发现、加载未测。 |
-| Antigravity | `connect --client antigravity`，按实际 IDE/CLI 路径选择 | 新旧路径处理已有实现与自动化；真实宿主发现、加载未测。 |
+| Antigravity | [原生同源插件壳](#antigravity-native-plugin)；也可选 `connect` 源引用 | 本机 CLI 安装、四文本缓存 SDK 及源指南读取 PASS；IDE/模型采用另验，见 [TASK](../TASK.md)。 |
 | WorkBuddy | 无 `workbuddy` 适配；按实际宿主入口引用源 MCP/Skill | 只有本机历史配置观察；当前接入未测，不声称支持原生插件格式。 |
 
 表内 `connect` 使用下文同一个私有 Python；完整参数和路径见下文。Claude Code 与 Claude Desktop 是不同宿主，本连接器的 `claude-code` 不代表 Desktop 适配。
@@ -37,6 +37,27 @@ Otter Vivado 的插件体验由 **Skill + MCP + 运行面板**组成。Skill 与
 `vivado_guide` 按次读取当前源：`overview` 返回主 Skill、真实源根与同源 CLI；`remote/remote-tcl` 返回相应指南；`reference` 只接受工具返回的白名单文件名。它没有任意读文件参数，拒绝越界或重定向的源文件，不读 hosts、客户端配置或凭据。普通指南更新无需重装插件；Python 业务在正常空闲边界重载 MCP，不监听文件热更新，也不为刷新文字中断本地 Vivado 会话。源位置、解释器或引导协议改变时重新生成明确的新入口。
 
 兼容布局与 manifest 的 `./skills/`、`./.mcp.json` 引用依据 [OpenAI 官方插件文档](https://developers.openai.com/plugins/build/plugins)。这不是公开发布包，也不推定其他客户端支持同一原生格式。
+
+<a id="antigravity-native-plugin"></a>
+## Antigravity 原生插件
+
+使用本仓私有 editable 环境，生成到尚不存在的绝对目录，再用本机 Antigravity CLI 安装：
+
+```powershell
+.\.venv\Scripts\python.exe -B -m vivado_mcp plugin --client antigravity --output "$env:USERPROFILE\.gemini\local-plugins\otter-vivado"
+& "$env:USERPROFILE\.gemini\bin\agy.exe" plugin install "$env:USERPROFILE\.gemini\local-plugins\otter-vivado"
+& "$env:USERPROFILE\.gemini\bin\agy.exe" plugin list
+```
+
+按 [Antigravity 官方插件格式](https://antigravity.google/docs/plugins)，只生成 `plugin.json`、
+`mcp_config.json`、`skills/otter-vivado/SKILL.md` 和 README。manifest 只有 `name/description`；
+MCP 保留 `otter-vivado` 的私有 Python 和 `-B -m vivado_mcp`。短 Skill 与 Codex 共用当前
+bootstrap，由 `vivado_guide` 按次读取正式源，无业务副本或嵌套目录链接。
+生成器不安装宿主、不改客户端配置；目标已有内容时另选新目录。已有 Codex 生成结果不变。
+
+同一 Antigravity 宿主选择此插件或普通 Skill/MCP 接入；安装插件后不重复运行该宿主的 `connect`。
+`plugin list` 的注册、实际缓存配置和 `vivado_guide` 的源读取分别核对；`mcp list` 的全局条目
+不包含插件内部 MCP，不能据此判定插件失效。普通更新与活动会话边界沿用上文，实际证据见 [TASK](../TASK.md)。
 
 ## 源码 Skill/MCP 接入
 
@@ -163,7 +184,7 @@ Claude Code 只核对用户级登记，不把条目内的 `enabled/disabled` 当
 
 连接器已有配置保留、路径选择、共享链接和冲突处理的自动化验证；Codex 原生插件的本机
 安装、发现和源 SDK 验证见上文与 TASK。Claude Code 的本机检查与重启后发现报告也见 TASK，
-当前会话工具调用回执尚未确认；Cursor/Antigravity 与连接器的实际宿主加载按需核对。
+当前会话工具调用回执尚未确认；Antigravity 原生入口结果见 TASK，Cursor 与普通连接器的实际宿主加载按需核对。
 使用时按实际需要确认客户端版本、Skill 发现、MCP 握手、Windows
 symlink/junction 解析，以及修改一个参考文件后新会话能读取原位内容；仍在运行的构建应
 保持原 session/run。详细自动化结果和接续点见 [TASK.md](../TASK.md)。

@@ -1,4 +1,4 @@
-"""Create a small Codex compatibility plugin bound to this editable source."""
+"""Create a small host plugin bound to this editable source."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from vivado_mcp.connect import _editable_source
 
 
 def create_plugin(client: str, output: Path) -> dict:
-    if client != "codex":
-        raise ValueError("Only the Codex native plugin format is generated")
+    if client not in ("codex", "antigravity"):
+        raise ValueError("Only the Codex and Antigravity native plugin formats are generated")
     output = Path(output).expanduser()
     if not output.is_absolute():
         raise ValueError("Plugin output must be an explicit absolute directory")
@@ -51,7 +51,8 @@ def create_plugin(client: str, output: Path) -> dict:
             }
         }
     }
-    readme = f"""# Otter Vivado：Codex 本机插件入口
+    host = "Codex" if client == "codex" else "Antigravity"
+    readme = f"""# Otter Vivado：{host} 本机插件入口
 
 此目录只有 manifest、MCP 配置和简短引导 Skill。业务源码与指南仍在 `{root}`。
 由宿主支持的本地插件入口安装；生成器没有安装插件或修改客户端配置。
@@ -65,9 +66,13 @@ Python 业务更新在正常空闲边界重载 MCP；重载拥有本地 Vivado �
 实际宿主发现与模型采用应单独验证；本文件不表示 EDA、SSH 或板卡已通过。
 完整方法由 `vivado_guide` 返回，或从源根 `docs/SOURCE_CONNECTION.md` 阅读。
 """
+    if client == "antigravity":
+        manifest = {key: manifest[key] for key in ("name", "description")}
+    manifest_path = ".codex-plugin/plugin.json" if client == "codex" else "plugin.json"
+    mcp_path = ".mcp.json" if client == "codex" else "mcp_config.json"
     files = {
-        ".codex-plugin/plugin.json": json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-        ".mcp.json": json.dumps(mcp, ensure_ascii=False, indent=2) + "\n",
+        manifest_path: json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        mcp_path: json.dumps(mcp, ensure_ascii=False, indent=2) + "\n",
         "skills/otter-vivado/SKILL.md": bootstrap,
         "README.md": readme,
     }
