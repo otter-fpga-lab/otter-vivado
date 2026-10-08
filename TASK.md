@@ -1,10 +1,31 @@
 # Otter Vivado：远程构建合入与既有能力维护
 
-Status: ANTIGRAVITY_NATIVE_PLUGIN_VALIDATED_LOCAL（Claude 诊断成果保留，本机薄壳与只读协议通过，未推送）
+Status: NATIVE_SOURCE_PLUGINS_VALIDATED_LOCAL（Claude 诊断成果保留，Antigravity/WorkBuddy 本机薄壳与只读协议通过）
 Target: otter-fpga-lab/otter-vivado
 Basis: 2026-10-08 用户批准保留 Claude 修复并优化工具便利性；Claude 已继续 HDMI 工程，本轮只维护工具仓
-Next: 按实际需求使用同源入口；Antigravity 的既有 IDE 会话刷新/模型调用及 GUI、SSH、设备随真实任务取得证据
-Result: Antigravity 原生安装与四文本缓存 SDK 通过，50 工具；既有诊断边界与 Codex 四文本结果保留
+Next: 按实际需求使用同源入口；Antigravity/WorkBuddy 会话刷新、模型采用及 GUI、SSH、设备随真实任务取得证据
+Result: Antigravity/WorkBuddy 原生安装与四文本缓存 SDK 通过，50 工具；既有诊断边界与 Codex 四文本结果保留
+
+## WorkBuddy 同源薄插件（2026-10-08）
+
+从 Antigravity 提交 `255fdfe` 的干净 main 接续，按用户批准增加 `plugin --client workbuddy`；
+方法见[接入说明](docs/SOURCE_CONNECTION.md#workbuddy-native-plugin)。四文本为
+`.codebuddy-plugin/plugin.json`、`.mcp.json`、共用 bootstrap 和 README，manifest 只含
+`name/version/description/skills/mcpServers`。无 Codex interface、业务副本、嵌套链接或新安装平台。
+
+- **PASS**：WorkBuddy 新分支生成/CLI与现有输出、路径、私有解释器、editable 保护定向
+  **5 PASS**；修改文件 Ruff lint、无新增格式差异、文档链接与 diff 检查通过。
+  Codex/Antigravity 各四文本的修改前后 SHA256 全部相同，复用既有宿主与业务证据。
+- **PASS（主控本机）**：native validate/install/list 成功，`otter-vivado@otter-local` 启用；
+  实际缓存 `~/.workbuddy/plugins/cache/otter-local/otter-vivado/0.3.25` 只有四文本。
+  按缓存 command/args/cwd 运行 SDK，只读 `vivado_guide`，50 工具，源根/内容/hash 与正式源一致。
+  只新增本机市场/启用项；旧记录的版本、路径、启停保留，原生管理器只刷新 lastUpdated。
+- **证据**：工作区 `Backups/20261008_antigravity_workbuddy/workbuddy.native.plugins.json`
+  与 `workbuddy-otter-vivado-check.json`；恢复材料不是产品入口或运行依赖。
+- **NOT_RUN**：WorkBuddy 当前会话刷新/模型采用，以及 EDA、GUI、SSH、业务工程与设备。
+
+普通指南/MCP 更新在既有空闲边界重启生效，不刷新壳；只有入口/元数据变化时升版本并用原生
+`plugin update` 接入，避免同版本缓存不覆盖。此批单独本地提交，由主控按授权推送。
 
 ## Antigravity 同源薄插件（2026-10-08）
 
@@ -23,7 +44,7 @@ Result: Antigravity 原生安装与四文本缓存 SDK 通过，50 工具；既�
 - **证据**：工作区 `Backups/20261008_antigravity_workbuddy/antigravity.native.plugins.json`
   与 `antigravity-otter-vivado-check.json`；恢复材料不是运行依赖。
 - **NOT_RUN**：已有 IDE 会话刷新、模型实际调用、EDA、GUI、SSH、业务工程与设备。
-  本轮不增加 WorkBuddy 格式；后续机制核对由主控接续，不以安装成功替代厂商或模型采用证据。
+  WorkBuddy 后续适配与实际结果见上文，不以安装成功替代厂商或模型采用证据。
 
 生成壳与源工具按原生命周期更新。此批本地提交，不 push；既有 Claude 修复及下方验证继续按原范围保留。
 

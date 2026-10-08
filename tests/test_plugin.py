@@ -55,7 +55,7 @@ def test_plugin_contains_only_entry_files_and_binds_private_source(tmp_path):
     assert json.loads(process.stdout)["source_root"] == result["source"]
 
 
-@pytest.mark.parametrize("client", ["codex", "antigravity"])
+@pytest.mark.parametrize("client", ["codex", "antigravity", "workbuddy"])
 def test_conflicting_output_is_preserved(tmp_path, client):
     output = tmp_path / "owned"
     output.mkdir()
@@ -67,15 +67,15 @@ def test_conflicting_output_is_preserved(tmp_path, client):
     assert list(output.iterdir()) == [original]
 
 
-@pytest.mark.parametrize("client", ["codex", "antigravity"])
+@pytest.mark.parametrize("client", ["codex", "antigravity", "workbuddy"])
 def test_relative_output_and_unimplemented_clients_are_rejected(client):
     with pytest.raises(ValueError, match="absolute"):
         plugin.create_plugin(client, Path("relative-entry"))
-    with pytest.raises(ValueError, match="Only the Codex and Antigravity"):
-        plugin.create_plugin("workbuddy", Path("relative-entry"))
+    with pytest.raises(ValueError, match="Only Codex, Antigravity and WorkBuddy"):
+        plugin.create_plugin("other-client", Path("relative-entry"))
 
 
-@pytest.mark.parametrize("client", ["codex", "antigravity"])
+@pytest.mark.parametrize("client", ["codex", "antigravity", "workbuddy"])
 def test_missing_editable_binding_creates_no_output(tmp_path, monkeypatch, client):
     def missing_source():
         raise RuntimeError("not editable")
@@ -87,7 +87,7 @@ def test_missing_editable_binding_creates_no_output(tmp_path, monkeypatch, clien
     assert not output.exists()
 
 
-@pytest.mark.parametrize("client", ["codex", "antigravity"])
+@pytest.mark.parametrize("client", ["codex", "antigravity", "workbuddy"])
 def test_other_interpreter_creates_no_output(tmp_path, monkeypatch, client):
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "other-environment"))
     output = tmp_path / "entry"
@@ -96,7 +96,7 @@ def test_other_interpreter_creates_no_output(tmp_path, monkeypatch, client):
     assert not output.exists()
 
 
-@pytest.mark.parametrize("client", ["codex", "antigravity"])
+@pytest.mark.parametrize("client", ["codex", "antigravity", "workbuddy"])
 def test_cli_generation_uses_the_same_product_entry(tmp_path, client):
     output = tmp_path / "cli-entry"
     result = subprocess.run(
@@ -122,17 +122,27 @@ def test_cli_generation_uses_the_same_product_entry(tmp_path, client):
     if client == "codex":
         assert (output / ".mcp.json").is_file()
     else:
+        manifest_path = (
+            "plugin.json" if client == "antigravity" else ".codebuddy-plugin/plugin.json"
+        )
+        mcp_path = "mcp_config.json" if client == "antigravity" else ".mcp.json"
         files = {p.relative_to(output).as_posix() for p in output.rglob("*") if p.is_file()}
         assert files == {
-            "plugin.json",
-            "mcp_config.json",
+            manifest_path,
+            mcp_path,
             "skills/otter-vivado/SKILL.md",
             "README.md",
         }
-        manifest = json.loads((output / "plugin.json").read_text(encoding="utf-8"))
-        assert set(manifest) == {"name", "description"}
+        manifest = json.loads((output / manifest_path).read_text(encoding="utf-8"))
+        if client == "antigravity":
+            assert set(manifest) == {"name", "description"}
+        else:
+            assert set(manifest) == {"name", "version", "description", "skills", "mcpServers"}
+            assert manifest["version"] == plugin.__version__
+            assert manifest["skills"] == "./skills/"
+            assert manifest["mcpServers"] == "./.mcp.json"
         assert manifest["name"] == "otter-vivado"
-        config = json.loads((output / "mcp_config.json").read_text(encoding="utf-8"))
+        config = json.loads((output / mcp_path).read_text(encoding="utf-8"))
         assert config == {
             "mcpServers": {
                 "otter-vivado": {
@@ -143,4 +153,5 @@ def test_cli_generation_uses_the_same_product_entry(tmp_path, client):
         }
         bootstrap = (output / "skills/otter-vivado/SKILL.md").read_text(encoding="utf-8")
         assert "vivado_guide" in bootstrap
-        assert "Antigravity" in (output / "README.md").read_text(encoding="utf-8")
+        host = "Antigravity" if client == "antigravity" else "WorkBuddy"
+        assert host in (output / "README.md").read_text(encoding="utf-8")

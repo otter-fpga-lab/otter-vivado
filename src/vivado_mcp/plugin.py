@@ -12,8 +12,10 @@ from vivado_mcp.connect import _editable_source
 
 
 def create_plugin(client: str, output: Path) -> dict:
-    if client not in ("codex", "antigravity"):
-        raise ValueError("Only the Codex and Antigravity native plugin formats are generated")
+    if client not in ("codex", "antigravity", "workbuddy"):
+        raise ValueError(
+            "Only Codex, Antigravity and WorkBuddy native plugin formats are generated"
+        )
     output = Path(output).expanduser()
     if not output.is_absolute():
         raise ValueError("Plugin output must be an explicit absolute directory")
@@ -51,7 +53,7 @@ def create_plugin(client: str, output: Path) -> dict:
             }
         }
     }
-    host = "Codex" if client == "codex" else "Antigravity"
+    host = {"codex": "Codex", "antigravity": "Antigravity", "workbuddy": "WorkBuddy"}[client]
     readme = f"""# Otter Vivado：{host} 本机插件入口
 
 此目录只有 manifest、MCP 配置和简短引导 Skill。业务源码与指南仍在 `{root}`。
@@ -68,8 +70,16 @@ Python 业务更新在正常空闲边界重载 MCP；重载拥有本地 Vivado �
 """
     if client == "antigravity":
         manifest = {key: manifest[key] for key in ("name", "description")}
-    manifest_path = ".codex-plugin/plugin.json" if client == "codex" else "plugin.json"
-    mcp_path = ".mcp.json" if client == "codex" else "mcp_config.json"
+    elif client == "workbuddy":
+        manifest = {
+            key: manifest[key] for key in ("name", "version", "description", "skills", "mcpServers")
+        }
+    manifest_path = {
+        "codex": ".codex-plugin/plugin.json",
+        "antigravity": "plugin.json",
+        "workbuddy": ".codebuddy-plugin/plugin.json",
+    }[client]
+    mcp_path = "mcp_config.json" if client == "antigravity" else ".mcp.json"
     files = {
         manifest_path: json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         mcp_path: json.dumps(mcp, ensure_ascii=False, indent=2) + "\n",

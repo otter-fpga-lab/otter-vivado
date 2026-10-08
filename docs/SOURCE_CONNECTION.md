@@ -2,7 +2,7 @@
 
 Otter Vivado 的插件体验由 **Skill + MCP + 运行面板**组成。Skill 与参考文件来自本仓
 `skills/otter-vivado/`，MCP/CLI/UI 共用本仓 Python 实现。客户端只保留目录链接和 MCP
-启动配置，或 Codex/Antigravity 原生插件的简短入口壳；日常修改源码后无需到各客户端复制业务。
+启动配置，或 Codex/Antigravity/WorkBuddy 原生插件的简短入口壳；日常修改源码后无需到各客户端复制业务。
 
 源码目录引用与原生插件壳都是接入方式，按宿主选择一种，不并行注册重复能力；没有同步器或第二份业务库。
 本仓继续保留 NJ 的 vivado-mcp 作者、Apache-2.0 许可、fork 和上游贡献关系。
@@ -17,7 +17,7 @@ Otter Vivado 的插件体验由 **Skill + MCP + 运行面板**组成。Skill 与
 | Claude Code | `connect --client claude-code`，源 Skill + MCP | 2026-10-08 本机配置/Skill/CLI 健康检查已有证据，重启后当前会话发现已报告；实际工具调用回执尚未确认。 |
 | Cursor | `connect --client cursor`，源 Skill + MCP | 同源引用已有实现与自动化；真实宿主发现、加载未测。 |
 | Antigravity | [原生同源插件壳](#antigravity-native-plugin)；也可选 `connect` 源引用 | 本机 CLI 安装、四文本缓存 SDK 及源指南读取 PASS；IDE/模型采用另验，见 [TASK](../TASK.md)。 |
-| WorkBuddy | 无 `workbuddy` 适配；按实际宿主入口引用源 MCP/Skill | 只有本机历史配置观察；当前接入未测，不声称支持原生插件格式。 |
+| WorkBuddy | [原生同源插件壳](#workbuddy-native-plugin) | 本机原生安装/启用及缓存 SDK 读源 PASS；会话/模型采用另验，见 [TASK](../TASK.md)。 |
 
 表内 `connect` 使用下文同一个私有 Python；完整参数和路径见下文。Claude Code 与 Claude Desktop 是不同宿主，本连接器的 `claude-code` 不代表 Desktop 适配。
 
@@ -58,6 +58,35 @@ bootstrap，由 `vivado_guide` 按次读取正式源，无业务副本或嵌套�
 同一 Antigravity 宿主选择此插件或普通 Skill/MCP 接入；安装插件后不重复运行该宿主的 `connect`。
 `plugin list` 的注册、实际缓存配置和 `vivado_guide` 的源读取分别核对；`mcp list` 的全局条目
 不包含插件内部 MCP，不能据此判定插件失效。普通更新与活动会话边界沿用上文，实际证据见 [TASK](../TASK.md)。
+
+<a id="workbuddy-native-plugin"></a>
+## WorkBuddy 原生插件
+
+本机采用 WorkBuddy 随包 CodeBuddy CLI 的[原生插件机制](https://www.codebuddy.ai/docs/cli/plugins-reference)。
+下面复用已登记且含本插件条目的 `otter-local`；首次接入按[官方市场方法](https://www.codebuddy.ai/docs/cli/plugin-marketplaces)
+登记市场与插件条目，再执行 `plugin marketplace add <市场根> --name otter-local`。本产品生成器只生成壳，不写市场或用户配置。
+
+```powershell
+$marketRoot = "$env:USERPROFILE\.workbuddy\local-marketplaces\otter-local"
+$pluginDir = Join-Path $marketRoot 'plugins\otter-vivado'
+.\.venv\Scripts\python.exe -B -m vivado_mcp plugin --client workbuddy --output $pluginDir
+$workbuddyCli = "$env:LOCALAPPDATA\Programs\WorkBuddy\resources\app.asar.unpacked\cli\bin\codebuddy"
+$env:CODEBUDDY_CONFIG_DIR = "$env:USERPROFILE\.workbuddy"
+$env:WORKBUDDY_CONFIG_DIR = $env:CODEBUDDY_CONFIG_DIR
+$env:CODEBUDDY_FORCE_HEADLESS_BUNDLE = '1'
+node $workbuddyCli plugin validate $pluginDir
+node $workbuddyCli plugin install otter-vivado@otter-local --scope user
+node $workbuddyCli plugin list --json
+```
+
+四文本为 `.codebuddy-plugin/plugin.json`、`.mcp.json`、短 Skill 和 README；manifest 只含
+`name/version/description/skills/mcpServers`，不带 Codex `interface`。MCP 与 bootstrap 复用原源路径，
+`vivado_guide` 仍按次读正式源。实际缓存为 `~/.workbuddy/plugins/cache/otter-local/otter-vivado/<版本>`。
+已有内容时选择新输出；同一宿主选插件或普通 Skill/MCP，避免重复。Codex/Antigravity 输出保持原样。
+
+普通指南/MCP 代码修改按既有空闲边界正常重启，不刷新壳。WorkBuddy 同版本缓存不覆盖；
+只有入口、引导协议或元数据变化时升产品版本、重新生成并 `plugin update otter-vivado@otter-local --scope user`。
+新会话或 `/reload-plugins` 应用插件变更，活动 Vivado 会话按原生命周期处理。实际宿主证据见 [TASK](../TASK.md)。
 
 ## 源码 Skill/MCP 接入
 
@@ -115,7 +144,9 @@ python -m vivado_mcp connect --client cursor claude-code antigravity
 Cursor 和 Codex 默认共用同一个 Skill 链接，避免重复入口。已有配置文件本身是符号链接时，
 保留该链接并更新其真实目标；多个 JSON 配置共用同一真实文件时只写一次。
 
-WorkBuddy 的本机历史观察是 `~/.workbuddy/mcp.json` 顶层 `mcpServers`，Skill 在 `~/.workbuddy/skills`，曾用目录 junction 与 Python/Node 的源码命令。这支持按实际宿主配置使用同源 `python -m vivado_mcp` 和 Skill 引用，不证明原生插件格式或当前新入口已经实测。本轮没有修改 WorkBuddy 配置，也未新增 `workbuddy` client 枚举；现有 `--config/--skills-dir` 仅覆盖已支持客户端的路径与格式，不能当作 WorkBuddy 适配认证。
+WorkBuddy 当前采用上文原生插件。旧 `~/.workbuddy/mcp.json` 的 `mcpServers` 和 `~/.workbuddy/skills`
+曾作为普通源引用；生成器不会接管或清理这些历史入口。`connect` 的客户端枚举不含 WorkBuddy，
+不能用其他客户端的 `--config/--skills-dir` 覆盖参数代替原生插件接入。
 
 Antigravity 若仅存在旧版 `~/.gemini/antigravity/mcp_config.json`，会接续旧布局的
 `skills` 目录并提示版本需核对；这不承诺新版 IDE 仍发现旧路径。新旧 MCP 配置同时存在时
