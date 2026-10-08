@@ -6,6 +6,12 @@ Basis: 2026-10-08 用户批准保留 Claude 修复并优化工具便利性；Cla
 Next: 按实际任务使用当前同源入口，具体工具或现场问题带源码提交与已有回执反馈本仓
 Result: Antigravity/WorkBuddy 原生安装与缓存 SDK、CodeBuddy 原生登记与源壳 SDK 通过，50 工具；既有诊断边界与 Codex 四文本结果保留
 
+## User Library整理收口（2026-10-08）
+
+本轮User Library归位、同源接入与安装/使用说明整理已收口。后续按实际工程中的工具反馈维护；已有厂商版本、GUI、SSH或板卡未测项按原范围保留，不为目录收口启动补测。
+
+用户已授权本批Git提交与推送；此前本地提交随本次收口同步，最终远端提交和跨产品接续见[Hub议题](https://github.com/lingshuncangqiong/otter-agent-hub/blob/main/topics/20261002_otter-series-rollout/TASK.md)。本次只回填记录，复用既有有效验证。
+
 ## 文档入口与实际反馈（2026-10-08）
 
 README 收敛为用途、首次安装/使用、日常更新、使用导航和反馈；详细流程保留在
