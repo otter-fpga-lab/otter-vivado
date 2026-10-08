@@ -2,7 +2,7 @@
 
 Otter Vivado 的插件体验由 **Skill + MCP + 运行面板**组成。Skill 与参考文件来自本仓
 `skills/otter-vivado/`，MCP/CLI/UI 共用本仓 Python 实现。客户端只保留目录链接和 MCP
-启动配置，或 Codex/Antigravity/WorkBuddy 原生插件的简短入口壳；日常修改源码后无需到各客户端复制业务。
+启动配置，或 Codex/Antigravity/WorkBuddy/CodeBuddy IDE 原生插件的简短入口壳；日常修改源码后无需到各客户端复制业务。
 
 源码目录引用与原生插件壳都是接入方式，按宿主选择一种，不并行注册重复能力；没有同步器或第二份业务库。
 本仓继续保留 NJ 的 vivado-mcp 作者、Apache-2.0 许可、fork 和上游贡献关系。
@@ -18,21 +18,58 @@ Otter Vivado 的插件体验由 **Skill + MCP + 运行面板**组成。Skill 与
 | Cursor | `connect --client cursor`，源 Skill + MCP | 同源引用已有实现与自动化；真实宿主发现、加载未测。 |
 | Antigravity | [原生同源插件壳](#antigravity-native-plugin)；也可选 `connect` 源引用 | 本机 CLI 安装、四文本缓存 SDK 及源指南读取 PASS；IDE/模型采用另验，见 [TASK](../TASK.md)。 |
 | WorkBuddy | [原生同源插件壳](#workbuddy-native-plugin) | 本机原生安装/启用及缓存 SDK 读源 PASS；会话/模型采用另验，见 [TASK](../TASK.md)。 |
+| CodeBuddy IDE | [同格式原生入口](#workbuddy-native-plugin)，配置根 `~/.codebuddy` | 本机原生登记/启用及源壳 SDK 读源 PASS；当前 IDE 会话加载/模型采用 NOT_RUN，见 [TASK](../TASK.md)。 |
 
 表内 `connect` 使用下文同一个私有 Python；完整参数和路径见下文。Claude Code 与 Claude Desktop 是不同宿主，本连接器的 `claude-code` 不代表 Desktop 适配。
+
+<a id="first-setup"></a>
+## 首次准备
+
+在自己的机器取得正式源码并准备 Python 3.10+ 私有环境；已拉取或已有可用 `.venv` 时复用它：
+
+```powershell
+git clone -b main https://github.com/otter-fpga-lab/otter-vivado.git
+Set-Location otter-vivado
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+```
+
+下文命令从这个仓库根目录运行。另选源码目录之外的绝对市场根（示例变量 `$marketRoot`），
+插件生成器会创建其 `plugins/otter-vivado`，已有输出时拒绝覆盖。需先安装所选宿主；
+WorkBuddy 示例使用 `node` 与其随包 CLI。CodeBuddy IDE 可用已有、支持 `plugin` 子命令的
+`codebuddy` CLI；未安装时按[官方安装指南](https://www.codebuddy.ai/docs/cli/installation)准备，
+无需安装 WorkBuddy。工具接入不代装 Vivado。
 
 <a id="codex-native-plugin"></a>
 ## Codex 原生插件
 
-使用产品私有环境生成一个新的绝对目录：
+1. 完成[首次准备](#first-setup)，使用该私有 editable 环境。
+2. 选择绝对市场根并生成入口：
 
 ```powershell
-.\.venv\Scripts\vivado-mcp.exe plugin --client codex --output <新的绝对插件目录>
+$marketRoot = "$env:USERPROFILE\.codex\local-marketplaces\otter-local"
+$pluginDir = Join-Path $marketRoot 'plugins\otter-vivado'
+.\.venv\Scripts\vivado-mcp.exe plugin --client codex --output $pluginDir
 ```
+
+3. 在 `$marketRoot/.agents/plugins/marketplace.json` 新建下面的 UTF-8 清单，再原生登记安装：
+
+```json
+{"name":"otter-local","plugins":[{"name":"otter-vivado","source":{"source":"local","path":"./plugins/otter-vivado"},"policy":{"installation":"AVAILABLE","authentication":"ON_INSTALL"}}]}
+```
+
+```powershell
+codex plugin marketplace add $marketRoot
+codex plugin add otter-vivado@otter-local
+```
+
+这是新市场的最小清单；已有市场只合并本产品条目，保留其他插件和市场名，命令的
+`@otter-local` 使用实际市场名；同一市场已登记时跳过 `marketplace add`。市场根与正式源
+目录都保留在本机，安装后正常重启宿主。
 
 生成器只创建 `.codex-plugin/plugin.json`、`.mcp.json`、简短 `skills/otter-vivado/SKILL.md` 和 README。目标已存在时拒绝覆盖，不安装到宿主、不写全局配置。MCP 使用本仓 `.venv` 的绝对 Python 路径与 `-B -m vivado_mcp`；这是已验证的 editable 源，运行目录即使是宿主缓存，也不改用缓存业务树。已有 `connect` 是另一种接入方式，不需同时运行。
 
-宿主按其本机 marketplace 与原生插件入口安装这个壳。2026-10-07 本机已用 `codex plugin add otter-vivado@personal --json` 安装；实测缓存位置为 `~/.codex/plugins/cache/personal/otter-vivado/0.3.25`，不是源壳目录。实际配置只增加本插件启用项，没有另外创建普通 Skill 链接或独立 `mcp_servers` 项；生成、原生发现、协议与模型采用分别以 [TASK](../TASK.md) 的证据为准。
+2026-10-07 本机历史安装使用 `otter-vivado@personal`，缓存位置为 `~/.codex/plugins/cache/personal/otter-vivado/0.3.25`；上面的首次示例使用 `otter-local`。实际配置只增加本插件启用项，没有另外创建普通 Skill 链接或独立 `mcp_servers` 项；生成、原生发现、协议与模型采用分别以 [TASK](../TASK.md) 的证据为准。
 
 `vivado_guide` 按次读取当前源：`overview` 返回主 Skill、真实源根与同源 CLI；`remote/remote-tcl` 返回相应指南；`reference` 只接受工具返回的白名单文件名。它没有任意读文件参数，拒绝越界或重定向的源文件，不读 hosts、客户端配置或凭据。普通指南更新无需重装插件；Python 业务在正常空闲边界重载 MCP，不监听文件热更新，也不为刷新文字中断本地 Vivado 会话。源位置、解释器或引导协议改变时重新生成明确的新入口。
 
@@ -60,33 +97,62 @@ bootstrap，由 `vivado_guide` 按次读取正式源，无业务副本或嵌套�
 不包含插件内部 MCP，不能据此判定插件失效。普通更新与活动会话边界沿用上文，实际证据见 [TASK](../TASK.md)。
 
 <a id="workbuddy-native-plugin"></a>
-## WorkBuddy 原生插件
+## WorkBuddy / CodeBuddy IDE 原生插件
 
-本机采用 WorkBuddy 随包 CodeBuddy CLI 的[原生插件机制](https://www.codebuddy.ai/docs/cli/plugins-reference)。
-下面复用已登记且含本插件条目的 `otter-local`；首次接入按[官方市场方法](https://www.codebuddy.ai/docs/cli/plugin-marketplaces)
-登记市场与插件条目，再执行 `plugin marketplace add <市场根> --name otter-local`。本产品生成器只生成壳，不写市场或用户配置。
+两者采用同一个 `.codebuddy-plugin` 格式，复用 `--client workbuddy`；该参数只选择格式，
+安装到哪个宿主由配置根决定：WorkBuddy 是 `~/.workbuddy`，CodeBuddy IDE 是 `~/.codebuddy`。
+
+1. 完成[首次准备](#first-setup)。下面本机示例复用 WorkBuddy 随包 CodeBuddy CLI 的
+   [原生插件机制](https://www.codebuddy.ai/docs/cli/plugins-reference)。
+2. 选择目标宿主根并生成入口；安装 CodeBuddy IDE 时把第一行改成 `~/.codebuddy` 的绝对路径：
 
 ```powershell
-$marketRoot = "$env:USERPROFILE\.workbuddy\local-marketplaces\otter-local"
+$hostConfig = "$env:USERPROFILE\.workbuddy" # CodeBuddy IDE 改为 "$env:USERPROFILE\.codebuddy"
+$marketRoot = Join-Path $hostConfig 'local-marketplaces\otter-local'
 $pluginDir = Join-Path $marketRoot 'plugins\otter-vivado'
 .\.venv\Scripts\python.exe -B -m vivado_mcp plugin --client workbuddy --output $pluginDir
-$workbuddyCli = "$env:LOCALAPPDATA\Programs\WorkBuddy\resources\app.asar.unpacked\cli\bin\codebuddy"
-$env:CODEBUDDY_CONFIG_DIR = "$env:USERPROFILE\.workbuddy"
-$env:WORKBUDDY_CONFIG_DIR = $env:CODEBUDDY_CONFIG_DIR
-$env:CODEBUDDY_FORCE_HEADLESS_BUNDLE = '1'
-node $workbuddyCli plugin validate $pluginDir
-node $workbuddyCli plugin install otter-vivado@otter-local --scope user
-node $workbuddyCli plugin list --json
+```
+
+3. 在 `$marketRoot/.codebuddy-plugin/marketplace.json` 新建下面的 UTF-8 清单，按
+   [本地市场方式](https://www.codebuddy.ai/docs/cli/plugin-marketplaces)登记安装：
+
+```json
+{"name":"otter-local","owner":{"name":"Otter"},"plugins":[{"name":"otter-vivado","source":"./plugins/otter-vivado","version":"0.3.25"}]}
+```
+
+已有市场只合并本产品条目，保留其他插件和市场名，下面使用实际市场名。市场已登记时
+跳过 `marketplace add` 及紧随其后的退出检查。两项配置根变量
+只在安装子进程中设置为所选同一个根。CodeBuddy 用户使用自己的 CLI 时，将下面的
+`node $cli` 换成 `codebuddy` 或其实际完整启动命令，保留相同子命令与配置根：
+
+```powershell
+powershell.exe -NoProfile -Command {
+    param($configRoot, $root, $plugin)
+    $env:CODEBUDDY_CONFIG_DIR = $configRoot
+    $env:WORKBUDDY_CONFIG_DIR = $configRoot
+    $env:CODEBUDDY_FORCE_HEADLESS_BUNDLE = '1'
+    $cli = "$env:LOCALAPPDATA\Programs\WorkBuddy\resources\app.asar.unpacked\cli\bin\codebuddy"
+    node $cli plugin validate $plugin
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    node $cli plugin marketplace add $root --name otter-local
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    node $cli plugin install otter-vivado@otter-local --scope user
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    node $cli plugin list --json
+} -args $hostConfig, $marketRoot, $pluginDir
 ```
 
 四文本为 `.codebuddy-plugin/plugin.json`、`.mcp.json`、短 Skill 和 README；manifest 只含
 `name/version/description/skills/mcpServers`，不带 Codex `interface`。MCP 与 bootstrap 复用原源路径，
-`vivado_guide` 仍按次读正式源。实际缓存为 `~/.workbuddy/plugins/cache/otter-local/otter-vivado/<版本>`。
+`vivado_guide` 仍按次读正式源。CLI 缓存位于所选配置根的 `plugins/cache/otter-local/otter-vivado/<版本>`；
+CodeBuddy IDE 本机读取已登记目录市场中的源壳，CLI 缓存/列表与 IDE 当前会话加载分别核对。
 已有内容时选择新输出；同一宿主选插件或普通 Skill/MCP，避免重复。Codex/Antigravity 输出保持原样。
 
-普通指南/MCP 代码修改按既有空闲边界正常重启，不刷新壳。WorkBuddy 同版本缓存不覆盖；
+普通指南/MCP 代码修改 `git pull` 后按既有空闲边界正常重启，不刷新壳。依赖声明变化时重跑
+首次准备中的 `pip install -e .`，不重建可用环境。同版本缓存不覆盖；
 只有入口、引导协议或元数据变化时升产品版本、重新生成并 `plugin update otter-vivado@otter-local --scope user`。
-新会话或 `/reload-plugins` 应用插件变更，活动 Vivado 会话按原生命周期处理。实际宿主证据见 [TASK](../TASK.md)。
+更新命令沿用上面的目标根与 CLI 子进程环境；新会话或 `/reload-plugins` 应用插件变更，
+活动 Vivado 会话按原生命周期处理。实际宿主证据见 [TASK](../TASK.md)。
 
 ## 源码 Skill/MCP 接入
 
@@ -180,7 +246,8 @@ Windows 默认 `--link-mode auto`：先建立目录 symlink，仅遇到缺少链
 改本仓源码或 `git pull` 后不需要再运行 `connect`，也不需要重新复制 Skill。
 Skill 和 references 在客户端下一次读取时取得新内容；已加载的模型上下文和 Python 模块
 不承诺热更新。让活动构建继续完成，在客户端正常空闲边界新建会话或重载 MCP 后使用新代码。
-源码目录或 Python 环境位置改变时，才需要核对并调整接入路径。
+依赖声明变化时重跑首次准备的 `pip install -e .`；源码目录、Python 环境位置或插件入口
+元数据改变时，核对接入路径并按宿主原生方式更新薄壳。
 
 需要确认链接仍有效时运行：
 

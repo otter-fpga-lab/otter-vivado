@@ -34,7 +34,7 @@ PyPI 上的同名包是上游发行版，Otter 功能按本仓源码入口安装
 
 ## 客户端接入
 
-客户端或脚手架接入先读[一份源码与客户端入口](docs/SOURCE_CONNECTION.md)：包含五个客户端的入口、命令和验证状态。Codex、Antigravity 和 WorkBuddy 可使用原生插件壳，其他宿主按实际支持引用源 Skill/MCP；进入仓库不自动安装。
+首次拉取后按[一份源码与客户端入口](docs/SOURCE_CONNECTION.md#first-setup)完成环境准备、生成入口和原生登记安装。该页包含六个客户端的入口与验证状态；Codex、Antigravity、WorkBuddy 和 CodeBuddy IDE 可使用同源插件壳。普通更新 `git pull` 后在空闲边界正常重启；依赖或入口变化按该页处理。
 
 ## 环境要求
 

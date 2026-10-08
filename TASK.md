@@ -1,10 +1,25 @@
 # Otter Vivado：远程构建合入与既有能力维护
 
-Status: NATIVE_SOURCE_PLUGINS_VALIDATED_LOCAL（Claude 诊断成果保留，Antigravity/WorkBuddy 本机薄壳与只读协议通过）
+Status: NATIVE_SOURCE_PLUGINS_VALIDATED_LOCAL（Claude 诊断成果保留，Antigravity/WorkBuddy 薄壳与 CodeBuddy 登记/源壳只读协议通过；IDE 会话另验）
 Target: otter-fpga-lab/otter-vivado
 Basis: 2026-10-08 用户批准保留 Claude 修复并优化工具便利性；Claude 已继续 HDMI 工程，本轮只维护工具仓
-Next: 按实际需求使用同源入口；Antigravity/WorkBuddy 会话刷新、模型采用及 GUI、SSH、设备随真实任务取得证据
-Result: Antigravity/WorkBuddy 原生安装与四文本缓存 SDK 通过，50 工具；既有诊断边界与 Codex 四文本结果保留
+Next: 按实际需求使用同源入口；Antigravity/WorkBuddy/CodeBuddy 会话刷新、模型采用及 GUI、SSH、设备随真实任务取得证据
+Result: Antigravity/WorkBuddy 原生安装与缓存 SDK、CodeBuddy 原生登记与源壳 SDK 通过，50 工具；既有诊断边界与 Codex 四文本结果保留
+
+## 首次安装闭环与 CodeBuddy 入口（2026-10-08）
+
+README 路由到[既有接入页](docs/SOURCE_CONNECTION.md#first-setup)，补齐环境准备、生成壳、
+本地市场 JSON 与原生登记安装；已有市场只合并本产品条目。CodeBuddy IDE 复用
+`--client workbuddy` 格式，但安装子进程的两个配置根变量均明确选 `~/.codebuddy`；
+WorkBuddy 随包 CLI 只是本机复用示例，CodeBuddy 可用自己的 CLI，不要求安装 WorkBuddy。
+
+- **PASS（文档）**：市场 JSON/版本、PowerShell 语法、相关本地链接与 `git diff --check`；纯文档未改代码或配置，未重跑产品测试。
+- **PASS（主控本机）**：`otter-vivado@otter-local` 在 CodeBuddy 用户范围原生登记/启用；本机 IDE 源码确认从 `~/.codebuddy` 已登记目录市场读源壳。按该源壳 command/args/env 执行 SDK，50 工具及 `vivado_guide` 内容/源 hash 与正式源一致；这不是 IDE 当前会话运行证据。
+- **证据**：工作区 `Backups/20261008_codebuddy_studio/codebuddy.native.plugins.json` 与 `codebuddy-otter-vivado-check.json`；恢复材料不作为产品入口或依赖。
+- **NOT_RUN**：当前 CodeBuddy IDE 重启后加载/模型调用、厂商、GUI、SSH、业务工程和设备。本机旧 Vivado 环境参数已保留在新壳，不改变设备或执行边界。
+
+普通源码/指南 `git pull` 后在空闲边界正常重启；依赖声明变化重跑原 editable 安装命令，
+入口/路径/元数据变化维护薄壳并按宿主原生方式更新。本批分仓本地提交，推送由主控按授权处理。
 
 ## WorkBuddy 同源薄插件（2026-10-08）
 
