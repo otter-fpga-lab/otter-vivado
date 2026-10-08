@@ -5,13 +5,10 @@ Otter Vivado 专注 **AMD Vivado 工具能力**：工程管理、Tcl 执行、�
 产品负责，本产品为它们和人类提供可独立使用的执行与验证入口。
 
 以 **Windows 本机使用**为主要场景，兼顾 Linux。默认从 `main` 接续；
-**[一次目录链接接入 Cursor、Claude Code、Codex 与 Antigravity](docs/SOURCE_CONNECTION.md)**，
 **[原生 Vivado GUI 工程与交付](docs/HUMAN_GUI_WORKFLOW.md)**，以及
 **[真实进度面板、报告浏览与可运行样例](docs/RUN_MONITOR.md)** 各有具体步骤。
 Skill、CLI/MCP 和 UI 共用一份实现。AMD Ross 与 Otter 并列可选，两者均可独立使用；
 参考依据见 [Ross 对照](skills/otter-vivado/references/ross.md)。开发接续见 [TASK.md](TASK.md)。
-
-Codex 原生插件使用四文件入口壳：MCP 绑定本仓私有 Python，简短 Skill 调用只读 `vivado_guide` 按次取得当前源指南。缓存只保存入口，不复制业务或长规范；生成与实际宿主安装分别记录。入口见[源码与插件接入](docs/SOURCE_CONNECTION.md#codex-native-plugin)。
 
 本仓是 NJ 的 [vivado-mcp](https://github.com/mapleleavessssssss-wq/vivado-mcp) 的保留历史
 fork，沿用原作者、Apache-2.0 和上游贡献关系。Python 包名与 CLI 保持 `vivado-mcp`；
@@ -34,6 +31,10 @@ PyPI 上的同名包是上游发行版，Otter 功能按本仓源码入口安装
 > **English:** Otter Vivado provides local AMD Vivado project, execution, simulation, IP, status, and report tools for humans and agents. It includes 50 MCP tools, 8 workflow prompts, native GUI/headless/attach sessions, and a shared read-only run monitor. RTL authoring belongs to the separate coding product.
 
 **导航**：[快速开始](#快速开始) · [原生 GUI 与交付](docs/HUMAN_GUI_WORKFLOW.md) · [工具职责](#工具职责) · [工作流 Prompts](#工作流-prompts) · [工具列表](#工具列表) · [会话模式](#会话模式) · [架构](#架构) · [CLI](#cli-参考) · [反馈](#反馈与-bug-提交)
+
+## 客户端接入
+
+客户端或脚手架接入先读[一份源码与客户端入口](docs/SOURCE_CONNECTION.md)：包含五个客户端的入口、命令和验证状态。Codex 使用原生插件壳，其他宿主按实际支持引用源 Skill/MCP；进入仓库不自动安装。
 
 ## 环境要求
 
@@ -104,7 +105,7 @@ vivado-mcp install
 也可以让 doctor 执行安全修复：
 
 ```bash
-vivado-mcp doctor --fix --client all
+vivado-mcp doctor --fix --client claude-code
 ```
 
 `--fix` 才会写文件：复用幂等的 Vivado 注入，并在备份后原子更新选定客户端配置；不会删除第三方注入、终止占用端口的进程或自动升级软件。
@@ -610,7 +611,7 @@ flowchart LR
 | `vivado-mcp uninstall [path]` | 从 Vivado_init.tcl 移除 |
 | `vivado-mcp doctor [path] [--port 9999] [--json]` | 只读检查环境与连接 |
 | `vivado-mcp doctor --fix [--client all\|claude-code\|codex]` | 备份后修复可安全自动处理的配置 |
-| `vivado-mcp connect --client all [--check]` | 一次接入四客户端的源码 MCP 与 Skill 目录链接；`--check` 仅核对 |
+| `vivado-mcp connect --client <目标客户端> [--check]` | 接入所选客户端的源 MCP 与 Skill 链接；`--check` 仅核对。`all` 含四端，Codex 原生插件已启用时不能同时选 Codex |
 | `vivado-mcp debug --port 9999` | 连接已有 GUI，打开 ILA/VIO 调试面板 |
 | `vivado-mcp debug --demo --panel examples/debug/panel.json` | 可交互的合成演示，不连接 EDA 或板卡 |
 | `vivado-mcp monitor --port 9999 --run impl_1 --target route_design` | 只观察指定已有 GUI 的 run；详见 [运行观察](docs/RUN_MONITOR.md) |

@@ -6,6 +6,10 @@ Basis: 2026-10-07 用户后续授权先接 Codex 原生插件，其他脚手架�
 Next: 本机插件协议已就绪；模型采用、GUI、SSH 与设备按后续实际任务分别验证
 Result: 四文件 Codex 入口壳绑定本仓私有 Python；新增只读 vivado_guide，实际 50 MCP 工具；远程执行继续使用同源 CLI
 
+## 接入文档入口（2026-10-08）
+
+README 与根 AGENTS 路由到[既有接入文档](docs/SOURCE_CONNECTION.md)，CLAUDE 通过 `@AGENTS.md` 复用维护入口；新增五客户端速查，默认示例明确选择单客户端，保留 `all` 的重复入口边界。纯文档静态参数、相对链接与差异检查 PASS；本轮安装、宿主、EDA/板卡 NOT_RUN。后续接入从该页选择实际宿主，不因进入仓库自动安装。
+
 ## Codex 源绑定插件（2026-10-07）
 
 从干净 main `b527672614fc870cdc89da18b47edc98dedcd673` 接续，保留三个本机 ahead 提交及全部既有实现。`vivado-mcp plugin --client codex --output <新绝对目录>` 只生成 manifest、MCP 配置、简短 bootstrap Skill 与 README，不覆盖已有目标、不安装宿主或写全局配置。MCP 绑定本仓 `.venv` 的 editable 源；普通业务/长指南不进缓存。格式与来源见 [接入说明](docs/SOURCE_CONNECTION.md#codex-native-plugin)。

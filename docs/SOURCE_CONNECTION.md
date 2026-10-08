@@ -9,6 +9,18 @@ Otter Vivado 的插件体验由 **Skill + MCP + 运行面板**组成。Skill 与
 同机安装多个 Vivado 时，按 [版本兼容说明](VERSION_COMPATIBILITY.md) 选择工程所需版本；
 客户端接入本身不要求升级 Vivado。
 
+## 客户端速查
+
+| 客户端 | 采用入口 | 实现与验证状态 |
+|---|---|---|
+| Codex | [原生同源插件壳](#codex-native-plugin)，与普通源绑定择一 | 2026-10-07 本机原生安装、Skill/MCP 发现和缓存入口 SDK 已验证；模型采用、EDA 另验。 |
+| Claude Code | `connect --client claude-code`，源 Skill + MCP | 连接器已有配置生成与保护验证；真实宿主发现、加载未测。 |
+| Cursor | `connect --client cursor`，源 Skill + MCP | 同源引用已有实现与自动化；真实宿主发现、加载未测。 |
+| Antigravity | `connect --client antigravity`，按实际 IDE/CLI 路径选择 | 新旧路径处理已有实现与自动化；真实宿主发现、加载未测。 |
+| WorkBuddy | 无 `workbuddy` 适配；按实际宿主入口引用源 MCP/Skill | 只有本机历史配置观察；当前接入未测，不声称支持原生插件格式。 |
+
+表内 `connect` 使用下文同一个私有 Python；完整参数和路径见下文。Claude Code 与 Claude Desktop 是不同宿主，本连接器的 `claude-code` 不代表 Desktop 适配。
+
 <a id="codex-native-plugin"></a>
 ## Codex 原生插件
 
@@ -42,8 +54,8 @@ Windows PowerShell：
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python -m pip install -e .
-.\.venv\Scripts\python -m vivado_mcp connect --client all --check
-.\.venv\Scripts\python -m vivado_mcp connect --client all
+.\.venv\Scripts\python -m vivado_mcp connect --client claude-code --check
+.\.venv\Scripts\python -m vivado_mcp connect --client claude-code
 ```
 
 Linux：
@@ -51,15 +63,15 @@ Linux：
 ```bash
 python -m venv .venv
 .venv/bin/python -m pip install -e .
-.venv/bin/python -m vivado_mcp connect --client all --check
-.venv/bin/python -m vivado_mcp connect --client all
+.venv/bin/python -m vivado_mcp connect --client claude-code --check
+.venv/bin/python -m vivado_mcp connect --client claude-code
 ```
 
 已有虚拟环境可直接使用，不必重建。`connect` 会确认当前解释器确实以 editable 方式加载
 这份源码，然后把该解释器的绝对路径写入 MCP 配置。只用部分客户端时可指定列表，例如：
 
 ```bash
-python -m vivado_mcp connect --client cursor claude-code codex
+python -m vivado_mcp connect --client cursor claude-code antigravity
 ```
 
 本文后续的 `python` 均指上面同一个虚拟环境解释器。`--check` 只读核对，不创建目录、
@@ -100,7 +112,7 @@ python -m vivado_mcp connect --client antigravity --config /actual/mcp_config.js
 只需接入 Skill，可使用：
 
 ```bash
-python -m vivado_mcp connect --client all --skills-only
+python -m vivado_mcp connect --client claude-code --skills-only
 ```
 
 `--skills-only` 不检查也不修改 MCP，不能据此判定工具已可调用。已有本产品 MCP 被停用，
@@ -121,7 +133,7 @@ Skill 和 references 在客户端下一次读取时取得新内容；已加载�
 需要确认链接仍有效时运行：
 
 ```bash
-python -m vivado_mcp connect --client all --check
+python -m vivado_mcp connect --client claude-code --check
 ```
 
 输出逐客户端列出 `source`、`python`、`skill_source`、`skill`、`config` 与状态。
@@ -141,8 +153,8 @@ python -m vivado_mcp connect --client all --check
 放置越界链接。Ross 与 Otter 可按任务并列选择，取舍与固定版本依据见
 [Ross 参考](../skills/otter-vivado/references/ross.md)。同一客户端避免同时安装两份同名 Skill。
 
-当前验证覆盖连接器的配置保留、路径选择、共享链接和冲突处理；没有在真实 Windows 或
-四个客户端 GUI 中完成安装验收。现场应确认客户端版本、Skill 发现、MCP 握手、Windows
+连接器已有配置保留、路径选择、共享链接和冲突处理的自动化验证；Codex 原生插件的本机
+安装、发现和源 SDK 验证见上文与 TASK。其他宿主发现和 Windows 连接器链接仍未现场验证；使用时确认客户端版本、Skill 发现、MCP 握手、Windows
 symlink/junction 解析，以及修改一个参考文件后新会话能读取原位内容；仍在运行的构建应
 保持原 session/run。详细自动化结果和接续点见 [TASK.md](../TASK.md)。
 
