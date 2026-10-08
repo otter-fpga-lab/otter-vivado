@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — 2026-10-08 doctor 识别 Codex 原生插件
+
+- `doctor` 的 `mcp_codex` 在 Codex 已启用 `otter-vivado@*` 原生插件时判 ok，不再提示、
+  也不再由 `--fix` 追加第二个普通 `mcp_servers.vivado`（此前会与插件形成重复入口，
+  与 `connect` 的拒绝规则相反）。插件判定与 `connect` 共用 `_codex_native_plugin`。
+
 ## [Unreleased] — 2026-10-03 本轮收口与 ILA 停止核对
 
 - 核对 UG835 v2022.2：上传会停止并覆盖采样对象，reset 重置配置，均不作为独立停止。

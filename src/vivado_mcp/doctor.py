@@ -209,6 +209,21 @@ def _check_claude_config(path: Path) -> DoctorCheck:
     )
 
 
+def _codex_native_plugin(data: dict) -> str | None:
+    """返回已启用的 Otter Vivado Codex 原生插件名；它自带同源 MCP，不再需要普通条目。"""
+    plugins = data.get("plugins", {})
+    if not isinstance(plugins, dict):
+        return None
+    for name, entry in plugins.items():
+        if (
+            name.split("@", 1)[0] == "otter-vivado"
+            and isinstance(entry, dict)
+            and entry.get("enabled") is True
+        ):
+            return name
+    return None
+
+
 def _check_codex_config(path: Path) -> DoctorCheck:
     check_id = "mcp_codex"
     action = f"在 {path} 中追加 mcp_servers.vivado stdio 配置"
@@ -237,6 +252,15 @@ def _check_codex_config(path: Path) -> DoctorCheck:
             "critical",
             f"Codex 配置无法验证：{exc}",
             path=str(path),
+        )
+    plugin = _codex_native_plugin(data)
+    if plugin is not None:
+        return _check(
+            check_id,
+            "ok",
+            f"Codex 已通过原生插件 {plugin} 接入 vivado-mcp，不需要普通 mcp_servers 条目。",
+            path=str(path),
+            entry=plugin,
         )
     servers = data.get("mcp_servers")
     if servers is None:
@@ -331,6 +355,8 @@ def _fix_codex_config(path: Path, vivado_path: str | None) -> None:
     original_bytes = path.read_bytes() if path.is_file() else None
     content = original_bytes.decode("utf-8") if original_bytes is not None else ""
     data = tomllib.loads(content) if content.strip() else {}
+    if _codex_native_plugin(data) is not None:
+        return
     servers = data.get("mcp_servers", {})
     if not isinstance(servers, dict):
         raise ValueError("mcp_servers 不是 TOML 表")

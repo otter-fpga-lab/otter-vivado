@@ -84,13 +84,7 @@ def _client_paths(client: str, config_path: Path | None) -> tuple[Path, Path, st
 
 
 def _reject_codex_native_plugin(data: dict) -> None:
-    plugins = data.get("plugins", {})
-    if isinstance(plugins, dict) and any(
-        name.split("@", 1)[0] == "otter-vivado"
-        and isinstance(entry, dict)
-        and entry.get("enabled") is True
-        for name, entry in plugins.items()
-    ):
+    if doctor._codex_native_plugin(data) is not None:
         raise ValueError(
             "Codex 已启用 Otter Vivado 原生插件，拒绝再创建普通 Skill/MCP 入口。"
             "继续使用插件；接入其他客户端时显式从 --client 列表去掉 codex/all。"

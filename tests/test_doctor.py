@@ -216,6 +216,35 @@ def test_fix_failure_is_audited_and_rechecked(monkeypatch, tmp_path):
     assert any(item.id == "mcp_claude_code" and item.status == "failed" for item in report.fixes)
 
 
+@pytest.mark.skipif(doctor.tomllib is None, reason="Python 环境没有结构化 TOML 解析器")
+@pytest.mark.parametrize(
+    ("enabled", "expected"),
+    [("true", "ok"), ("false", "warn")],
+)
+def test_codex_native_plugin_counts_as_connected(monkeypatch, tmp_path, enabled, expected):
+    exe, _ = _fake_vivado(tmp_path)
+    _patch_runtime(monkeypatch, tmp_path, probe=True)
+    home = tmp_path / "home"
+    codex = home / ".codex" / "config.toml"
+    codex.parent.mkdir(parents=True)
+    original = f'[plugins."otter-vivado@personal"]\nenabled = {enabled}\n'
+    codex.write_text(original, encoding="utf-8")
+
+    report = doctor.run_doctor(str(exe), fix=(expected == "ok"), client="codex", home=home)
+    check = next(item for item in report.checks if item.id == "mcp_codex")
+
+    assert check.status == expected
+    if expected == "ok":
+        # 原生插件已提供同源 MCP；不得提示或写入第二个普通 mcp_servers 条目。
+        assert check.fixable is False
+        assert "otter-vivado@personal" in check.message
+        assert not any(item.id == "mcp_codex" for item in report.fixes)
+        assert codex.read_text(encoding="utf-8") == original
+        assert not (home / ".codex" / "config.toml.vmcp_backup").exists()
+    else:
+        assert check.fixable is True
+
+
 def test_python310_without_toml_parser_degrades_codex_check(monkeypatch, tmp_path):
     exe, _ = _fake_vivado(tmp_path)
     _patch_runtime(monkeypatch, tmp_path, probe=True)
