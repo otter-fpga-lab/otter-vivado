@@ -14,7 +14,7 @@ Otter Vivado 的插件体验由 **Skill + MCP + 运行面板**组成。Skill 与
 | 客户端 | 采用入口 | 实现与验证状态 |
 |---|---|---|
 | Codex | [原生同源插件壳](#codex-native-plugin)，与普通源绑定择一 | 2026-10-07 本机原生安装、Skill/MCP 发现和缓存入口 SDK 已验证；模型采用、EDA 另验。 |
-| Claude Code | `connect --client claude-code`，源 Skill + MCP | 连接器已有配置生成与保护验证；真实宿主发现、加载未测。 |
+| Claude Code | `connect --client claude-code`，源 Skill + MCP | 2026-10-08 本机配置/Skill/CLI 健康检查已有证据，重启后当前会话发现已报告；实际工具调用回执尚未确认。 |
 | Cursor | `connect --client cursor`，源 Skill + MCP | 同源引用已有实现与自动化；真实宿主发现、加载未测。 |
 | Antigravity | `connect --client antigravity`，按实际 IDE/CLI 路径选择 | 新旧路径处理已有实现与自动化；真实宿主发现、加载未测。 |
 | WorkBuddy | 无 `workbuddy` 适配；按实际宿主入口引用源 MCP/Skill | 只有本机历史配置观察；当前接入未测，不声称支持原生插件格式。 |
@@ -142,6 +142,14 @@ python -m vivado_mcp connect --client claude-code --check
 已成功握手。随后在实际客户端确认 `otter-vivado` Skill 与 Vivado 工具可见，先调用
 `list_sessions`，再按 [运行观察流程](RUN_MONITOR.md) 选工程与会话。
 
+遇到接入问题时可选用 `doctor`，不要求每个任务先运行。它对客户端只检查配置登记/启用，
+以 `runtime_verified=false` 明确实际 MCP 运行与工具调用未验证；已有 Vivado TCP 协议检查
+另行报告。原生插件与可验证直接登记重复、或多个可验证直接登记时只告警；`--fix`
+保持客户端配置原样，由使用者核对是否有意保留。Codex 按 `enabled=false` 排除停用条目；
+Claude Code 只核对用户级登记，不把条目内的 `enabled/disabled` 当作真实启停开关，
+其[项目停用列表](https://code.claude.com/docs/en/mcp#disable-a-server-without-removing-it)未采样。
+损坏配置仍报告错误；同配置的 `vivado/vivado-mcp` 常用键名下无效启动条目也会报告。
+
 接入命令不注入 Vivado、不探测端口、不重启 MCP，也不启动/停止 Vivado。GUI/attach
 需要的协议配置见 [运行观察](RUN_MONITOR.md#一次源码接入)；活动运行不要为了刷新面板
 或更新 Skill 而重启拥有它的 MCP。
@@ -154,7 +162,9 @@ python -m vivado_mcp connect --client claude-code --check
 [Ross 参考](../skills/otter-vivado/references/ross.md)。同一客户端避免同时安装两份同名 Skill。
 
 连接器已有配置保留、路径选择、共享链接和冲突处理的自动化验证；Codex 原生插件的本机
-安装、发现和源 SDK 验证见上文与 TASK。其他宿主发现和 Windows 连接器链接仍未现场验证；使用时确认客户端版本、Skill 发现、MCP 握手、Windows
+安装、发现和源 SDK 验证见上文与 TASK。Claude Code 的本机检查与重启后发现报告也见 TASK，
+当前会话工具调用回执尚未确认；Cursor/Antigravity 与连接器的实际宿主加载按需核对。
+使用时按实际需要确认客户端版本、Skill 发现、MCP 握手、Windows
 symlink/junction 解析，以及修改一个参考文件后新会话能读取原位内容；仍在运行的构建应
 保持原 session/run。详细自动化结果和接续点见 [TASK.md](../TASK.md)。
 

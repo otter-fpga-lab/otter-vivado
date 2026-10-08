@@ -77,13 +77,13 @@ vivado-mcp remote report --results /path/to/results
 
 按 [源码接入指南](docs/SOURCE_CONNECTION.md) 从本仓 `main` 安装一次，并为需要的客户端建立 Skill 目录链接及源码 MCP 配置。使用同一个 Python 环境执行下文命令；无需安装 PyPI 上游包覆盖源码接入。
 
-### 2. 先运行环境诊断
+### 2. 按需运行环境诊断
 
 ```bash
 vivado-mcp doctor
 ```
 
-`doctor` 默认完全只读，检查 Vivado 路径、init Tcl 注入、9999 端口协议、Claude Code/Codex 配置，并给出精确的修复计划。CI 或 Agent 可使用结构化输出：
+遇到环境或接入问题时可运行 `doctor`；日常任务不要求先执行。它默认完全只读，检查 Vivado 路径、init Tcl 注入、9999 端口协议、Claude Code/Codex 配置，并给出修复计划。客户端配置结果只表示登记/启用状态，JSON 中 `runtime_verified=false` 表示实际 MCP 运行与工具调用未验证；Vivado TCP 协议检查独立报告。CI 或 Agent 可使用结构化输出：
 
 ```bash
 vivado-mcp doctor --json
@@ -109,6 +109,7 @@ vivado-mcp doctor --fix --client claude-code
 ```
 
 `--fix` 才会写文件：复用幂等的 Vivado 注入，并在备份后原子更新选定客户端配置；不会删除第三方注入、终止占用端口的进程或自动升级软件。
+Codex 原生插件已启用时不会追加普通 MCP 条目；同产品存在多个可验证启动登记时只告警，`--fix` 保持客户端配置原样，由使用者核对是否有意保留。Codex 的 `enabled=false` 条目不计重复；Claude Code 只核对用户级登记，项目启停开关未采样。
 
 ### 4. MCP 手动配置（可选）
 

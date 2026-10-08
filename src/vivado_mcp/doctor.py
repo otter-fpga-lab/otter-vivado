@@ -134,7 +134,90 @@ def _valid_server_entry(entry: object) -> bool:
         return not args or args == ["serve"]
     if command_name not in {"python", "python.exe", "python3", "python3.exe", "py", "py.exe"}:
         return False
-    return args in (["-m", "vivado_mcp"], ["-m", "vivado_mcp", "serve"])
+    return args in (
+        ["-m", "vivado_mcp"],
+        ["-m", "vivado_mcp", "serve"],
+        ["-B", "-m", "vivado_mcp"],
+        ["-B", "-m", "vivado_mcp", "serve"],
+    )
+
+
+def _check_registered_servers(
+    check_id: str,
+    client: str,
+    path: Path,
+    servers: dict,
+    action: str,
+    *,
+    plugin: str | None = None,
+) -> DoctorCheck:
+    """只核对本产品登记与启用状态；不启动宿主或验证 MCP 运行。"""
+    evidence = {"path": str(path), "runtime_verified": False}
+    scope_note = ""
+    if client == "Claude Code":
+        evidence["project_switches_sampled"] = False
+        scope_note = "仅核对用户级登记，项目启停开关未采样。"
+    for name in ("vivado", "vivado-mcp"):
+        if name in servers and not _valid_server_entry(servers[name]):
+            return _check(
+                check_id,
+                "critical",
+                f"{client} 的 {name!r} 条目存在，但 command/args 无法验证。",
+                entry=name,
+                **evidence,
+            )
+    name, _ = _find_server_entry(servers)
+    active = [
+        str(name)
+        for name, entry in servers.items()
+        if _valid_server_entry(entry) and (client != "Codex" or entry.get("enabled") is not False)
+    ]
+    if (plugin is not None and active) or len(active) > 1:
+        return _check(
+            check_id,
+            "warn",
+            f"{client} 配置中有多个 vivado-mcp 启动登记；"
+            f"请核对是否有意保留，doctor 不会自动修改。{scope_note}"
+            "实际 MCP 运行与工具调用未验证。",
+            native_plugin=plugin,
+            direct_entries=active,
+            **evidence,
+        )
+    if plugin is not None:
+        return _check(
+            check_id,
+            "ok",
+            f"{client} 配置已启用原生插件 {plugin}，无需追加普通 mcp_servers 条目。"
+            "实际 MCP 运行与工具调用未验证。",
+            entry=plugin,
+            **evidence,
+        )
+    if active:
+        return _check(
+            check_id,
+            "ok",
+            f"{client} 已注册 vivado-mcp（{active[0]}）。{scope_note}"
+            "实际 MCP 运行与工具调用未验证。",
+            entry=active[0],
+            **evidence,
+        )
+    if name is not None:
+        return _check(
+            check_id,
+            "warn",
+            f"{client} 的 vivado-mcp 条目（{name}）配置为 enabled=false；doctor 不会自动启用。"
+            "实际 MCP 运行与工具调用未验证。",
+            entry=name,
+            **evidence,
+        )
+    return _check(
+        check_id,
+        "warn",
+        f"{client} 尚未注册 vivado-mcp。",
+        fixable=True,
+        proposed_action=action,
+        **evidence,
+    )
 
 
 def _check_claude_config(path: Path) -> DoctorCheck:
@@ -182,35 +265,11 @@ def _check_claude_config(path: Path) -> DoctorCheck:
             "Claude Code 的 mcpServers 不是 JSON 对象。",
             path=str(path),
         )
-    name, entry = _find_server_entry(servers)
-    if name is None:
-        return _check(
-            check_id,
-            "warn",
-            "Claude Code 尚未注册 vivado-mcp。",
-            fixable=True,
-            proposed_action=action,
-            path=str(path),
-        )
-    if not _valid_server_entry(entry):
-        return _check(
-            check_id,
-            "critical",
-            f"Claude Code 的 {name!r} 条目存在，但 command/args 无法验证。",
-            path=str(path),
-            entry=name,
-        )
-    return _check(
-        check_id,
-        "ok",
-        f"Claude Code 已注册 vivado-mcp（{name}）。",
-        path=str(path),
-        entry=name,
-    )
+    return _check_registered_servers(check_id, "Claude Code", path, servers, action)
 
 
 def _codex_native_plugin(data: dict) -> str | None:
-    """返回已启用的 Otter Vivado Codex 原生插件名；它自带同源 MCP，不再需要普通条目。"""
+    """返回配置中已启用的 Otter Vivado 插件名，不代表宿主已加载 MCP。"""
     plugins = data.get("plugins", {})
     if not isinstance(plugins, dict):
         return None
@@ -254,16 +313,10 @@ def _check_codex_config(path: Path) -> DoctorCheck:
             path=str(path),
         )
     plugin = _codex_native_plugin(data)
-    if plugin is not None:
-        return _check(
-            check_id,
-            "ok",
-            f"Codex 已通过原生插件 {plugin} 接入 vivado-mcp，不需要普通 mcp_servers 条目。",
-            path=str(path),
-            entry=plugin,
-        )
     servers = data.get("mcp_servers")
     if servers is None:
+        if plugin is not None:
+            return _check_registered_servers(check_id, "Codex", path, {}, action, plugin=plugin)
         return _check(
             check_id,
             "warn",
@@ -274,36 +327,10 @@ def _check_codex_config(path: Path) -> DoctorCheck:
         )
     if not isinstance(servers, dict):
         return _check(check_id, "critical", "Codex 的 mcp_servers 不是 TOML 表。", path=str(path))
-    name, entry = _find_server_entry(servers)
-    if name is None:
-        return _check(
-            check_id,
-            "warn",
-            "Codex 尚未注册 vivado-mcp。",
-            fixable=True,
-            proposed_action=action,
-            path=str(path),
-        )
-    if not _valid_server_entry(entry):
-        return _check(
-            check_id,
-            "critical",
-            f"Codex 的 {name!r} 条目存在，但 command/args 无法验证。",
-            path=str(path),
-            entry=name,
-        )
-    return _check(
-        check_id,
-        "ok",
-        f"Codex 已注册 vivado-mcp（{name}）。",
-        path=str(path),
-        entry=name,
-    )
+    return _check_registered_servers(check_id, "Codex", path, servers, action, plugin=plugin)
 
 
-def _atomic_write_with_backup(
-    path: Path, text: str, *, expected_bytes: bytes | None
-) -> None:
+def _atomic_write_with_backup(path: Path, text: str, *, expected_bytes: bytes | None) -> None:
     """以调用方读取到的原内容为 CAS 条件提交客户端配置。"""
     _atomic_write_text(
         path,

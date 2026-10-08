@@ -1,10 +1,46 @@
 # Otter Vivado：远程构建合入与既有能力维护
 
-Status: CODEX_SOURCE_PLUGIN_IMPLEMENTED_LOCAL（本机已原生安装/发现；源码入口与协议已验证，未推送）
+Status: SOURCE_CONNECTION_DIAGNOSTICS_REFINED_LOCAL（基于 Claude 修复完成定向回归，未推送）
 Target: otter-fpga-lab/otter-vivado
-Basis: 2026-10-07 用户后续授权先接 Codex 原生插件，其他脚手架保持源码引用；本轮不改其他客户端或连接 EDA/远端
-Next: 本机插件协议已就绪；模型采用、GUI、SSH 与设备按后续实际任务分别验证
-Result: 四文件 Codex 入口壳绑定本仓私有 Python；新增只读 vivado_guide，实际 50 MCP 工具；远程执行继续使用同源 CLI
+Basis: 2026-10-08 用户批准保留 Claude 修复并优化工具便利性；Claude 已继续 HDMI 工程，本轮只维护工具仓
+Next: 日常任务按需使用诊断；具体宿主调用、GUI、SSH 与设备证据随实际任务取得
+Result: 配置登记与实际 MCP 运行证据分开；候选重复入口只告警且不自动改写，接受标准 -B 模块启动参数
+
+## 接入诊断改进（2026-10-08）
+
+从干净 main `7627650d6687ad6de50dda252eb149390e83293f` 接续，保留 Claude 的修复：
+`doctor` 识别已启用 Codex 原生插件，`connect` 共用判定并拒绝新增第二份普通入口。
+本次仅完善配置诊断，没有修改真实客户端配置、重启活动服务或接触 HDMI 工程。
+
+- 客户端检查只表示登记/启用，成功结果显式返回 `runtime_verified=false`，文案说明实际
+  MCP 运行与工具调用未验证；既有 Vivado TCP 协议检查单独保留，没有增加在线健康门禁。
+- 原生插件与可验证直接登记重复、或多个可验证直接登记时只告警，让使用者核对是否有意
+  保留；`--fix` 保持客户端配置字节原样且不创建备份。Codex 按 `enabled=false` 排除停用
+  条目，不自动启用；Claude 仅核对用户级登记并注明项目开关未采样，不将 entry 的
+  `enabled/disabled` 当作实际停用。损坏 TOML、错误 `mcp_servers` 类型及常用键名
+  `vivado/vivado-mcp` 的无效启动条目不会被原生插件或另一个有效条目遮住。
+- 启动项核对接受 `-B -m vivado_mcp` 及可选 `serve`，继续拒绝 `-c`、`doctor`、
+  `uninstall` 等路径；没有放宽任意参数或更改会话、执行、审批模型。
+
+产品私有 Python / Windows 定向验证：
+
+```powershell
+.\.venv\Scripts\python.exe -B -m pytest tests/test_doctor.py tests/test_connect.py::test_codex_native_plugin_refuses_duplicate_source_entry_before_writes -q
+.\.venv\Scripts\ruff.exe check src/vivado_mcp/doctor.py tests/test_doctor.py
+.\.venv\Scripts\ruff.exe format --check src/vivado_mcp/doctor.py tests/test_doctor.py
+git diff --check
+```
+
+**42 passed**；修改文件 Ruff/check/format 与 diff 检查 PASS。夹具覆盖上述真实失效模式，
+客户端配置与 Vivado/TCP 均为隔离替身；本轮实际宿主 MCP 调用、EDA/远端/板卡 **NOT_RUN**。
+Claude 此前的全量测试含既有失败、WinError 1314 链接权限和 LTX 读取检测波动，本轮不重跑
+全量或修复这些无关问题，既有全量结果不作为本次定向回归通过的证据。
+
+Claude 本机核对已有 `coding-tools/vivado/otter-vitis` 三项登记、Skill 入口及
+`claude mcp` 健康检查证据。用户重启后，同一 Claude 会话于 10:35/10:36 报告三组 MCP
+已出现在当前会话并继续 HDMI 任务；主控尚未看到这三组工具的只读调用回执。因此记录为
+“重启后发现已报告，实际调用证据尚缺”，不要求暂停业务补诊断或增加每任务必跑检查。
+本节随本次实现提交保存，推送由主控统一处理。
 
 ## 接入文档入口（2026-10-08）
 
