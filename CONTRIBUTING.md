@@ -34,6 +34,32 @@ ruff check src/ tests/
 ruff check --fix src/ tests/
 ```
 
+## 架构
+
+```mermaid
+flowchart LR
+    Agent["MCP 客户端"] -->|"stdio MCP"| MCP["vivado-mcp"]
+    MCP --> Tools["50 Tools"]
+    MCP --> Prompts["8 Workflow Prompts"]
+    MCP --> Resources["2 Session Resources"]
+    Tools --> Tcl["SubprocessSession\nmode=tcl"]
+    Tools --> Gui["GuiSession\nmode=gui"]
+    Tools --> Attach["GuiSession\nmode=attach"]
+    Tcl -->|"stdio + UUID sentinel"| VivadoTcl["vivado -mode tcl"]
+    Gui -->|"TCP length-prefix"| VivadoGui["local Vivado GUI"]
+    Attach -->|"TCP length-prefix"| VivadoGui
+    Tools --> Monitor["共享运行状态缓存"]
+    Human["使用者"] --> VivadoGui
+    Human --> View["本机只读面板"]
+    View --> Monitor
+```
+
+**核心协议**：
+- **subprocess 模式**：`catch + UUID sentinel`（stdio 分帧，修复了 0.1.0 的行顺序 bug）
+- **GUI/attach 模式**：TCP length-prefix framing（4 字节 BE + UTF-8 payload）
+- 命令通过十六进制编码传输，避免传输层误解释命令内容，并覆盖含空格、中文和特殊字符的路径
+- 每个 session 同时只拥有一个在途响应；调用超时不会释放协议所有权，避免迟到响应污染下一条命令
+
 ## Tcl 协议规则（改 `src/vivado_mcp/vivado/` 或 `tcl_scripts.py` 前必读）
 
 本项目通过 sentinel 前缀协议解析 Vivado 输出，这一层的 bug 最难追（曾有命名空间冲突 bug 潜伏了十个版本）。硬规则：
@@ -65,8 +91,23 @@ pytest tests/test_tcl_utils.py -v
    不使用 reset 或强制覆盖回到历史基线。
 2. 阅读受影响实现，完成必要修改与定向验证。按影响范围运行测试；Tcl/会话改动同时考虑
    GUI 与无头路径，没有 EDA/Windows 时明确现场待测范围。
-3. 把已完成内容、实际提交、验证结果与下一步写入产品 TASK，及时提交并推送。
+3. 把已完成内容、实际提交、验证结果与下一步写入产品 TASK，及时本地提交；推送按用户当前授权。
 4. 需要隔离时建立或接续任务分支/PR；合并按用户当前授权执行，不自动发布包或操作设备。
+
+## 反馈复现材料
+
+产品讨论入口见 [README 的反馈](README.md#反馈与-bug-提交)。可让正在使用的客户端
+整理一份 Markdown：环境、期望/实际行为、复现调用序列和相关日志，并记录：
+
+- 操作系统构建号、客户端类型/版本、Python 版本、`vivado-mcp version` 与源码提交；
+- 实际 Vivado 版本、安装路径、`gui/tcl/attach` 模式，以及相关工具名；
+- 当前任务的 session/run、工程/器件与报告阶段，只附问题需要的日志片段。
+
+Vivado 版本优先从已有空闲会话的 `version -short` 取得；忙时使用已有日志头，无法确认
+就记未知。`.xpr` 的 Project Version 是文件格式信息，不代表实际运行版本。
+优先复用 `get_run_snapshot`、已有错误和日志；收集反馈不重跑构建、仿真或设备动作。
+公开材料移除凭据、私人主机地址和未授权客户数据。可用 `[bug]`、`[feature]` 或 `[docs]`
+标明问题类型；整理材料不自动发送消息或创建远端内容。
 
 ## 向原上游投稿
 
@@ -76,4 +117,4 @@ pytest tests/test_tcl_utils.py -v
 
 ## 安全相关
 
-如果发现安全漏洞，请通过 Issue 私密报告，不要在公开 Issue 中公布细节。
+安全反馈先与维护者确认私密提交渠道，不在公开讨论中附带漏洞利用细节、凭据或客户数据。

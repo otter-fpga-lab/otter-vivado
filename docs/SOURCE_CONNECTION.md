@@ -11,14 +11,15 @@ Otter Vivado 的插件体验由 **Skill + MCP + 运行面板**组成。Skill 与
 
 ## 客户端速查
 
-| 客户端 | 采用入口 | 实现与验证状态 |
-|---|---|---|
-| Codex | [原生同源插件壳](#codex-native-plugin)，与普通源绑定择一 | 2026-10-07 本机原生安装、Skill/MCP 发现和缓存入口 SDK 已验证；模型采用、EDA 另验。 |
-| Claude Code | `connect --client claude-code`，源 Skill + MCP | 2026-10-08 本机配置/Skill/CLI 健康检查已有证据，重启后当前会话发现已报告；实际工具调用回执尚未确认。 |
-| Cursor | `connect --client cursor`，源 Skill + MCP | 同源引用已有实现与自动化；真实宿主发现、加载未测。 |
-| Antigravity | [原生同源插件壳](#antigravity-native-plugin)；也可选 `connect` 源引用 | 本机 CLI 安装、四文本缓存 SDK 及源指南读取 PASS；IDE/模型采用另验，见 [TASK](../TASK.md)。 |
-| WorkBuddy | [原生同源插件壳](#workbuddy-native-plugin) | 本机原生安装/启用及缓存 SDK 读源 PASS；会话/模型采用另验，见 [TASK](../TASK.md)。 |
-| CodeBuddy IDE | [同格式原生入口](#workbuddy-native-plugin)，配置根 `~/.codebuddy` | 本机原生登记/启用及源壳 SDK 读源 PASS；当前 IDE 会话加载/模型采用 NOT_RUN，见 [TASK](../TASK.md)。 |
+| 客户端 | 接入方法 |
+|---|---|
+| Codex | [原生同源插件壳](#codex-native-plugin)，与普通源绑定择一 |
+| Claude Code | `connect --client claude-code`，源 Skill + MCP |
+| Cursor | `connect --client cursor`，源 Skill + MCP |
+| Antigravity | [原生同源插件壳](#antigravity-native-plugin)，或 `connect` 源引用 |
+| WorkBuddy / CodeBuddy IDE | [同格式原生插件](#workbuddy-native-plugin)，安装配置根分别为 `~/.workbuddy` / `~/.codebuddy` |
+
+接入方法与实测范围分开维护，结果见[已验证范围](#已验证范围)和 [TASK](../TASK.md)。
 
 表内 `connect` 使用下文同一个私有 Python；完整参数和路径见下文。Claude Code 与 Claude Desktop 是不同宿主，本连接器的 `claude-code` 不代表 Desktop 适配。
 
@@ -158,26 +159,17 @@ CodeBuddy IDE 本机读取已登记目录市场中的源壳，CLI 缓存/列表�
 
 Codex 已在所选配置中启用 `otter-vivado` 原生插件时，`connect`（含 `--check/--skills-only`）会拒绝新增普通入口并给出指引，不把已有插件误报为连接器 `ready`。需要接入其他客户端时显式指定它们，例如 `--client cursor claude-code antigravity`；`all` 包含 Codex，不能用于绕过这个重复入口检查。连接器不会禁用或删除已有插件。
 
-已有本仓源码时直接进入该目录；首次取得默认 `main` 源码可用：
-
-```bash
-git clone -b main https://github.com/otter-fpga-lab/otter-vivado.git
-cd otter-vivado
-```
-
-Windows PowerShell：
+完成[首次准备](#first-setup)后，从本仓根使用同一私有环境，显式选择需要的客户端：
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python -m pip install -e .
-.\.venv\Scripts\python -m vivado_mcp connect --client claude-code --check
-.\.venv\Scripts\python -m vivado_mcp connect --client claude-code
+.\.venv\Scripts\python.exe -m vivado_mcp connect --client claude-code --check
+.\.venv\Scripts\python.exe -m vivado_mcp connect --client claude-code
 ```
 
-Linux：
+Linux 源准备与接入：
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 .venv/bin/python -m pip install -e .
 .venv/bin/python -m vivado_mcp connect --client claude-code --check
 .venv/bin/python -m vivado_mcp connect --client claude-code
@@ -270,8 +262,41 @@ Claude Code 只核对用户级登记，不把条目内的 `enabled/disabled` 当
 损坏配置仍报告错误；同配置的 `vivado/vivado-mcp` 常用键名下无效启动条目也会报告。
 
 接入命令不注入 Vivado、不探测端口、不重启 MCP，也不启动/停止 Vivado。GUI/attach
-需要的协议配置见 [运行观察](RUN_MONITOR.md#一次源码接入)；活动运行不要为了刷新面板
+需要的协议配置见下方[连接原生 Vivado GUI](#连接原生-vivado-gui)；活动运行不要为了刷新面板
 或更新 Skill 而重启拥有它的 MCP。
+
+## 连接原生 Vivado GUI
+
+在已确认安装的 Vivado 上，`start_session(mode="gui", port=0)` 启动独立 GUI，并用
+`-source` 加载协议；这条路径不需要全局注入。若要 attach 到以后人工打开的 GUI，才使用：
+
+```powershell
+.\.venv\Scripts\vivado-mcp.exe install 'D:\Xilinx\Vivado\2018.3\bin\vivado.bat' --port 9999
+```
+
+替换实际安装路径。此命令备份并修改该安装的 `Vivado_init.tcl`，随后启动的 GUI 在指定
+单一端口提供协议；端口被占就退出，不换端口。受保护安装目录需要相应写权限。
+`vivado-mcp uninstall <同一安装路径>` 用于移除注入。`VIVADO_PATH` 或会话的 `vivado_path`
+用于选择可执行文件，与 init Tcl 注入是两件事；也可从系统 PATH 发现安装。
+
+已有且未加载协议的 GUI 不能直接 attach；连接后核对 `version -short` 与当前工程。
+多安装的选择见[版本兼容](VERSION_COMPATIBILITY.md)，实际会话/工程交接见
+[GUI 指南](HUMAN_GUI_WORKFLOW.md)与[运行观察](RUN_MONITOR.md)。
+
+## 已验证范围
+
+以下是已有记录和用户反馈，本次整理文档未重装客户端、运行 EDA 或操作板卡。
+
+| 客户端 | 已有证据与未核对范围 |
+|---|---|
+| Codex | 2026-10-07 本机原生安装、Skill/MCP 发现和缓存入口 SDK PASS；具体模型采用、EDA 另验 |
+| Claude Code | 2026-10-08 本机配置/Skill/CLI 健康检查已有回执，重启后当前会话发现由用户报告；逐工具调用回执未补采 |
+| Cursor | 同源引用已有实现与自动化；真实宿主发现/加载 NOT_RUN |
+| Antigravity | 本机 CLI 安装、四文本缓存 SDK 及源指南读取 PASS；IDE/模型采用另验 |
+| WorkBuddy | 本机原生安装/启用及缓存 SDK 读源 PASS；会话/模型采用另验 |
+| CodeBuddy IDE | 本机原生登记/启用与源壳 SDK 读源 PASS；2026-10-08 用户反馈客户端探测无问题，未给逐工具明细；未补采独立会话回执 |
+
+具体回执和版本见 [TASK](../TASK.md)。用户客户端探测反馈不扩展为所有 EDA、GUI、SSH 或设备通过。
 
 ## 客户端兼容与验证边界
 

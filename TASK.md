@@ -1,10 +1,24 @@
 # Otter Vivado：远程构建合入与既有能力维护
 
-Status: NATIVE_SOURCE_PLUGINS_VALIDATED_LOCAL（Claude 诊断成果保留，Antigravity/WorkBuddy 薄壳与 CodeBuddy 登记/源壳只读协议通过；IDE 会话另验）
+Status: CLOSED_WAITING_FOR_REAL_USE（文档入口已收拢；CodeBuddy 客户端探测无问题为用户报告）
 Target: otter-fpga-lab/otter-vivado
 Basis: 2026-10-08 用户批准保留 Claude 修复并优化工具便利性；Claude 已继续 HDMI 工程，本轮只维护工具仓
-Next: 按实际需求使用同源入口；Antigravity/WorkBuddy/CodeBuddy 会话刷新、模型采用及 GUI、SSH、设备随真实任务取得证据
+Next: 按实际任务使用当前同源入口，具体工具或现场问题带源码提交与已有回执反馈本仓
 Result: Antigravity/WorkBuddy 原生安装与缓存 SDK、CodeBuddy 原生登记与源壳 SDK 通过，50 工具；既有诊断边界与 Codex 四文本结果保留
+
+## 文档入口与实际反馈（2026-10-08）
+
+README 收敛为用途、首次安装/使用、日常更新、使用导航和反馈；详细流程保留在
+[使用指南](docs/USAGE.md)，六客户端的接入方法与证据分开写入
+[客户端接入](docs/SOURCE_CONNECTION.md)。AGENTS 指向同一接入页，CLAUDE 只导入 AGENTS。
+普通源码更新等活动任务完成后正常重启；依赖变化重跑原 editable 安装，路径/入口/元数据
+变化再修正源引用或更新薄壳。旧 README 主要锚点保留为新内容导航。
+
+- 用户反馈：CodeBuddy 客户端探测无问题，未给逐工具明细；按用户报告记录，不扩展为所有 EDA/GUI/SSH/设备通过。
+- 既有授权：系列常规维护已有推送授权，发布与设备动作另按任务授权；本批按主控安排只做本地提交，推送由主控收口。
+- **PASS（文档）**：7 个 Markdown 的 106 个本地链接、19 个锚点和 3 个 JSON 样例；PowerShell 样例仅语法解析；AST 静态核对 50 个 MCP 定义与工具表一致，相关 CLI/安装参数、CLAUDE 入口及 `git diff --check` 通过。未执行样例或重跑产品测试。
+- `NOT_RUN`：本轮客户端安装/配置、厂商 EDA、GUI、SSH、业务工程与设备；本轮只维护 Markdown。
+- 下一步：按实际任务使用当前入口，具体工具问题带源码提交与已有调用/日志反馈本仓。
 
 ## 首次安装闭环与 CodeBuddy 入口（2026-10-08）
 

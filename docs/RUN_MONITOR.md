@@ -6,15 +6,15 @@
 
 ## 一次源码接入
 
-先按 [一份源码接入多个客户端](SOURCE_CONNECTION.md) 安装，使用
-`connect --client all` 一次配置 Cursor、Claude Code、Codex 与 Antigravity。
-该文档集中说明目录链接、已有配置保留、Windows junction、自定义路径与日常更新。
+先按 [客户端接入](SOURCE_CONNECTION.md) 选择实际宿主的一种入口。原生插件与普通
+Skill/MCP 引用择一；`connect --client all` 含 Codex，已有 Codex 原生插件时不能重复接入。
+该页集中说明首次准备、已有配置保留、自定义路径与日常更新。
 完成源码接入后，再按下列流程选择实际 Vivado 会话。
 多版本本机先按 [版本兼容指南](VERSION_COMPATIBILITY.md) 选定安装；2018.3 与 2024.2
 为优先维护目标，2020.2/2022.2 一并保留，文档核对不代替现场验证。
 
-GUI/attach 使用上游已有的协议注入：首次需要时显式执行 `vivado-mcp install`
-（会备份并修改指定 Vivado 的 init Tcl），按 README 选择实际安装路径。
+GUI/attach 的可选协议注入见[连接原生 Vivado GUI](SOURCE_CONNECTION.md#连接原生-vivado-gui)：
+仅需要接续以后人工启动的 GUI 时执行 `vivado-mcp install`，备份并修改指定安装的 init Tcl。
 也可以在已有 MCP 客户端中 `start_session(mode="gui", port=0)` 启动独立实例，
 由既有实现用 `-source` 加载协议，无需全局注入。已运行且未经注入的 GUI 无法凭空 attach。
 
