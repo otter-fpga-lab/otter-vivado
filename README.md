@@ -28,7 +28,7 @@ py -3 -m venv .venv
 ```
 
 然后按[接入指南](docs/SOURCE_CONNECTION.md#客户端速查)选择一个客户端：Codex、
-Antigravity、WorkBuddy/CodeBuddy IDE 使用对应同源插件壳；Claude Code/Cursor 使用源
+Cursor、Antigravity、WorkBuddy/CodeBuddy IDE 使用对应同源插件壳；Claude Code 使用源
 Skill/MCP 引用。同一宿主只选一种入口。生成壳后还需按该页原生登记安装；已有市场只合并
 本产品条目，保留其他配置。CLI 可直接使用，不要求先接入客户端。
 

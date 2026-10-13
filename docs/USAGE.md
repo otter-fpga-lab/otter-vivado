@@ -432,5 +432,5 @@ safe_tcl("set_property PACKAGE_PIN {0} [get_ports {1}]", args=["W5", "clk"])
 | `vivado-mcp monitor --port 9999 --run impl_1 --target route_design` | 只观察指定已有 GUI 的 run；详见 [运行观察](RUN_MONITOR.md) |
 | `vivado-mcp version` | 显示 Otter Python 包版本 |
 | `vivado-mcp versions [--json]` | 只读列出本机 Vivado 安装候选与默认选择，不启动 EDA；详见 [版本兼容](VERSION_COMPATIBILITY.md) |
-| `vivado-mcp plugin --client <codex、antigravity 或 workbuddy> --output <新绝对目录>` | 只生成所选宿主的同源插件壳；安装由宿主另行完成 |
+| `vivado-mcp plugin --client <codex、antigravity、workbuddy 或 cursor> --output <新绝对目录>` | 只生成所选宿主的同源插件壳；安装由宿主另行完成 |
 | `vivado-mcp remote <命令>` | 远程工程/原生 Tcl 构建、队列、状态、交付与离线报告；详见 [远程构建](REMOTE_BUILD.md) |

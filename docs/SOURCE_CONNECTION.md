@@ -15,7 +15,7 @@ Otter Vivado 的插件体验由 **Skill + MCP + 运行面板**组成。Skill 与
 |---|---|
 | Codex | [原生同源插件壳](#codex-native-plugin)，与普通源绑定择一 |
 | Claude Code | `connect --client claude-code`，源 Skill + MCP |
-| Cursor | `connect --client cursor`，源 Skill + MCP |
+| Cursor | [原生同源插件壳](#cursor-native-plugin)，与 `connect` 源引用择一 |
 | Antigravity | [原生同源插件壳](#antigravity-native-plugin)，或 `connect` 源引用 |
 | WorkBuddy / CodeBuddy IDE | [同格式原生插件](#workbuddy-native-plugin)，安装配置根分别为 `~/.workbuddy` / `~/.codebuddy` |
 
@@ -96,6 +96,17 @@ bootstrap，由 `vivado_guide` 按次读取正式源，无业务副本或嵌套�
 同一 Antigravity 宿主选择此插件或普通 Skill/MCP 接入；安装插件后不重复运行该宿主的 `connect`。
 `plugin list` 的注册、实际缓存配置和 `vivado_guide` 的源读取分别核对；`mcp list` 的全局条目
 不包含插件内部 MCP，不能据此判定插件失效。普通更新与活动会话边界沿用上文，实际证据见 [TASK](../TASK.md)。
+
+<a id="cursor-native-plugin"></a>
+## Cursor 原生插件
+
+使用本仓私有 editable 环境，生成到尚不存在的本地插件目录。Cursor 会跳过指向该目录以外的链接，所以这里放普通壳，不把源仓链进来。
+
+```powershell
+.\.venv\Scripts\python.exe -B -m vivado_mcp plugin --client cursor --output "$env:USERPROFILE\.cursor\plugins\local\otter-vivado"
+```
+
+壳为 `.cursor-plugin/plugin.json`、`.mcp.json`、`skills/otter-vivado/SKILL.md` 和 README。MCP 使用源仓私有 Python 与 `-B -m vivado_mcp`。短 Skill 由 `vivado_guide` 按次读取正式源。生成器不安装宿主、不写用户级 `mcp.json`，也不建 Skill 链接。同一 Cursor 不要再运行 `connect --client cursor`。普通源码或指南更新后重启 Cursor；源目录、解释器或引导文字变化时重新生成壳。宿主发现与加载需重启后核对。
 
 <a id="workbuddy-native-plugin"></a>
 ## WorkBuddy / CodeBuddy IDE 原生插件
@@ -291,7 +302,7 @@ Claude Code 只核对用户级登记，不把条目内的 `enabled/disabled` 当
 |---|---|
 | Codex | 2026-10-07 本机原生安装、Skill/MCP 发现和缓存入口 SDK PASS；具体模型采用、EDA 另验 |
 | Claude Code | 2026-10-08 本机配置/Skill/CLI 健康检查已有回执，重启后当前会话发现由用户报告；逐工具调用回执未补采 |
-| Cursor | 同源引用已有实现与自动化；真实宿主发现/加载 NOT_RUN |
+| Cursor | 薄壳生成器已实现；真实宿主发现/加载需重启 Cursor 后核对 |
 | Antigravity | 本机 CLI 安装、四文本缓存 SDK 及源指南读取 PASS；IDE/模型采用另验 |
 | WorkBuddy | 本机原生安装/启用及缓存 SDK 读源 PASS；会话/模型采用另验 |
 | CodeBuddy IDE | 本机原生登记/启用与源壳 SDK 读源 PASS；2026-10-08 用户反馈客户端探测无问题，未给逐工具明细；未补采独立会话回执 |
@@ -301,8 +312,9 @@ Claude Code 只核对用户级登记，不把条目内的 `enabled/disabled` 当
 ## 客户端兼容与验证边界
 
 客户端 Skill 目录发现规则与原生插件目录规则不同。Ross 的原生插件安装在部分客户端会
-复制缓存，Cursor 原生插件还限制外部目录链接；本入口使用 Skill 发现目录，不向插件缓存
-放置越界链接。Ross 与 Otter 可按任务并列选择，取舍与固定版本依据见
+复制缓存。Cursor 日常入口是 `~/.cursor/plugins/local/otter-vivado` 里的普通薄壳：
+Cursor 会跳过指向该目录以外的链接，因此壳不链接到源仓，MCP 命令使用源仓私有解释器的绝对路径。
+`connect --client cursor` 是另一条 Skill/MCP 入口，不要和插件同时启用。Ross 与 Otter 可按任务并列选择，取舍与固定版本依据见
 [Ross 参考](../skills/otter-vivado/references/ross.md)。同一客户端避免同时安装两份同名 Skill。
 
 连接器已有配置保留、路径选择、共享链接和冲突处理的自动化验证；Codex 原生插件的本机

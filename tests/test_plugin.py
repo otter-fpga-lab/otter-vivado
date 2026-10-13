@@ -55,7 +55,7 @@ def test_plugin_contains_only_entry_files_and_binds_private_source(tmp_path):
     assert json.loads(process.stdout)["source_root"] == result["source"]
 
 
-@pytest.mark.parametrize("client", ["codex", "antigravity", "workbuddy"])
+@pytest.mark.parametrize("client", ["codex", "antigravity", "workbuddy", "cursor"])
 def test_conflicting_output_is_preserved(tmp_path, client):
     output = tmp_path / "owned"
     output.mkdir()
@@ -67,15 +67,15 @@ def test_conflicting_output_is_preserved(tmp_path, client):
     assert list(output.iterdir()) == [original]
 
 
-@pytest.mark.parametrize("client", ["codex", "antigravity", "workbuddy"])
+@pytest.mark.parametrize("client", ["codex", "antigravity", "workbuddy", "cursor"])
 def test_relative_output_and_unimplemented_clients_are_rejected(client):
     with pytest.raises(ValueError, match="absolute"):
         plugin.create_plugin(client, Path("relative-entry"))
-    with pytest.raises(ValueError, match="Only Codex, Antigravity and WorkBuddy"):
+    with pytest.raises(ValueError, match="Only Codex, Antigravity, WorkBuddy and Cursor"):
         plugin.create_plugin("other-client", Path("relative-entry"))
 
 
-@pytest.mark.parametrize("client", ["codex", "antigravity", "workbuddy"])
+@pytest.mark.parametrize("client", ["codex", "antigravity", "workbuddy", "cursor"])
 def test_missing_editable_binding_creates_no_output(tmp_path, monkeypatch, client):
     def missing_source():
         raise RuntimeError("not editable")
@@ -87,7 +87,7 @@ def test_missing_editable_binding_creates_no_output(tmp_path, monkeypatch, clien
     assert not output.exists()
 
 
-@pytest.mark.parametrize("client", ["codex", "antigravity", "workbuddy"])
+@pytest.mark.parametrize("client", ["codex", "antigravity", "workbuddy", "cursor"])
 def test_other_interpreter_creates_no_output(tmp_path, monkeypatch, client):
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "other-environment"))
     output = tmp_path / "entry"
@@ -96,7 +96,7 @@ def test_other_interpreter_creates_no_output(tmp_path, monkeypatch, client):
     assert not output.exists()
 
 
-@pytest.mark.parametrize("client", ["codex", "antigravity", "workbuddy"])
+@pytest.mark.parametrize("client", ["codex", "antigravity", "workbuddy", "cursor"])
 def test_cli_generation_uses_the_same_product_entry(tmp_path, client):
     output = tmp_path / "cli-entry"
     result = subprocess.run(
@@ -122,9 +122,11 @@ def test_cli_generation_uses_the_same_product_entry(tmp_path, client):
     if client == "codex":
         assert (output / ".mcp.json").is_file()
     else:
-        manifest_path = (
-            "plugin.json" if client == "antigravity" else ".codebuddy-plugin/plugin.json"
-        )
+        manifest_path = {
+            "antigravity": "plugin.json",
+            "workbuddy": ".codebuddy-plugin/plugin.json",
+            "cursor": ".cursor-plugin/plugin.json",
+        }[client]
         mcp_path = "mcp_config.json" if client == "antigravity" else ".mcp.json"
         files = {p.relative_to(output).as_posix() for p in output.rglob("*") if p.is_file()}
         assert files == {
@@ -153,5 +155,5 @@ def test_cli_generation_uses_the_same_product_entry(tmp_path, client):
         }
         bootstrap = (output / "skills/otter-vivado/SKILL.md").read_text(encoding="utf-8")
         assert "vivado_guide" in bootstrap
-        host = "Antigravity" if client == "antigravity" else "WorkBuddy"
+        host = {"antigravity": "Antigravity", "workbuddy": "WorkBuddy", "cursor": "Cursor"}[client]
         assert host in (output / "README.md").read_text(encoding="utf-8")

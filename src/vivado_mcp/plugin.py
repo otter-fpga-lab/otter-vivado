@@ -12,9 +12,9 @@ from vivado_mcp.connect import _editable_source
 
 
 def create_plugin(client: str, output: Path) -> dict:
-    if client not in ("codex", "antigravity", "workbuddy"):
+    if client not in ("codex", "antigravity", "workbuddy", "cursor"):
         raise ValueError(
-            "Only Codex, Antigravity and WorkBuddy native plugin formats are generated"
+            "Only Codex, Antigravity, WorkBuddy and Cursor native plugin formats are generated"
         )
     output = Path(output).expanduser()
     if not output.is_absolute():
@@ -53,7 +53,7 @@ def create_plugin(client: str, output: Path) -> dict:
             }
         }
     }
-    host = {"codex": "Codex", "antigravity": "Antigravity", "workbuddy": "WorkBuddy"}[client]
+    host = {"codex": "Codex", "antigravity": "Antigravity", "workbuddy": "WorkBuddy", "cursor": "Cursor"}[client]
     readme = f"""# Otter Vivado：{host} 本机插件入口
 
 此目录只有 manifest、MCP 配置和简短引导 Skill。业务源码与指南仍在 `{root}`。
@@ -70,14 +70,21 @@ Python 业务更新在正常空闲边界重载 MCP；重载拥有本地 Vivado �
 """
     if client == "antigravity":
         manifest = {key: manifest[key] for key in ("name", "description")}
-    elif client == "workbuddy":
+    elif client in ("workbuddy", "cursor"):
         manifest = {
             key: manifest[key] for key in ("name", "version", "description", "skills", "mcpServers")
         }
+    if client == "cursor":
+        readme += (
+            "\nCursor 本地目录是 `~/.cursor/plugins/local` 下的普通壳。"
+            "manifest 为 `.cursor-plugin/plugin.json`，MCP 为 `.mcp.json`，命令指向正式源的绝对路径。"
+            "不要用指向源仓外部的目录链接代替壳，也不要再登记一份 Skill 链接或用户级 mcp.json。\n"
+        )
     manifest_path = {
         "codex": ".codex-plugin/plugin.json",
         "antigravity": "plugin.json",
         "workbuddy": ".codebuddy-plugin/plugin.json",
+        "cursor": ".cursor-plugin/plugin.json",
     }[client]
     mcp_path = "mcp_config.json" if client == "antigravity" else ".mcp.json"
     files = {
