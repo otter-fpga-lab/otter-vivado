@@ -6,3 +6,7 @@
 - Skill、CLI/MCP 与 UI 共用本仓源码；接入方式和参数以接入文档及实际实现为准，不复制业务树或增加同步平台。
 - 按改动做必要验证，纯文档只核对内容、参数、链接与差异；宿主发现、EDA 和板卡证据分别报告。
 - 可审阅工作分仓显式暂存并本地提交，推送按用户授权；具体工程和设备操作由当前任务授权决定。
+
+## Git 提交身份
+
+- 不设置或覆盖 git author/committer（不用 `-c user.*`、`GIT_AUTHOR_*`/`GIT_COMMITTER_*`、`--author`）；提交一律使用仓库或全局配置的身份 otter <1561785648@qq.com>。推送前用 `git log --format="%an <%ae>"` 检查本批提交；未推送且作者不对时，用 `git rebase --exec "git commit --amend --no-edit --reset-author"` 修正。
