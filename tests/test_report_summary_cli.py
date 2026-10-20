@@ -117,7 +117,10 @@ def test_nested_case_insensitive_files_and_links(tmp_path):
     (nested / "RUN.LOG").write_text("CRITICAL WARNING: [Timing 38-282] no clock\n")
     outside = tmp_path / "outside.rpt"
     outside.write_text("private data")
-    (root / "linked.rpt").symlink_to(outside)
+    try:
+        (root / "linked.rpt").symlink_to(outside)
+    except OSError:
+        pytest.skip("当前系统账户无创建符号链接权限")
     result = summarize_directory(root)
     assert [item["path"] for item in result["files"]] == ["nested/RUN.LOG"]
     assert result["skipped_files"][0]["path"] == "linked.rpt"

@@ -86,17 +86,20 @@ def test_local_manifest_preserves_layout_arguments_environment_and_outputs(
 
 def test_cli_runs_local_batch_with_a_fake_executable(job, tmp_path):
     manifest, data = job
-    executable = tmp_path / "fake_vivado"
-    executable.write_text(
-        f"""#!{sys.executable}
-import json, os, sys
+    body = """import json, os, sys
 from pathlib import Path
 root = Path(os.environ['FPGA_REMOTE_ARTIFACT_DIR'])
 (root / 'result.json').write_text(json.dumps(sys.argv[sys.argv.index('-tclargs')+1:]))
-""",
-        encoding="utf-8",
-    )
-    executable.chmod(0o755)
+"""
+    if os.name == "nt":
+        # Windows 不认 shebang，用 .bat 包装同一段 Python。
+        (tmp_path / "fake_vivado.py").write_text(body, encoding="utf-8")
+        executable = tmp_path / "fake_vivado.bat"
+        executable.write_text(f'@"{sys.executable}" "{tmp_path / "fake_vivado.py"}" %*\n', encoding="utf-8")
+    else:
+        executable = tmp_path / "fake_vivado"
+        executable.write_text(f"#!{sys.executable}\n" + body, encoding="utf-8")
+        executable.chmod(0o755)
     result = invoke(
         "--target",
         "local",

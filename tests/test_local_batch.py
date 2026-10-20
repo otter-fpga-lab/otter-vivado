@@ -62,7 +62,10 @@ def test_implicit_current_directory_and_resolved_symlinks_are_checked(tmp_path, 
     with pytest.raises(ValueError, match="工作目录"):
         run_local_batch(str(script))
     link = tmp_path / "ascii"
-    link.symlink_to(workspace, target_is_directory=True)
+    try:
+        link.symlink_to(workspace, target_is_directory=True)
+    except OSError:
+        pytest.skip("当前系统账户无创建符号链接权限")
     with pytest.raises(ValueError, match="工作目录"):
         run_local_batch(str(script), str(link))
 
