@@ -149,6 +149,13 @@ def main() -> None:
     p_analysis.add_argument("--start-tick", default="0")
     p_analysis.add_argument("--end-tick")
     p_analysis.add_argument("--expected-sha256")
+    p_local = sub.add_parser("local-batch", help="本机同步运行 vivado -mode batch -source，返回 Vivado 退出码。")
+    p_local.add_argument("--tcl", required=True, help="要执行的 Tcl 脚本。")
+    p_local.add_argument("--workspace", help="Vivado 工作目录，默认当前目录。")
+    p_local.add_argument("--log", help="Vivado 日志文件；不给则 -nolog。")
+    p_local.add_argument("--vivado-path", help="显式 Vivado 路径；默认按插件查找顺序。")
+    p_local.add_argument("tclargs", nargs=argparse.REMAINDER, help="-- 之后的参数原样作为 -tclargs。")
+
     p_connect = sub.add_parser("connect", help="一次接入源码 MCP 与原地 Skill 目录引用。")
     p_connect.add_argument(
         "--client", nargs="+", choices=("cursor", "claude-code", "codex", "antigravity", "all"),
@@ -286,6 +293,16 @@ def main() -> None:
 
         mcp.run(transport="stdio")
         return
+
+    if args.cmd == "local-batch":
+        from vivado_mcp.local_batch import run_local_batch
+
+        tclargs = args.tclargs[1:] if args.tclargs[:1] == ["--"] else args.tclargs
+        try:
+            sys.exit(run_local_batch(args.tcl, args.workspace, args.log, args.vivado_path, tclargs))
+        except FileNotFoundError as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            sys.exit(2)
 
     if args.cmd == "version":
         print(f"vivado-mcp {__version__}")
