@@ -159,3 +159,31 @@ def test_cli_dry_run_needs_no_vivado_or_host_config_and_creates_nothing(job, tmp
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["arguments"] == data["arguments"]
     assert not (tmp_path / "result").exists()
+
+
+def test_local_snapshot_can_run_from_non_ascii_input_directory(job, tmp_path, monkeypatch):
+    import shutil
+
+    manifest, _ = job
+    source = tmp_path / "中文输入"
+    shutil.copytree(manifest.parent, source)
+    output = tmp_path / "ascii-result"
+
+    def run(tcl, workspace, log, vivado_path, tclargs, *, env):
+        assert all(str(path).isascii() for path in (tcl, workspace, log))
+        (Path(env["FPGA_REMOTE_ARTIFACT_DIR"]) / "result.json").write_text("{}")
+        return 0
+
+    monkeypatch.setattr(build_cli, "run_local_batch", run)
+    assert build_cli.command_build(arguments(source / "job.json", output)) == 0
+    assert (source / "run.tcl").read_bytes() == (manifest.parent / "run.tcl").read_bytes()
+
+
+def test_local_non_ascii_destination_fails_without_creating_files(job, tmp_path, monkeypatch):
+    manifest, _ = job
+    output = tmp_path / "中文输出"
+    run = Mock(side_effect=AssertionError("不能启动"))
+    monkeypatch.setattr(build_cli, "run_local_batch", run)
+    assert build_cli.command_build(arguments(manifest, output)) == 2
+    assert not output.exists()
+    run.assert_not_called()

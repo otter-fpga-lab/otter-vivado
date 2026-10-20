@@ -309,7 +309,7 @@ def main() -> None:
         tclargs = args.tclargs[1:] if args.tclargs[:1] == ["--"] else args.tclargs
         try:
             sys.exit(run_local_batch(args.tcl, args.workspace, args.log, args.vivado_path, tclargs))
-        except FileNotFoundError as exc:
+        except (OSError, ValueError) as exc:
             print(f"[ERROR] {exc}", file=sys.stderr)
             sys.exit(2)
 

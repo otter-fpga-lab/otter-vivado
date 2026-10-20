@@ -9,7 +9,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from vivado_mcp.local_batch import run_local_batch
+from vivado_mcp.local_batch import run_local_batch, validate_batch_paths
 from vivado_mcp.remote_build import core
 
 
@@ -58,6 +58,7 @@ def remote_arguments(args: argparse.Namespace) -> list[str]:
 def run_local(args: argparse.Namespace, info: core.TclJobInfo) -> int:
     """复制明确输入，保留与远端相同的工作目录和输出环境。"""
     root = Path(args.workspace).expanduser().resolve()
+    validate_batch_paths(root / "work" / info.entry, root / "work", root / "logs/vivado.log")
     if root.exists():
         raise core.CliError(f"本地结果目录已存在，请选择新目录：{root}")
     root.mkdir(parents=True)
@@ -115,6 +116,11 @@ def command_build(args: argparse.Namespace) -> int:
                 raise core.CliError("--target 必须为 local 或合法的 host 配置名")
             core.require_workspace(args.workspace)
         info = core.inspect_tcl_job(args.manifest)
+        if args.target == "local":
+            root = Path(args.workspace).expanduser().resolve()
+            validate_batch_paths(
+                root / "work" / info.entry, root / "work", root / "logs/vivado.log"
+            )
         if args.dry_run:
             print(
                 json.dumps(

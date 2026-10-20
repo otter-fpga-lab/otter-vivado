@@ -16,6 +16,10 @@ Result: Antigravity/WorkBuddy 原生安装与缓存 SDK、CodeBuddy 原生登记
 - 统一入口：`build --target local/<host> --manifest ... --workspace ...` 共用原生
   Tcl 清单。本地走 local-batch 与独立快照，远端委派原有 run-tcl；`--dry-run`
   不创建文件或连接。保留字面参数、运行环境与 required_outputs 验收。
+- 非 ASCII 路径：local-batch 与统一本地入口在启动前检查脚本、实际工作目录和
+  日志路径，中文诊断并非零退出；拒绝前不创建输出。中文输入可经 manifest 复制到
+  新的 ASCII workspace；不改写 Tcl 内部路径。既有 MCP 的只告警语义保留。
+- 验证：路径检查、快照规避、本地 batch 与远程回归 **74 passed，11 subtests passed**。
 - 验证：统一入口、本地 batch 与远程相关单测 **67 passed，11 subtests passed**。
 - 验证：远程相关单测 **57 passed，11 subtests passed**；修改文件 Ruff 与
   diff 检查通过。实际 SSH、Windows、Vivado 与板卡未运行。
