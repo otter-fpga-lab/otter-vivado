@@ -83,6 +83,7 @@ vivado_path="<实际可执行文件>")`，再执行 `version -short` 核对实�
 | 打开、交接或归档原生 `.xpr` | [GUI 工程与交付](docs/HUMAN_GUI_WORKFLOW.md) |
 | 查看真实状态、日志与报告 | [运行观察](docs/RUN_MONITOR.md) |
 | 远程 Linux 构建、原生 Tcl 和离线报告 | [远程构建](docs/REMOTE_BUILD.md) / [原生 Tcl](docs/REMOTE_TCL.md) |
+| 同步本地 batch、统一 Tcl 构建、中文路径与日志摘要 | [批处理用法](docs/USAGE.md#本地批处理与统一构建) |
 | 用 ILA/VIO 调试和读取波形 | [硬件调试](docs/HARDWARE_DEBUG.md) / [波形](docs/ILA_WAVEFORM.md) / [分析](docs/ILA_ANALYSIS.md) |
 | 准备调试 IP、核对/导出 bit/ltx、编排实验 | [工程准备](docs/DEBUG_DESIGN.md) / [产物](docs/DEBUG_ARTIFACTS.md) / [导出](docs/DEBUG_BUNDLE.md) / [实验](docs/DEBUG_EXPERIMENT.md) / [控件](docs/DEBUG_CONTROLS.md) / [停止边界](docs/ILA_STOP.md) |
 | 遇版本、IP 或能力边界问题 | [版本兼容](docs/VERSION_COMPATIBILITY.md) / [IP 实践](docs/IP_DEBUG_GUIDE.md) / [限制](PITFALLS.md) |
@@ -90,6 +91,14 @@ vivado_path="<实际可执行文件>")`，再执行 `version -short` 核对实�
 <a id="远程构建-cli"></a>
 远程入口为 `vivado-mcp remote --help`；`inspect` 和 `report --results` 只读本地输入，
 实际远程操作再使用明确的私人主机配置。当前没有独立远程 MCP 工具。
+
+已有 Tcl 可直接用 `vivado-mcp local-batch --tcl run.tcl --workspace build` 同步运行；
+共用清单时用 `vivado-mcp build --target local --manifest job.json --workspace build-new`，
+把 `local` 换成 host 配置名即可走原有远程 `run-tcl`。本地检查脚本、工作目录和日志的
+非 ASCII 路径，失败时给出中文提示；中文输入可按清单复制到新的 ASCII 工作目录。
+主机可选连接超时与建连次数见[SSH 配置](docs/REMOTE_BUILD.md#ssh-连接超时与重试)。
+已有日志/报告可离线执行 `vivado-mcp report-summary --dir results --json`，提取
+WNS/TNS/WHS/THS、LUT/FF/BRAM/DSP 和 Critical Warning；缺失指标保留为未知。
 
 <a id="架构"></a>
 <a id="开发"></a>

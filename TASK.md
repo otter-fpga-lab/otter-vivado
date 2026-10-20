@@ -22,6 +22,9 @@ Result: Antigravity/WorkBuddy 原生安装与缓存 SDK、CodeBuddy 原生登记
 - 离线报告：`report-summary --dir ... [--json]` 递归读取普通 log/rpt/txt，复用
   analysis 时序/资源/警告解析器。保留时序快照和阶段，资源按报告保留，缺失为 null，
   Critical Warning 按 ID 聚合并保留来源；只读，不连接主机或启动 EDA。
+- 文档：README、使用指南、远程构建/原生 Tcl 指南补齐 batch、统一清单入口、
+  SSH 配置、非 ASCII 检查与快照规避、报告摘要。相关链接/锚点与 9 项离线 CLI
+  自测通过，不启动实际 EDA、SSH 或设备。
 - 验证：报告摘要、既有 analysis 与构建相关回归 **723 passed，11 subtests passed**。
 - 验证：路径检查、快照规避、本地 batch 与远程回归 **74 passed，11 subtests passed**。
 - 验证：统一入口、本地 batch 与远程相关单测 **67 passed，11 subtests passed**。

@@ -40,3 +40,34 @@ vivado-mcp remote --config /path/to/private-hosts.json run-tcl --host example --
 进程成功、交付成功、时序/资源报告和板卡验证分别解释。原生 Tcl 的 `RUN_QUALITY=NOT_EVALUATED`，不从返回零推断综合/实现或签核。保存的报告可独立复核，不覆盖历史摘要；`--output` 只创建新 JSON 文件。
 
 本次从本机 `fpga-remote@e6ff98c2ec5bea07e440d694fa35602aa32eb74f` 迁入，保留原核心、bash/Tcl 与回归资产，未并入带私人配置的旧 Git 历史。原完整历史和本机配置的恢复索引是工作区 `Backups/20261007_fpga_remote_merge/`，旧仓退出由工作区收口处理；它们不是运行依赖。产品 [TASK](../TASK.md)记录实际验证，主机/EDA/共享盘/板卡没有运行就是 **NOT_RUN**。
+
+## SSH 连接超时与重试
+
+host 配置可选增加以下字段（放在所选 host 对象中，不是顶层）：
+
+```json
+{
+  "connect_timeout": 15,
+  "connection_attempts": 3,
+  "ssh_port": 2222
+}
+```
+
+这只是字段片段；完整 host 的其它必填字段仍按[配置样例](../config/remote-hosts.example.json)
+保留。这三个字段均为正整数，`ssh_port` 范围为 1–65535。
+
+| 字段 | 作用 | 省略时 |
+|---|---|---|
+| `connect_timeout` | OpenSSH `ConnectTimeout`，每次建连/初始握手的超时秒数 | 普通 SSH/SCP 沿用系统 SSH 配置，工作区锁保留既有 10 秒 |
+| `connection_attempts` | OpenSSH `ConnectionAttempts`，包含首次；3 表示最多重试 2 次 | 沿用 OpenSSH 配置；系统默认通常为 1 次 |
+| `ssh_port` | OpenSSH `Port`，同时用于 SSH、SCP、工作区锁和日志跟随 | 沿用 SSH alias 的端口配置，未配置时为 22 |
+
+只在建连阶段重试，不在 Python 层重放已发送的远端脚本。原来的操作总超时仍独立生效：
+普通 SSH 默认 60 秒，probe 90 秒，传输/部分准备操作 300 秒；不是新的连接超时字段。
+`run/run-tcl --timeout` 控制等待构建的时限。总操作时限可能先于建连重试耗尽。
+
+连接失败/超时提供中文主机别名、端口选择、原始错误与排障建议；未显式设端口时提示
+“SSH 配置值（未配置时为 22）”，不猜 alias 的真实端口。先核对网络/VPN、防火墙、
+`ssh -v <主机别名>` 与密钥。SSH 操作超时不表示已提交的任务停止，先用原 handle 查询状态。
+
+跨本地/远程的同清单入口与普通日志摘要见[批处理用法](USAGE.md#本地批处理与统一构建)。

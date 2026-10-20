@@ -159,7 +159,9 @@ def main() -> None:
     from vivado_mcp.build_cli import add_arguments
 
     add_arguments(sub.add_parser("build", help="共用 Tcl 清单选择本地 batch 或远程 host。"))
-    p_summary = sub.add_parser("report-summary", help="只读提取目录中的时序、资源和 Critical Warning。")
+    p_summary = sub.add_parser(
+        "report-summary", help="只读提取目录中的时序、资源和 Critical Warning。"
+    )
     p_summary.add_argument("--dir", required=True, help="日志或报告目录，递归读取 log/rpt/txt。")
     p_summary.add_argument("--json", action="store_true", help="输出结构化 JSON。")
 

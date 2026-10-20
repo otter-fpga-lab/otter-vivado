@@ -102,3 +102,11 @@ set rtl_xdc_files [list [file join $rtl_repo_root constraints ooc.xdc]]
 仓库准备阶段只需导出本 case 的源文件闭包和可搬迁配置，再声明原来的 `tools/vivado_ooc.tcl` 及参数。原 OOC 脚本、XDC 执行顺序、diagnostic 查询和资源判定继续由仓库维护。无需本地启动 Vivado 创建临时 `.xpr`，也无需为传输生成 `post_synth` hook、`write_xdc` 或替换 checkpoint。
 
 工程按需要调用同一 `vivado-mcp remote run-tcl` 入口；产品不修改生产 RTL 或替工程建立第二套远端适配。
+
+## 与本地 batch 共用清单
+
+同一 `job.json` 可使用 `vivado-mcp build --target local --manifest job.json --workspace results-new`
+走已有 local-batch，或将 `local` 改为 host 名走上述 `remote run-tcl`。本地使用新的结果目录，
+提供同名 `FPGA_REMOTE_*` 环境变量并检查 `required_outputs`；远程现有命令保持原样。
+`--dry-run` 只读验证输入并输出计划。ASCII 工作目录可承载来自中文目录的输入快照，
+详见[本地批处理与统一构建](USAGE.md#本地批处理与统一构建)。

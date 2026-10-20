@@ -434,3 +434,90 @@ safe_tcl("set_property PACKAGE_PIN {0} [get_ports {1}]", args=["W5", "clk"])
 | `vivado-mcp versions [--json]` | 只读列出本机 Vivado 安装候选与默认选择，不启动 EDA；详见 [版本兼容](VERSION_COMPATIBILITY.md) |
 | `vivado-mcp plugin --client <codex、antigravity、workbuddy 或 cursor> --output <新绝对目录>` | 只生成所选宿主的同源插件壳；安装由宿主另行完成 |
 | `vivado-mcp remote <命令>` | 远程工程/原生 Tcl 构建、队列、状态、交付与离线报告；详见 [远程构建](REMOTE_BUILD.md) |
+| `vivado-mcp local-batch --tcl run.tcl [--workspace build] [--log vivado.log] [--vivado-path <文件>] -- <参数>` | 同步本地 batch，返回 Vivado 退出码 |
+| `vivado-mcp build --target <local 或 host> --manifest job.json --workspace <目录或名称> [--dry-run]` | 共用原生 Tcl 清单选择本地或远程 |
+| `vivado-mcp report-summary --dir results [--json]` | 离线提取普通目录的时序、资源与 Critical Warning |
+
+## 本地批处理与统一构建
+
+### local-batch
+
+在调用者已有 Tcl 流程中同步启动本机 Vivado，不要求 GUI/MCP 会话：
+
+```text
+vivado-mcp local-batch --tcl tools/run.tcl --workspace build --log build/vivado.log -- synth "literal value"
+```
+
+`--tcl` 必填；脚本、`--workspace` 和 `--log` 的相对路径均相对于调用命令时的目录。
+工作目录默认当前目录，不存在时创建；不给 `--log` 则使用 `-nolog`。日志的父目录应提前
+准备。使用 `-mode batch -nojournal -notrace -source`，`--` 之后原样传给 `-tclargs`，
+包括空字符串、空格、中文与 Tcl 特殊字符；工具不展开 Tcl 模板。
+`--vivado-path` 可明确选择可执行文件，否则沿用插件已有发现顺序。同步等待进程结束，
+返回 Vivado 退出码；输入或路径检查失败返回 2。
+
+启动前检查实际解析后的 Tcl 脚本、工作目录和日志路径是否为 ASCII；含中文或其它非 ASCII
+字符时列出位置并停止，避免部分 Vivado 版本的 TclStackFree 等内部错误。路径中的空格
+可以保留；中文参数本身不受这个路径检查限制。已有 MCP 会话仍沿用原来的路径告警行为。
+
+### 同一 manifest 选择本地或远程
+
+使用已有 [原生 Tcl 清单](REMOTE_TCL.md#输入清单)，不用另外维护本地输入列表：
+
+```text
+vivado-mcp build --target local --manifest prepared/job.json --workspace results-new --dry-run
+vivado-mcp build --target local --manifest prepared/job.json --workspace results-new --vivado-path <Vivado可执行文件>
+vivado-mcp build --target example --manifest prepared/job.json --workspace task-a --config private-hosts.json
+```
+
+统一入口的 `--target/--manifest/--workspace` 必填。`--target local` 使用本地 batch；其它值
+是 host 配置名，委派给已有 `remote run-tcl`。`remote build --target synth|route|bitstream`
+的原有阶段含义保持不变。`--dry-run` 只验证清单并输出 JSON 计划，不启动进程、不创建输出、
+不读取 host 配置或连接网络；它不证明所选安装、远端主机或许可证可用。
+
+本地 `--workspace` 必须是一个尚不存在的目录，工具只复制清单声明的输入，并保留：
+
+| 子路径 | 内容 |
+|---|---|
+| `work/` | 输入快照，Vivado 从这里运行 |
+| `artifacts/` | Tcl 声明的结果输出 |
+| `logs/vivado.log` | Vivado 日志 |
+| `native-job.json` | 原始清单 |
+| `local-build-summary.json` | 执行成功且 required_outputs 齐全时的摘要 |
+
+本地提供与远端一致的 `FPGA_REMOTE_WORK_DIR/ARTIFACT_DIR/LOG_DIR/JOBS/FLOW` 环境变量，
+名称完整写法见 [Tcl 执行环境](REMOTE_TCL.md#tcl-执行环境)。`--jobs` 本地默认 1，仅传入
+环境变量，脚本自行消费。清单中的 `vivado_version` 保留为声明，本地安装由
+`--vivado-path` 或已有发现顺序选择，调用者应选择匹配版本。进程非零时原样返回退出码，
+缺少 `required_outputs` 时返回 2；失败保留现场。成功的 `RUN_QUALITY=NOT_EVALUATED`
+只表示执行与声明输出齐全，不推断综合、实现或签核通过。
+
+中文输入目录可以保留原样，把 `--workspace` 选为新的纯 ASCII 目录，工具会自动复制
+输入快照后运行。清单入口及其依赖的相对路径也应使用 ASCII；工具不会改写 Tcl 内部的
+绝对路径、`source/cd` 或参数中隐藏的路径，不会自动删除输入或结果目录。
+
+远程支持 `--config/--jobs/--output/--poll-seconds/--timeout/--remote-cleanup`，默认值和
+原有 `run-tcl` 一致，仍要求共享映射。本地不接受 `--config/--output` 或非 keep 的
+`--remote-cleanup`；`--vivado-path` 仅用于本地。连接超时配置见
+[SSH 连接超时与重试](REMOTE_BUILD.md#ssh-连接超时与重试)。
+
+### 离线日志与报告摘要
+
+```text
+vivado-mcp report-summary --dir results
+vivado-mcp report-summary --dir results --json
+```
+
+递归读取 `.log/.rpt/.txt`（扩展名大小写不敏感），只读，不需要 Vivado、MCP 会话或 host
+配置。普通目录与已有远程交付目录均可使用；原 `remote report` 的接口和结果保持不变。
+
+- 时序：复用 analysis 时序表解析器，提取 WNS/TNS/WHS/THS（ns）；日志中的
+  `WNS=... TNS=...` 进度行也可提取。同文件的多个整体时序表按出现顺序分别保留，
+  不把 Intra Clock Table 当作整体摘要。阶段来自该表前的 Design State，进度行阶段记未知。
+- 资源：复用资源解析器，保留 LUT/FF/BRAM/DSP 的原名、used、available、percent；
+  支持 Slice/CLB 命名和 0.5 等 BRAM 数量。同文件同名资源沿用解析器的首次匹配规则，
+  多阶段资源请优先读各阶段独立报告，工具不把不同文件资源相加。
+- Critical Warning：复用警告解析器按 ID 分组，返回次数、示例、来源文件和已有中文建议；
+  未知 ID 保留 UNKNOWN。跨日志/报告的重复消息按出现次数统计，不冒充独立问题数量。
+- JSON 的 `files` 按来源保存 `timing` 快照、`utilization` 和警告；缺失或 NA 数值为
+  `null`，并保留 `parse_status` / 资源解析提示。空目录仍返回可读的零文件摘要，
+  不能据此判断构建成功。无法读取的文件及链接文件记录在 `skipped_files`。
