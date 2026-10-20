@@ -13,6 +13,10 @@ Result: Antigravity/WorkBuddy 原生安装与缓存 SDK、CodeBuddy 原生登记
 - SSH：host 可选 `connect_timeout/connection_attempts/ssh_port`；默认保持原有
   SSH/锁连接选项及操作超时。建连重试由 OpenSSH 执行，不重放远端脚本。
   SSH、SCP、工作区锁与日志跟随的连接故障提供中文主机/端口/建议。
+- 统一入口：`build --target local/<host> --manifest ... --workspace ...` 共用原生
+  Tcl 清单。本地走 local-batch 与独立快照，远端委派原有 run-tcl；`--dry-run`
+  不创建文件或连接。保留字面参数、运行环境与 required_outputs 验收。
+- 验证：统一入口、本地 batch 与远程相关单测 **67 passed，11 subtests passed**。
 - 验证：远程相关单测 **57 passed，11 subtests passed**；修改文件 Ruff 与
   diff 检查通过。实际 SSH、Windows、Vivado 与板卡未运行。
 

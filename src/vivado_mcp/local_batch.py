@@ -17,8 +17,15 @@ def build_command(vivado: str, tcl: Path, log: Path | None, tclargs: list[str]) 
     return command
 
 
-def run_local_batch(tcl: str, workspace: str | None = None, log: str | None = None,
-                    vivado_path: str | None = None, tclargs: list[str] | None = None) -> int:
+def run_local_batch(
+    tcl: str,
+    workspace: str | None = None,
+    log: str | None = None,
+    vivado_path: str | None = None,
+    tclargs: list[str] | None = None,
+    *,
+    env: dict[str, str] | None = None,
+) -> int:
     script = Path(tcl).resolve()
     if not script.is_file():
         raise FileNotFoundError(f"Tcl 脚本不存在: {script}")
@@ -27,4 +34,7 @@ def run_local_batch(tcl: str, workspace: str | None = None, log: str | None = No
     log_path = Path(log).resolve() if log else None
     command = build_command(find_vivado(vivado_path), script, log_path, list(tclargs or []))
     # Windows 下 .bat 需经 shell 解释；参数仍按列表传递。
-    return subprocess.run(command, cwd=cwd, shell=command[0].lower().endswith(".bat")).returncode
+    options = {"env": env} if env is not None else {}
+    return subprocess.run(
+        command, cwd=cwd, shell=command[0].lower().endswith(".bat"), **options
+    ).returncode

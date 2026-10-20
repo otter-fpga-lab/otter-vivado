@@ -156,6 +156,10 @@ def main() -> None:
     p_local.add_argument("--vivado-path", help="显式 Vivado 路径；默认按插件查找顺序。")
     p_local.add_argument("tclargs", nargs=argparse.REMAINDER, help="-- 之后的参数原样作为 -tclargs。")
 
+    from vivado_mcp.build_cli import add_arguments
+
+    add_arguments(sub.add_parser("build", help="共用 Tcl 清单选择本地 batch 或远程 host。"))
+
     p_connect = sub.add_parser("connect", help="一次接入源码 MCP 与原地 Skill 目录引用。")
     p_connect.add_argument(
         "--client", nargs="+", choices=("cursor", "claude-code", "codex", "antigravity", "all"),
@@ -293,6 +297,11 @@ def main() -> None:
 
         mcp.run(transport="stdio")
         return
+
+    if args.cmd == "build":
+        from vivado_mcp.build_cli import command_build
+
+        sys.exit(command_build(args))
 
     if args.cmd == "local-batch":
         from vivado_mcp.local_batch import run_local_batch
