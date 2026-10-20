@@ -159,6 +159,9 @@ def main() -> None:
     from vivado_mcp.build_cli import add_arguments
 
     add_arguments(sub.add_parser("build", help="共用 Tcl 清单选择本地 batch 或远程 host。"))
+    p_summary = sub.add_parser("report-summary", help="只读提取目录中的时序、资源和 Critical Warning。")
+    p_summary.add_argument("--dir", required=True, help="日志或报告目录，递归读取 log/rpt/txt。")
+    p_summary.add_argument("--json", action="store_true", help="输出结构化 JSON。")
 
     p_connect = sub.add_parser("connect", help="一次接入源码 MCP 与原地 Skill 目录引用。")
     p_connect.add_argument(
@@ -297,6 +300,11 @@ def main() -> None:
 
         mcp.run(transport="stdio")
         return
+
+    if args.cmd == "report-summary":
+        from vivado_mcp.report_summary_cli import command_report_summary
+
+        sys.exit(command_report_summary(args.dir, json_output=args.json))
 
     if args.cmd == "build":
         from vivado_mcp.build_cli import command_build
