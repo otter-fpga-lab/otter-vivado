@@ -9,6 +9,21 @@ Result: Antigravity/WorkBuddy 原生安装与缓存 SDK、CodeBuddy 原生登记
 ## 构建入口与离线报告改进（2026-10-20）
 
 本轮在 main 按功能本地提交，不推送。已有 remote 命令与 MCP 接口保留。
+已完成 SSH、统一构建、路径检查、离线报告与文档；最终复核保留远端失败时的
+stdout/stderr 两路信息，不丢失原有诊断证据。
+
+本地功能提交：`c6adca2`、`ccf2642`、`beb8624`、`f121189`、`4fc2af2`；
+诊断信息保真作为后续独立修正提交。现有 remote 全部命令帮助与基点一致；MCP server、
+工具和会话协议源码无变化。
+
+全量验证受 box 限制：原命令在 stdio 集成测试阻塞；两项 stdio 集成测试另列未完成，
+其余测试在原始源码快照与当前源码使用相同的临时 selector 唤醒测试辅助进行比较。
+基点 **71 failed / 1556 passed / 13 skipped / 98 errors**，当前
+**67 failed / 1595 passed / 13 skipped / 98 errors**，均另有 2 deselected、11 subtests。
+没有新增失败或错误条目；4 个差异仅来自基点临时快照不在原 editable 私有安装位置。
+这些既有 socket 权限、旧 Hook 文件与安装/工具数断言等失败未纳入本次修复。
+功能相关 **723 passed** 独立运行通过；不将受限全量结果表述为全绿。
+
 
 - SSH：host 可选 `connect_timeout/connection_attempts/ssh_port`；默认保持原有
   SSH/锁连接选项及操作超时。建连重试由 OpenSSH 执行，不重放远端脚本。

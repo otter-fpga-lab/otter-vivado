@@ -302,10 +302,13 @@ def run_ssh_process(
         if isinstance(exc.__cause__, FileNotFoundError):
             raise ssh_error(profile, str(exc)) from exc
         raise
+    combined = "\n".join(
+        part.strip() for part in (result.stdout, result.stderr) if part and part.strip()
+    )
+    detail = "\n".join(combined.splitlines()[-40:])
     if result.returncode == 255:
-        raise ssh_error(profile, (result.stderr or result.stdout or "SSH 退出码 255").strip())
+        raise ssh_error(profile, detail or "SSH 退出码 255")
     if check and result.returncode != 0:
-        detail = "\n".join((result.stderr or result.stdout or "").splitlines()[-40:])
         raise CliError(f"Command failed with exit {result.returncode}: {args[0]}\n{detail}")
     return result
 

@@ -71,12 +71,13 @@ def test_chinese_connection_error_has_host_port_and_advice(profile, monkeypatch,
 
 
 def test_remote_script_failure_is_not_retried_or_called_connection_failure(profile, monkeypatch):
-    run = Mock(return_value=subprocess.CompletedProcess([], 2, "", "script error"))
+    run = Mock(return_value=subprocess.CompletedProcess([], 2, "script progress", "script error"))
     monkeypatch.setattr(core, "run_process", run)
     monkeypatch.setattr(core.shutil, "which", lambda name: name)
     with pytest.raises(core.CliError, match="script error") as caught:
         core.ssh_bash(profile, "exit 2")
     assert "SSH 连接失败" not in str(caught.value)
+    assert "script progress" in str(caught.value)
     run.assert_called_once()
 
 
