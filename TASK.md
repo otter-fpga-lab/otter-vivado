@@ -6,6 +6,16 @@ Basis: 2026-10-08 用户批准保留 Claude 修复并优化工具便利性；Cla
 Next: 按实际任务使用当前同源入口，具体工具或现场问题带源码提交与已有回执反馈本仓
 Result: Antigravity/WorkBuddy 原生安装与缓存 SDK、CodeBuddy 原生登记与源壳 SDK 通过，50 工具；既有诊断边界与 Codex 四文本结果保留
 
+## 构建入口与离线报告改进（2026-10-20）
+
+本轮在 main 按功能本地提交，不推送。已有 remote 命令与 MCP 接口保留。
+
+- SSH：host 可选 `connect_timeout/connection_attempts/ssh_port`；默认保持原有
+  SSH/锁连接选项及操作超时。建连重试由 OpenSSH 执行，不重放远端脚本。
+  SSH、SCP、工作区锁与日志跟随的连接故障提供中文主机/端口/建议。
+- 验证：远程相关单测 **57 passed，11 subtests passed**；修改文件 Ruff 与
+  diff 检查通过。实际 SSH、Windows、Vivado 与板卡未运行。
+
 ## User Library整理收口（2026-10-08）
 
 本轮User Library归位、同源接入与安装/使用说明整理已收口。后续按实际工程中的工具反馈维护；已有厂商版本、GUI、SSH或板卡未测项按原范围保留，不为目录收口启动补测。

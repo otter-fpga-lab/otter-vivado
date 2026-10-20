@@ -197,6 +197,11 @@ def validate_host_profile(name: str, profile: dict[str, Any]) -> None:
     alias = profile.get("ssh_alias")
     if not isinstance(alias, str) or not HOST_NAME_RE.fullmatch(alias):
         raise CliError(f"Invalid ssh_alias for host {name}")
+    for key in ("connect_timeout", "connection_attempts", "ssh_port"):
+        if key in profile:
+            value = profile[key]
+            if type(value) is not int or value < 1 or (key == "ssh_port" and value > 65535):
+                raise CliError(f"Invalid {key} for host {name}: expected a positive integer")
     work_root = profile.get("work_root")
     if not isinstance(work_root, str) or not work_root.startswith("/") or work_root == "/":
         raise CliError(f"Unsafe work_root for host {name}: {work_root!r}")
@@ -256,13 +261,63 @@ def get_profile(config: dict[str, Any], name: str) -> dict[str, Any]:
         raise CliError(f"Unknown host {name!r}; available: {available}") from exc
 
 
+def ssh_options(profile: dict[str, Any], *, lease: bool = False) -> list[str]:
+    """只配置建连阶段；不重放已经发送的远端命令。"""
+    options = ["-o", "BatchMode=yes"]
+    timeout = profile.get("connect_timeout", 10 if lease else None)
+    for name, value in (
+        ("ConnectTimeout", timeout),
+        ("ConnectionAttempts", profile.get("connection_attempts")),
+        ("Port", profile.get("ssh_port")),
+    ):
+        if value is not None:
+            options.extend(["-o", f"{name}={value}"])
+    return options
+
+
+def ssh_error(profile: dict[str, Any], detail: str, *, timed_out: bool = False) -> CliError:
+    """在原始错误之外提供主机、端口和可操作的中文建议。"""
+    port = profile.get("ssh_port", "SSH 配置值（未配置时为 22）")
+    reason = "SSH 操作超时" if timed_out else "SSH 连接失败"
+    return CliError(
+        f"{reason}：主机 {profile['ssh_alias']}，端口 {port}。\n"
+        "请检查主机名、端口、网络/VPN、防火墙和 SSH 密钥，"
+        "使用 ssh -v <主机别名> 核对连接；可在 host 配置中设置 "
+        "connect_timeout（秒）、connection_attempts（含首次的建连次数）和 ssh_port。"
+        "操作总超时仍独立生效；超时后请先查询已有任务状态。\n"
+        f"原始错误：{detail}"
+    )
+
+
+def run_ssh_process(
+    profile: dict[str, Any], args: list[str], **kwargs: Any
+) -> subprocess.CompletedProcess[str]:
+    """统一连接故障诊断，保留远端脚本自身的失败信息。"""
+    check = kwargs.pop("check", True)
+    try:
+        result = run_process(args, check=False, **kwargs)
+    except CliError as exc:
+        if isinstance(exc.__cause__, subprocess.TimeoutExpired):
+            raise ssh_error(profile, str(exc), timed_out=True) from exc
+        if isinstance(exc.__cause__, FileNotFoundError):
+            raise ssh_error(profile, str(exc)) from exc
+        raise
+    if result.returncode == 255:
+        raise ssh_error(profile, (result.stderr or result.stdout or "SSH 退出码 255").strip())
+    if check and result.returncode != 0:
+        detail = "\n".join((result.stderr or result.stdout or "").splitlines()[-40:])
+        raise CliError(f"Command failed with exit {result.returncode}: {args[0]}\n{detail}")
+    return result
+
+
 def ssh_bash(profile: dict[str, Any], script: str, *, timeout: int = 60) -> str:
     ssh = shutil.which("ssh")
     if not ssh:
-        raise CliError("ssh executable not found")
+        raise ssh_error(profile, "未找到 ssh 可执行文件，请安装 OpenSSH 客户端")
     alias = profile["ssh_alias"]
-    result = run_process(
-        [ssh, "-o", "BatchMode=yes", alias, "bash", "-s"],
+    result = run_ssh_process(
+        profile,
+        [ssh, *ssh_options(profile), alias, "bash", "-s"],
         input_text=script,
         timeout=timeout,
     )
@@ -272,17 +327,26 @@ def ssh_bash(profile: dict[str, Any], script: str, *, timeout: int = 60) -> str:
 def scp_upload(profile: dict[str, Any], sources: Iterable[Path], remote_dir: str) -> None:
     scp = shutil.which("scp")
     if not scp:
-        raise CliError("scp executable not found")
-    args = [scp, *(str(path) for path in sources), f"{profile['ssh_alias']}:{remote_dir}/"]
-    run_process(args, timeout=300)
+        raise ssh_error(profile, "未找到 scp 可执行文件，请安装 OpenSSH 客户端")
+    args = [scp]
+    if any(key in profile for key in ("connect_timeout", "connection_attempts", "ssh_port")):
+        args.extend(ssh_options(profile))
+    args.extend([*(str(path) for path in sources), f"{profile['ssh_alias']}:{remote_dir}/"])
+    run_ssh_process(profile, args, timeout=300)
 
 
 def scp_download(profile: dict[str, Any], remote_path: str, local_path: Path) -> None:
     scp = shutil.which("scp")
     if not scp:
-        raise CliError("scp executable not found")
-    run_process(
-        [scp, f"{profile['ssh_alias']}:{remote_path}", str(local_path)],
+        raise ssh_error(profile, "未找到 scp 可执行文件，请安装 OpenSSH 客户端")
+    options = (
+        ssh_options(profile)
+        if any(key in profile for key in ("connect_timeout", "connection_attempts", "ssh_port"))
+        else []
+    )
+    run_ssh_process(
+        profile,
+        [scp, *options, f"{profile['ssh_alias']}:{remote_path}", str(local_path)],
         timeout=300,
     )
 
@@ -670,26 +734,28 @@ cat >/dev/null
         f"mkdir -p {shlex.quote(lock_dir)} "
         f"&& exec flock -sn {shlex.quote(lock_file)} bash -c {shlex.quote(inner)}"
     )
-    process = subprocess.Popen(
-        [
-            "ssh",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=10",
-            profile["ssh_alias"],
-            "bash",
-            "-c",
-            shlex.quote(script),
-        ],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    try:
+        process = subprocess.Popen(
+            [
+                "ssh",
+                *ssh_options(profile, lease=True),
+                profile["ssh_alias"],
+                "bash",
+                "-c",
+                shlex.quote(script),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as exc:
+        raise ssh_error(profile, str(exc)) from exc
     try:
         if process.stdout.readline().strip() != b"LOCKED":
             process.stdin.close()
             detail = process.stderr.read().decode("utf-8", errors="replace").strip()
+            if process.wait() == 255:
+                raise ssh_error(profile, detail)
             raise CliError(f"Cannot lock workspace {workspace}; cleanup may be running. {detail}")
         yield
     finally:
@@ -1308,13 +1374,13 @@ def command_logs(args: argparse.Namespace, config: dict[str, Any]) -> int:
     log_path = f"{root}/logs/vivado-driver.log"
     ssh = shutil.which("ssh")
     if not ssh:
-        raise CliError("ssh executable not found")
+        raise ssh_error(profile, "未找到 ssh 可执行文件，请安装 OpenSSH 客户端")
     if args.follow:
-        result = run_process(
+        result = run_ssh_process(
+            profile,
             [
                 ssh,
-                "-o",
-                "BatchMode=yes",
+                *ssh_options(profile),
                 profile["ssh_alias"],
                 f"tail -n {args.tail} -F {shlex.quote(log_path)}",
             ],
