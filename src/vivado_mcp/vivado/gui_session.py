@@ -27,6 +27,7 @@ from pathlib import Path
 
 from vivado_mcp.tcl_scripts import QUERY_CURRENT_PROJECT
 from vivado_mcp.vivado.base_session import BaseSession, SessionState
+from vivado_mcp.vivado.child_env import sanitize_vivado_child_env
 from vivado_mcp.vivado.tcl_utils import TclResult, clean_output, tcl_source_utf8
 
 logger = logging.getLogger(__name__)
@@ -507,6 +508,7 @@ class GuiSession(BaseSession):
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
+                    env=sanitize_vivado_child_env(),
                 )
                 # 记下 pid:stop() 在 self._proc 引用因故丢失时仍能按 pid 精杀
                 self._pid = self._proc.pid

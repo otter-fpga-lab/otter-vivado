@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from vivado_mcp.config import find_vivado
+from vivado_mcp.vivado.child_env import sanitize_vivado_child_env
 
 
 def validate_batch_paths(tcl: Path, workspace: Path, log: Path | None) -> None:
@@ -54,7 +55,11 @@ def run_local_batch(
     command = build_command(find_vivado(vivado_path), script, log_path, list(tclargs or []))
     cwd.mkdir(parents=True, exist_ok=True)
     # Windows 下 .bat 需经 shell 解释；参数仍按列表传递。
-    options = {"env": env} if env is not None else {}
+    # 始终传净化 env：缺省会继承 MCP 宿主的 ELECTRON_/VSCODE_*，
+    # 进而让 Vivado 再拉起的外部编辑器按 Node 进程启动。
     return subprocess.run(
-        command, cwd=cwd, shell=command[0].lower().endswith(".bat"), **options
+        command,
+        cwd=cwd,
+        shell=command[0].lower().endswith(".bat"),
+        env=sanitize_vivado_child_env(env),
     ).returncode

@@ -1,10 +1,15 @@
 # Otter Vivado：远程构建合入与既有能力维护
 
-Status: CLOSED_WAITING_FOR_REAL_USE（文档入口已收拢；CodeBuddy 客户端探测无问题为用户报告）
+Status: OPEN（2026-10-28 spawn 去掉 IDE 环境泄漏，待重启 MCP GUI 验证 Custom Editor）
 Target: otter-fpga-lab/otter-vivado
-Basis: 2026-10-08 用户批准保留 Claude 修复并优化工具便利性；Claude 已继续 HDMI 工程，本轮只维护工具仓
-Next: 按实际任务使用当前同源入口，具体工具或现场问题带源码提交与已有回执反馈本仓
-Result: Antigravity/WorkBuddy 原生安装与缓存 SDK、CodeBuddy 原生登记与源壳 SDK 通过，50 工具；既有诊断边界与 Codex 四文本结果保留
+Basis: 现场反馈 MCP 拉起的 Vivado 双击源码无法打开 VS Code
+Next: 重启由插件 spawn 的 GUI 后验证 Custom Editor
+
+* **IDE env 泄漏（2026-10-28）**：`sanitize_vivado_child_env` 供 GUI/Tcl/local-batch spawn 使用，丢掉 `ELECTRON_*`/`VSCODE_*`/`CURSOR_*`/`CODEBUDDY_*`。单测 `tests/test_child_env.py` **PASS**（随 `test_gui_bootstrap`/`test_local_batch`/`test_session` 共 59 passed）。已在跑的会话需停掉重开才生效。
+
+## 历史基线（CLOSED_WAITING_FOR_REAL_USE，2026-10-08）
+
+Target: otter-fpga-lab/otter-vivado。CodeBuddy 客户端探测无问题为用户报告。Antigravity/WorkBuddy 原生安装与缓存 SDK、CodeBuddy 原生登记与源壳 SDK 通过，50 工具。既有诊断边界与 Codex 四文本结果保留。
 
 ## 构建入口与离线报告改进（2026-10-20）
 

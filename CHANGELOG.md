@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased] — 2026-10-28 spawn 去掉 IDE/Electron 环境泄漏
+
+- GUI/Tcl/local-batch 启动 Vivado 时丢掉 `ELECTRON_*` / `VSCODE_*` / `CURSOR_*` /
+  `CODEBUDDY_*`。MCP 从 Cursor/VS Code/CodeBuddy 拉起的 GUI 不再把
+  `ELECTRON_RUN_AS_NODE` 传给 Vivado，Custom Editor 打开 Code.exe 才能出窗口。
+- attach 用户自己开的 GUI 不受影响。已在跑的 MCP spawn 会话需重启 Vivado 后生效。
+
 ## [Unreleased] — 2026-10-08 doctor 识别 Codex 原生插件
 
 - `doctor` 的 `mcp_codex` 在 Codex 已启用 `otter-vivado@*` 原生插件时判 ok，不再提示、
