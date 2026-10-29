@@ -9,6 +9,8 @@ description: 操作 AMD Vivado 工程、本地或远程综合与实现、查看�
 
 本产品负责 Vivado 工程、执行、仿真、IP、状态与报告工具。RTL 设计和编码由 Coding 产品负责；此处保留已有检查器作为验证入口，并提供可以交给人用原生 Vivado GUI 继续操作的工程与证据。
 
+**会话与编译（智能体易漏）**：`run_synthesis` / `run_implementation` 在**已有 session 的那一个 Vivado 进程**里 `launch_runs`，GUI 开着就是综合宿主，不是另占一份“编译名额”。不要为了编译再 `start_session(mode="tcl")` 开第二份。默认 `gui` 端口 9999：已有窗口则 attach 复用，换 `session_id` 也不会自动多开；要第二个独立 GUI 才用 `port=0`。同一 session 的 Tcl 串行，不同 session 才可并行。许可 seat 是 Xilinx 按 `vivado.exe` 进程计，插件不另设名额。
+
 可视化职责：本插件提供接口、状态数据与生成方法，智能体为具体消费者工程生成页面和
 交互。页面、布局、主题、业务控件语义保存在消费者工程；已有内置网页仅为可选参考实现，
 不作为使用工具的前提。不要为了一个工程的风格需求改库内 `web/`。

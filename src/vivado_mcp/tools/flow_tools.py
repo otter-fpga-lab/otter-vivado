@@ -351,6 +351,9 @@ async def run_synthesis(
 ) -> str:
     """启动综合；默认等待完成，也可异步提交后查询状态。
 
+    在 ``session_id`` 已有的那一个 Vivado 里 ``launch_runs``，不另开进程。
+    GUI 开着就是综合宿主，不是占掉编译名额。
+
     不调用 Tcl wait_on_run(会阻塞 Vivado event loop,GUI 模式冻住界面);
     wait=True 时 Python 每 2 秒查一次状态并上报进度；wait=False 时立即
     返回 job_id，随后用 get_run_progress 查询。
@@ -387,6 +390,8 @@ async def run_implementation(
     wait: bool = True,
 ) -> str:
     """启动实现（布局布线）；默认等待完成，也可异步提交。
+
+    在 ``session_id`` 已有的那一个 Vivado 里 ``launch_runs``，不另开进程。
 
     不调用 Tcl wait_on_run(会阻塞 Vivado event loop,GUI 模式冻住界面);
     wait=True 时 Python 每 2 秒查一次 STATUS/PROGRESS；wait=False 时立即

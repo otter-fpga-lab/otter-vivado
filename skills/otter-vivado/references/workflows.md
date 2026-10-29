@@ -5,9 +5,9 @@
 ## 工程与构建
 
 1. 读用户工程已有说明；用 `list_sessions` 查看现有会话。已有 `.xpr` 可先用 `parse_xpr` 离线确认器件、顶层、文件集和 run 名称。
-2. 需要执行时复用正确的会话。没有会话时选择 `start_session` 的 `gui`、`tcl` 或 `attach` 模式，记录实际 `vivado_path`。`gui` 默认端口可能复用已有 GUI；独立实例使用 schema 支持的 `port=0`。`attach` 需要目标 GUI 已有本仓 TCP 协议。
+2. 需要执行时复用正确的会话。没有会话时选择 `start_session` 的 `gui`、`tcl` 或 `attach` 模式，记录实际 `vivado_path`。`gui` 默认端口 9999：已有 vmcp GUI 则 attach，**不**再开窗口；换 `session_id` 也不会自动多开。独立实例必须 `port=0`（或显式不同端口）。`attach` 需要目标 GUI 已有本仓 TCP 协议。
 3. 用 `get_project_info` 与 `run_tcl(command="version -short")` 核对工程和版本。仅在尚未打开目标工程且会话可用时打开工程；含特殊字符的路径用 `safe_tcl` 参数模板。不要为了看进度切走用户当前工程。
-4. 明确本次目标：综合、布局布线或生成 bitstream。读取当前 run 状态，沿用实际 run 名称和同一个 session ID；运行中直接转观察路径。
+4. 明确本次目标：综合、布局布线或生成 bitstream。读取当前 run 状态，沿用实际 run 名称和**同一个** session ID 在该 Vivado 里 `launch_runs`。GUI 开着即可综合，不要另开 `tcl` 会话占第二进程。运行中直接转观察路径。
 5. 发起已授权综合或实现时使用异步入口，避免让模型一直等待：
 
    ```text
