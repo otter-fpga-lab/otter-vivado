@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from vivado_mcp.vivado.child_env import sanitize_vivado_child_env
 from vivado_mcp.vivado import gui_session
+from vivado_mcp.vivado.child_env import sanitize_vivado_child_env
 from vivado_mcp.vivado.session import SubprocessSession
 
 
@@ -27,6 +27,28 @@ def test_does_not_mutate_source_mapping():
     assert source["ELECTRON_RUN_AS_NODE"] == "1"
     assert "ELECTRON_RUN_AS_NODE" not in env
     assert env["FOO"] == "bar"
+
+
+def test_fills_windows_essentials_when_host_env_is_minimal():
+    """极简宿主环境（实测 Codex 沙箱 MCP）必须兜底，否则 bat 链瞬间静默退出。"""
+    env = sanitize_vivado_child_env({"AGY_ENABLE_HUB": "1"})
+    mapped = {key.upper(): value for key, value in env.items()}
+    for key in ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATH", "PATHEXT", "TEMP", "TMP"):
+        assert mapped.get(key), f"缺少基本变量 {key}"
+    assert mapped["COMSPEC"].lower().endswith("cmd.exe")
+    assert "system32" in mapped["PATH"].lower()
+    assert env["AGY_ENABLE_HUB"] == "1"
+
+
+def test_keeps_existing_essentials(monkeypatch):
+    monkeypatch.setenv("PATH", r"C:\custom\bin")
+    monkeypatch.setenv("COMSPEC", r"C:\custom\cmd.exe")
+    monkeypatch.setenv("SystemRoot", r"C:\CustomWindows")
+    env = sanitize_vivado_child_env()
+    mapped = {key.upper(): value for key, value in env.items()}
+    assert mapped["PATH"] == r"C:\custom\bin"
+    assert mapped["COMSPEC"] == r"C:\custom\cmd.exe"
+    assert mapped["SYSTEMROOT"] == r"C:\CustomWindows"
 
 
 @pytest.mark.asyncio

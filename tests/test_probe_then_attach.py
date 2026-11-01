@@ -488,7 +488,7 @@ class TestListSessionsExternal:
             assert entry["port"] == port
             assert entry["mode"] == "external"
             assert entry["is_alive"] is True
-            assert entry["session_id"] == f"<external@{port}>"
+            assert entry["session_id"] == f"external@{port}"
             assert "未由 MCP 启动" in entry["note"]
         finally:
             stop.set()
@@ -541,6 +541,87 @@ class TestListSessionsExternal:
             await sess.stop()
         finally:
             stop.set()
+
+
+# --------------------------------------------------------------------------- #
+#  外部会话接管（adopt_external）：external@端口 可直接当 session_id 用
+# --------------------------------------------------------------------------- #
+
+
+class TestAdoptExternal:
+    async def test_adopt_registers_canonical_managed_session(
+        self, session_manager: SessionManager
+    ):
+        """adopt 后按 canonical id 注册为受管会话，端口可见。"""
+        port, stop, _ = _serve_length_prefix(_vmcp_handler)
+        try:
+            session = await session_manager.adopt_external(f"external@{port}")
+            assert session_manager.get(f"external@{port}") is session
+            assert session.connected_port == port
+            assert session.mode == "attach"
+        finally:
+            stop.set()
+            if session_manager.get(f"external@{port}"):
+                await session_manager.stop_session(f"external@{port}")
+
+    async def test_adopt_accepts_legacy_bracket_id(
+        self, session_manager: SessionManager
+    ):
+        """旧展示格式 <external@端口> 也接受，注册为 canonical id。"""
+        port, stop, _ = _serve_length_prefix(_vmcp_handler)
+        try:
+            await session_manager.adopt_external(f"<external@{port}>")
+            assert session_manager.get(f"external@{port}") is not None
+        finally:
+            stop.set()
+            if session_manager.get(f"external@{port}"):
+                await session_manager.stop_session(f"external@{port}")
+
+    async def test_adopt_second_call_reuses_session(
+        self, session_manager: SessionManager
+    ):
+        """重复 adopt 同一 id 返回同一受管会话，不重复建连接。"""
+        port, stop, _ = _serve_length_prefix(_vmcp_handler)
+        try:
+            first = await session_manager.adopt_external(f"external@{port}")
+            second = await session_manager.adopt_external(f"external@{port}")
+            assert first is second
+        finally:
+            stop.set()
+            if session_manager.get(f"external@{port}"):
+                await session_manager.stop_session(f"external@{port}")
+
+    async def test_adopt_fails_clearly_when_no_server(
+        self, session_manager: SessionManager
+    ):
+        """端口无 vmcp server → 描述性错误，不注册会话。"""
+        port = _find_unused_port()
+        with pytest.raises(RuntimeError, match="没有 vivado-mcp server"):
+            await session_manager.adopt_external(f"external@{port}")
+        assert session_manager.get(f"external@{port}") is None
+
+    async def test_adopt_rejects_non_external_id(
+        self, session_manager: SessionManager
+    ):
+        """非 external@ 格式直接 ValueError，不碰网络。"""
+        with pytest.raises(ValueError, match="external@端口"):
+            await session_manager.adopt_external("default")
+
+    async def test_start_session_with_external_id_adopts(
+        self, session_manager: SessionManager
+    ):
+        """start_session 收到 external@端口 也走接管，不 spawn 新 GUI。"""
+        port, stop, _ = _serve_length_prefix(_vmcp_handler)
+        try:
+            session, banner = await session_manager.start_session(
+                f"external@{port}"
+            )
+            assert session_manager.get(f"external@{port}") is session
+            assert "接管" in banner
+        finally:
+            stop.set()
+            if session_manager.get(f"external@{port}"):
+                await session_manager.stop_session(f"external@{port}")
 
 
 # --------------------------------------------------------------------------- #

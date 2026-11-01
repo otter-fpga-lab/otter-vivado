@@ -11,7 +11,7 @@ from vivado_mcp.server import _NO_SESSION, _require_session, mcp
 
 async def _service(ctx, session_id):
     registry = ctx.request_context.lifespan_context.debug_services
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if session is None:
         raise ValueError(_NO_SESSION.format(sid=session_id))
     return await registry.get(session)
@@ -56,7 +56,7 @@ async def get_debug_snapshot(session_id: str = "default", ctx: Context = None) -
     """
     try:
         registry = ctx.request_context.lifespan_context.debug_services
-        session = _require_session(ctx, session_id)
+        session = await _require_session(ctx, session_id)
         service = registry.last(session_id) if session is None else await registry.get(session)
         if service is None:
             raise ValueError(_NO_SESSION.format(sid=session_id))
@@ -140,7 +140,7 @@ async def get_debug_experiment(session_id: str = "default", ctx: Context = None)
     """
     try:
         registry = ctx.request_context.lifespan_context.debug_services
-        session = _require_session(ctx, session_id)
+        session = await _require_session(ctx, session_id)
         service = registry.last(session_id) if session is None else await registry.get(session)
         if service is None or service.experiment is None:
             raise ValueError("该会话没有实验；已有记录可从消费者目录读取")

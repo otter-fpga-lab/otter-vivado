@@ -370,7 +370,7 @@ async def run_synthesis(
     except ValueError as e:
         return f"[ERROR] {e}"
 
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
@@ -409,7 +409,7 @@ async def run_implementation(
     except ValueError as e:
         return f"[ERROR] {e}"
 
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
@@ -445,7 +445,7 @@ async def generate_bitstream(
     except ValueError as e:
         return f"[ERROR] {e}"
 
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
@@ -632,7 +632,7 @@ async def program_device(
             "应形如 'localhost:3121' 或 '<主机名/IP>:<端口>'"
         )
 
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 

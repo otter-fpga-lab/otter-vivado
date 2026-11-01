@@ -441,7 +441,7 @@ async def get_critical_warnings(
     if tail_n < 1 or tail_n > 500:
         return f"[ERROR] tail_n 必须在 1~500 之间(收到 {tail_n})。"
 
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
@@ -584,7 +584,7 @@ async def verify_io_placement_tool(
     Args:
         session_id: 目标会话 ID。
     """
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
@@ -661,7 +661,7 @@ async def xdc_lint(
     """
     # 路径来源:显式传入 > 从 session 拉取
     if xdc_paths is None or len(xdc_paths) == 0:
-        session = _require_session(ctx, session_id)
+        session = await _require_session(ctx, session_id)
         if not session:
             return (
                 "[ERROR] 未传 xdc_paths 且 session 不存在。"
@@ -716,7 +716,7 @@ async def xdc_auto_fix(
 
     # 路径来源:同 xdc_lint
     if xdc_paths is None or len(xdc_paths) == 0:
-        session = _require_session(ctx, session_id)
+        session = await _require_session(ctx, session_id)
         if not session:
             return (
                 "[ERROR] 未传 xdc_paths 且 session 不存在。"

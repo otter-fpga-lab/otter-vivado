@@ -168,7 +168,7 @@ async def set_wave_zoom(
     if start_ns >= end_ns:
         return f"[ERROR] start_ns 须小于 end_ns(收到 start={start_ns}, end={end_ns})。"
 
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
@@ -261,7 +261,7 @@ async def set_wave_analog(
             "从仿真数据自动算幅需 live 采样、数据源未定，本版本不做 auto。"
         )
 
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 

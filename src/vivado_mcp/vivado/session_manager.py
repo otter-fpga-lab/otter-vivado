@@ -26,8 +26,12 @@ VivadoSession = SubprocessSession
 
 logger = logging.getLogger(__name__)
 
-# session_id 格式：1~64 个字母、数字、下划线、连字符
-_SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
+# session_id 格式：1~64 个字母、数字、下划线、连字符、@（外部会话 external@端口）
+_SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_\-@]{1,64}$")
+
+# 外部 GUI 会话 id（list_sessions 发现的未托管 vmcp server）。
+# 兼容旧展示格式 <external@9999>；canonical 形式为 external@9999。
+_EXTERNAL_SESSION_ID_RE = re.compile(r"^<?external@(\d{1,5})>?$")
 
 SessionMode = Literal["gui", "tcl", "attach"]
 _VALID_MODES: tuple[str, ...] = ("gui", "tcl", "attach")
@@ -50,6 +54,12 @@ def _validate_session_id(session_id: str) -> str:
             f"仅允许字母、数字、下划线、连字符，长度 1~64。"
         )
     return session_id
+
+
+def parse_external_session_id(session_id: str) -> int | None:
+    """识别外部会话 id（external@端口 或旧 <external@端口>），返回端口。"""
+    m = _EXTERNAL_SESSION_ID_RE.match(session_id.strip())
+    return int(m.group(1)) if m else None
 
 
 class SessionManager:
@@ -111,6 +121,15 @@ class SessionManager:
         if mode not in _VALID_MODES:
             raise ValueError(
                 f"无效的 mode: {mode!r}。支持: {_VALID_MODES}"
+            )
+
+        # 外部会话 id（external@端口）= 明确指名接管 list_sessions 发现的
+        # 未托管 vmcp server；忽略 mode，绝不在该端口上 spawn 第二个实例。
+        if parse_external_session_id(session_id) is not None:
+            session = await self.adopt_external(session_id, timeout=timeout)
+            return session, (
+                f"已接管外部 Vivado 会话 '{session_id}'（attach 模式）。"
+                "stop_session 只断开 MCP 连接，不会关闭该 GUI。"
             )
 
         selected_path = vivado_path or os.environ.get("VIVADO_PATH")
@@ -182,6 +201,61 @@ class SessionManager:
 
         return session, banner
 
+    async def adopt_external(
+        self,
+        session_id: str,
+        timeout: float = 15.0,
+    ) -> BaseSession:
+        """接管外部 Vivado GUI（list_sessions 里 ``external@端口`` 条目）。
+
+        按 id 里的端口 probe vmcp server；命中则用 attach-only GuiSession
+        接管并注册为受管会话，此后所有工具照常使用。未命中抛描述性错误。
+        兼容旧展示格式 ``<external@9999>``；canonical 形式 ``external@9999``。
+        """
+        port = parse_external_session_id(session_id)
+        if port is None:
+            raise ValueError(
+                f"外部会话 id 形如 external@端口（如 external@9999），"
+                f"收到 {session_id!r}。"
+            )
+        canonical = f"external@{port}"
+        existing = self.get(canonical)
+        if existing:
+            return existing
+
+        alive = await asyncio.to_thread(
+            probe_vmcp_server, "127.0.0.1", port, _KNOWN_PROBE_TIMEOUT
+        )
+        if not alive:
+            raise RuntimeError(
+                f"端口 {port} 上没有 vivado-mcp server，"
+                f"外部会话 '{canonical}' 不存在或已退出。"
+                "可重新调 list_sessions 获取当前外部会话列表。"
+            )
+
+        session = GuiSession(
+            vivado_path=self._default_vivado_path,
+            session_id=canonical,
+            port=port,
+            attach_only=True,
+        )
+        try:
+            await session.start(timeout=timeout)
+        except Exception:
+            try:
+                await session.stop()
+            except Exception as cleanup_err:
+                logger.warning("外部会话 '%s' 接管失败后的清理也失败: %s",
+                               canonical, cleanup_err)
+            raise
+        self._sessions[canonical] = session
+        self._port_map[canonical] = (
+            getattr(session, "connected_port", None),
+            getattr(session, "pid", None),
+        )
+        logger.info("已接管外部 GUI 会话 '%s'（端口 %d）", canonical, port)
+        return session
+
     async def get_or_start(
         self,
         session_id: str = "default",
@@ -249,8 +323,10 @@ class SessionManager:
         Returns:
             列表中每条 dict 至少含 ``session_id`` / ``mode`` / ``state``。
             外部 GUI 的 entry 会带 ``owner="external"`` + ``port`` 字段,
-            ``session_id`` 形如 ``"<external@9999>"``,**不能**作为 stop_session
-            的参数(MCP 没管它,无权关闭)。探活失败的已管理会话带
+            ``session_id`` 形如 ``"external@9999"``,可直接传给任意工具
+            (run_tcl / run_synthesis 等),MCP 会自动 attach 接管;也可传给
+            start_session。stop_session 只断开 MCP 连接,不关闭外部 GUI。
+            探活失败的已管理会话带
             ``responsive=False`` + 中性 note(未响应 ≠ 已死,is_alive 不翻转)。
         """
         sessions = list(self._sessions.values())
@@ -325,7 +401,7 @@ class SessionManager:
             if not ok:
                 continue
             external.append({
-                "session_id": f"<external@{port}>",
+                "session_id": f"external@{port}",
                 "mode": "external",
                 "state": "ready",
                 "vivado_path": "<unknown, not managed by MCP>",
@@ -335,8 +411,8 @@ class SessionManager:
                 "owner": "external",
                 "note": (
                     "未由 MCP 启动的 Vivado(可能是手动启动并装过 init.tcl)。"
-                    "调 start_session(mode='gui') 会自动 attach 上去;"
-                    "stop_session 无权关闭 —— 请在 GUI 内手动 exit。"
+                    "把该 session_id 直接传给任意工具即可自动 attach 接管;"
+                    "stop_session 只断开 MCP 连接,不关闭该 GUI。"
                 ),
             })
 

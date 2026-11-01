@@ -7,9 +7,9 @@ from mcp.server.mcpserver import Context
 from vivado_mcp.server import _NO_SESSION, _require_session, mcp
 
 
-def _monitor(ctx, session_id, run_name, target_step):
+async def _monitor(ctx, session_id, run_name, target_step):
     registry = ctx.request_context.lifespan_context.run_monitors
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if session is None:
         last = registry.last(session_id, run_name, target_step)
         if last is not None:
@@ -32,7 +32,7 @@ async def open_run_monitor(
     URL 仅能在运行 MCP 的本机打开；首次等待采样是正常状态。
     """
     try:
-        monitor = _monitor(ctx, session_id, run_name, target_step)
+        monitor = await _monitor(ctx, session_id, run_name, target_step)
         return json.dumps({
             "url": monitor.open_view(), "session_id": session_id, "run_name": run_name,
             "target_step": target_step, "connection": monitor.snapshot()["connection"],
@@ -58,7 +58,7 @@ async def get_run_snapshot(
     connected 而当作本轮新报告。
     """
     try:
-        snapshot = _monitor(ctx, session_id, run_name, target_step).snapshot()
+        snapshot = (await _monitor(ctx, session_id, run_name, target_step)).snapshot()
         if not include_report_text:
             for report in snapshot["reports"]:
                 report.pop("text", None)

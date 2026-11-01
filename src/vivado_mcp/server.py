@@ -23,7 +23,10 @@ from vivado_mcp.config import find_vivado
 from vivado_mcp.debug_service import DebugRegistry
 from vivado_mcp.run_monitor import MonitorRegistry
 from vivado_mcp.vivado.session import VivadoSession
-from vivado_mcp.vivado.session_manager import SessionManager
+from vivado_mcp.vivado.session_manager import (
+    SessionManager,
+    parse_external_session_id,
+)
 
 # 兼容历史上从 server 模块直接导入 Prompt 函数的调用方。
 fpga_workflow = _prompts.fpga_workflow
@@ -107,9 +110,12 @@ def _get_manager(ctx) -> SessionManager:
 _NO_SESSION = "[ERROR] 会话 '{sid}' 不存在。请先调用 start_session。"
 
 
-def _require_session(ctx, session_id: str) -> VivadoSession | None:
-    """获取会话，不存在返回 None。"""
-    return _get_manager(ctx).get(session_id)
+async def _require_session(ctx, session_id: str) -> VivadoSession | None:
+    """获取会话；外部会话 id（external@端口）自动接管；不存在返回 None。"""
+    manager = _get_manager(ctx)
+    if parse_external_session_id(session_id) is not None:
+        return await manager.adopt_external(session_id)
+    return manager.get(session_id)
 
 
 # --------------------------------------------------------------------------- #

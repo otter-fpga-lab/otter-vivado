@@ -1,6 +1,6 @@
 [project]
 name = "vivado-mcp"
-version = "0.3.25"
+version = "0.3.26"
 description = "Otter Vivado — 本地与远程构建、原生工程、仿真、IP、真实运行状态与报告工具"
 readme = "README.md"
 requires-python = ">=3.10"

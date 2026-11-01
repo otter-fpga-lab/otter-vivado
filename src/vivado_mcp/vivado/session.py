@@ -12,6 +12,7 @@ subprocess 实现（两种会话模式之一）。负责：
 import asyncio
 import collections
 import logging
+import sys
 import time
 
 from vivado_mcp.vivado.base_session import BaseSession, SessionState
@@ -170,8 +171,20 @@ class SubprocessSession(BaseSession):
                             )
                         except asyncio.TimeoutError:
                             pass
+                    # 退出码是诊断金标准（如 -1073741515=缺 DLL、1=脚本失败）
+                    exit_code: int | None = None
+                    try:
+                        exit_code = await asyncio.wait_for(
+                            self._process.wait(), timeout=2.0
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                    rc_text = exit_code if exit_code is not None else "仍在运行"
                     raise RuntimeError(
-                        f"Vivado 进程意外退出。stderr: {stderr_out}"
+                        f"Vivado 进程意外退出(退出码={rc_text})。"
+                        f"stderr: {stderr_out}\n"
+                        "反复出现时运行 `vivado-mcp doctor` 检查宿主环境，"
+                        "或在 start_session 显式传 vivado_path。"
                     )
 
                 line = decode_vivado_output(raw).rstrip("\r\n")
@@ -374,7 +387,16 @@ class SubprocessSession(BaseSession):
                     "Vivado 会话 '%s' 未在 %ss 内退出，强制终止。",
                     self.session_id, timeout,
                 )
-                self._process.kill()
+                if sys.platform == "win32":
+                    # bat 链是 cmd → loader → vivado.exe，kill 只杀外壳会留
+                    # 孤儿；与 GuiSession B13 一致，按 pid 递归杀整棵树。
+                    import subprocess
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(self._process.pid)],
+                        capture_output=True,
+                    )
+                else:
+                    self._process.kill()
                 await self._process.wait()
 
         self._state = SessionState.STOPPED

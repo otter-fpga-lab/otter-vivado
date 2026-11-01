@@ -66,8 +66,9 @@ AI: [调用 start_session(mode="gui")]
     → 端口空 → spawn 新 Vivado;端口已有 → attach 到现有 GUI(0.3.19+)
 
 用户: 我刚自己手动开了 Vivado GUI,直接接管
-AI: [调用 list_sessions]   → 看到 <external@9999>(你手动开的)
-    [调用 start_session(mode="gui")]   → 自动 attach,不会再开第二个 GUI
+AI: [调用 list_sessions]   → 看到 external@9999(你手动开的)
+    [把 session_id="external@9999" 直接传给任意工具]   → 自动 attach 接管,
+    不会开第二个 GUI;也可以 start_session(session_id="external@9999")
 
 用户: 批处理跑 10 个项目
 AI: [调用 start_session(mode="tcl")] → 无 GUI,跑得更快

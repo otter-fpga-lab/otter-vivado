@@ -147,7 +147,7 @@ async def run_tcl(
             run_synthesis / run_implementation / generate_bitstream
             (Python 轮询不阻塞),或按预期耗时调大本值。
     """
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
@@ -195,7 +195,7 @@ async def safe_tcl(
             f"template={template!r}, args={args!r}"
         )
 
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 

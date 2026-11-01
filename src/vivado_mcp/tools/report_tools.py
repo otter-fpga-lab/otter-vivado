@@ -50,7 +50,7 @@ async def get_io_report(
     Args:
         session_id: 目标会话 ID。
     """
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
@@ -86,7 +86,7 @@ async def get_timing_report(
     Args:
         session_id: 目标会话 ID。
     """
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
@@ -163,7 +163,7 @@ async def check_bitstream_readiness(
     except ValueError as e:
         return f"[ERROR] {e}"
 
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
@@ -317,7 +317,7 @@ async def get_utilization_report(
             RAMB18 的 used/available)。默认 False,输出与原有格式一致。
         session_id: 目标会话 ID。
     """
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
@@ -354,7 +354,7 @@ async def get_project_info(
     Args:
         session_id: 目标会话 ID。
     """
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
@@ -399,7 +399,7 @@ async def get_run_progress(
     if tail_lines < 0 or tail_lines > 500:
         return "[ERROR] tail_lines 必须在 0~500 之间"
 
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
@@ -441,7 +441,7 @@ async def get_next_suggestion(
     Args:
         session_id: 目标会话 ID。
     """
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
@@ -476,7 +476,7 @@ async def get_ip_status(
     Args:
         session_id: 目标会话 ID。
     """
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
@@ -523,7 +523,7 @@ async def get_pre_commit_summary(
     except ValueError as e:
         return f"[ERROR] {e}"
 
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 

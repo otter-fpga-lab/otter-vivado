@@ -72,7 +72,7 @@ async def inspect_ip_params(
     except ValueError as e:
         return f"[ERROR] {e}"
 
-    session = _require_session(ctx, session_id)
+    session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
 

@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased] — 2026-11-02 极简宿主环境兜底 + 外部 GUI 直接接管
+
+- 根因修复：Codex/Cursor 等宿主可能以**极简环境**拉起 MCP（实测子进程 env 只剩
+  `AGY_ENABLE_HUB`，无 `SystemRoot`/`PATH`/`COMSPEC`）。此时
+  `create_subprocess_exec` 直接跑 `vivado.bat` 的 cmd 链初始化即静默退出
+  （stdout 立刻 EOF），tcl 模式报"Vivado 进程意外退出"。`sanitize_vivado_child_env`
+  检测到极简 env 时以注册表登录环境（HKLM Session Manager + HKCU）为底座，
+  再按系统目录为仍缺的 `SystemRoot`/`COMSPEC`/`PATH`/`PATHEXT`/`TEMP`/`TMP`
+  兜底；已有值一律不覆盖。GUI 与 Tcl spawn 共用该入口。
+- `list_sessions` 的外部 GUI 条目改为可直接使用的 `session_id=external@{port}`
+  （旧展示名 `<external@{port}>` 过不了 session_id 校验，当参数传给其他工具只会
+  得到含糊报错）。任意工具收到该 id 自动 attach 接管为受管会话；
+  `start_session` 同样支持；兼容旧尖括号写法并注册为 canonical id。
+  接管后的 stop_session 只断开 MCP 连接，不关闭用户 GUI（attach 语义不变）。
+- SubprocessSession 启动 EOF 诊断带上进程退出码；Windows 强杀改
+  `taskkill /F /T`（与 GUI B13 一致），避免 bat 链下孤儿 vivado.exe。
+
 ## [Unreleased] — 2026-10-28 spawn 去掉 IDE/Electron 环境泄漏
 
 - GUI/Tcl/local-batch 启动 Vivado 时丢掉 `ELECTRON_*` / `VSCODE_*` / `CURSOR_*` /

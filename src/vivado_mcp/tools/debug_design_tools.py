@@ -38,7 +38,7 @@ async def inspect_debug_design(
     网表信号连接在实际 run 加载生成约束时验证。保持当前工程，不打开其它 run/design。
     """
     try:
-        session = _require_session(ctx, session_id)
+        session = await _require_session(ctx, session_id)
         if session is None:
             raise ValueError(_NO_SESSION.format(sid=session_id))
         return _result(await DebugDesignPreparation(session).inspect(spec))
@@ -59,7 +59,7 @@ async def prepare_debug_design(
     不连接、烧录或采集板卡；下一步复用现有构建和报告入口。
     """
     try:
-        session = _require_session(ctx, session_id)
+        session = await _require_session(ctx, session_id)
         if session is None:
             raise ValueError(_NO_SESSION.format(sid=session_id))
         return _result(await DebugDesignPreparation(session).apply(spec, expected_project))
@@ -87,7 +87,7 @@ async def export_debug_bundle(
     from vivado_mcp.debug_bundle import export_debug_bundle as export
 
     try:
-        session = _require_session(ctx, session_id)
+        session = await _require_session(ctx, session_id)
         if session is None:
             raise ValueError(_NO_SESSION.format(sid=session_id))
         return _result(await export(
