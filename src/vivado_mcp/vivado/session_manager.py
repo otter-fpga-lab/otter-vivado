@@ -77,6 +77,7 @@ class SessionManager:
         """
         self._default_vivado_path = vivado_path
         self._sessions: dict[str, BaseSession] = {}
+        self._adopt_lock = asyncio.Lock()
         # session_id → (port, pid) 轻量映射,供诊断 / stop 按 pid 兜底清理。
         # 主清理路径仍是 GuiSession 自持 pid + 自洽 stop;这里只做"self._proc
         # 引用失联时仍知道该清哪个端口/进程"的二级记录。
@@ -131,8 +132,10 @@ class SessionManager:
             )
 
         # 外部会话 id（external@端口）= 明确指名接管 list_sessions 发现的
-        # 未托管 vmcp server；忽略 mode，绝不在该端口上 spawn 第二个实例。
+        # 未托管 vmcp server；仅 attach，绝不在该端口 spawn 第二个实例。
         if parse_external_session_id(session_id) is not None:
+            if mode == "tcl" or vivado_path:
+                raise ValueError("外部会话只能 attach；不能指定 tcl 模式或 Vivado 安装路径。")
             session = await self.adopt_external(session_id, timeout=timeout)
             return session, (
                 f"已接管外部 Vivado 会话 '{session_id}'（attach 模式）。"
@@ -220,6 +223,10 @@ class SessionManager:
         接管并注册为受管会话，此后所有工具照常使用。未命中抛描述性错误。
         兼容旧展示格式 ``<external@9999>``；canonical 形式 ``external@9999``。
         """
+        async with self._adopt_lock:
+            return await self._adopt_external(session_id, timeout)
+
+    async def _adopt_external(self, session_id: str, timeout: float) -> BaseSession:
         port = parse_external_session_id(session_id)
         if port is None:
             raise ValueError(

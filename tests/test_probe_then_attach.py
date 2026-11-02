@@ -583,8 +583,10 @@ class TestAdoptExternal:
         """重复 adopt 同一 id 返回同一受管会话，不重复建连接。"""
         port, stop, _ = _serve_length_prefix(_vmcp_handler)
         try:
-            first = await session_manager.adopt_external(f"external@{port}")
-            second = await session_manager.adopt_external(f"external@{port}")
+            first, second = await asyncio.gather(
+                session_manager.adopt_external(f"external@{port}"),
+                session_manager.adopt_external(f"<external@{port}>"),
+            )
             assert first is second
         finally:
             stop.set()
@@ -637,6 +639,12 @@ class TestAdoptExternal:
     async def test_invalid_external_id_does_not_spawn(self, session_manager, session_id):
         with pytest.raises(ValueError):
             await session_manager.start_session(session_id)
+
+    async def test_external_id_rejects_tcl_or_explicit_install(self, session_manager):
+        with pytest.raises(ValueError, match="只能 attach"):
+            await session_manager.start_session("external@9999", mode="tcl")
+        with pytest.raises(ValueError, match="只能 attach"):
+            await session_manager.start_session("external@9999", vivado_path="other")
 
 
 # --------------------------------------------------------------------------- #
