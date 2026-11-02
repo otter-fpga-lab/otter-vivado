@@ -17,6 +17,39 @@ class _AliveProcess:
     returncode = None
 
 
+@pytest.mark.asyncio
+async def test_startup_failure_includes_stdout_and_stderr():
+    class Input:
+        def write(self, data):
+            pass
+
+        async def drain(self):
+            pass
+
+    class Process:
+        stdin = Input()
+
+        def __init__(self):
+            self.stdout = asyncio.StreamReader()
+            self.stderr = asyncio.StreamReader()
+            self.stdout.feed_data(b"loader failed on stdout\n")
+            self.stdout.feed_eof()
+            self.stderr.feed_data(b"diagnostic on stderr\n")
+            self.stderr.feed_eof()
+
+        async def wait(self):
+            return 1
+
+    session = SubprocessSession("unused", "failure")
+    session._process = Process()
+    session._stderr_task = asyncio.create_task(session._drain_stderr())
+    with pytest.raises(RuntimeError) as exc:
+        await session._read_startup_banner(2)
+    assert "loader failed on stdout" in str(exc.value)
+    assert "diagnostic on stderr" in str(exc.value)
+    assert "退出码=1" in str(exc.value)
+
+
 class TestSubprocessInflightOwnership:
     """调用方超时后，原任务必须继续独占该会话的响应流。"""
 

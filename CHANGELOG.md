@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased] — 2026-11-02 启动诊断与外部会话兼容
+
+- Tcl 启动期间同时消费 stderr，失败时保留 stdout、stderr 与退出码；修复旧的
+  `<external@端口>` 在 start/get/stop 路径不一致，以及非法外部端口的问题。
+- Windows 环境兜底不再影响非 Windows 宿主。上轮将实际 MCP 启动失败归因于
+  极简环境的结论缺乏证据：重启插件后仍以退出码 1 失败，根因尚待现场复现。
+
 ## [Unreleased] — 2026-11-02 极简宿主环境兜底 + 外部 GUI 直接接管
 
 - 根因修复：Codex/Cursor 等宿主可能以**极简环境**拉起 MCP（实测子进程 env 只剩

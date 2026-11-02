@@ -1,6 +1,7 @@
 """IDE/Electron 环境泄漏：spawn Vivado 前必须丢掉宿主变量。"""
 
 import asyncio
+import os
 
 import pytest
 
@@ -29,6 +30,7 @@ def test_does_not_mutate_source_mapping():
     assert env["FOO"] == "bar"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows environment")
 def test_fills_windows_essentials_when_host_env_is_minimal():
     """极简宿主环境（实测 Codex 沙箱 MCP）必须兜底，否则 bat 链瞬间静默退出。"""
     env = sanitize_vivado_child_env({"AGY_ENABLE_HUB": "1"})

@@ -97,13 +97,12 @@ class SubprocessSession(BaseSession):
             self._state = SessionState.ERROR
             raise RuntimeError(f"无法启动 Vivado: {e}") from e
 
+        # Drain both pipes during startup: Vivado may fill stderr before READY.
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
         # 等待 Vivado 启动完成（读取初始横幅）
         banner = await self._read_startup_banner(timeout)
         self._state = SessionState.READY
         self._start_time = time.time()
-
-        # B5 修复：启动 stderr 持续读取任务
-        self._stderr_task = asyncio.create_task(self._drain_stderr())
 
         logger.info("Vivado 会话 '%s' 启动成功", self.session_id)
         return banner
@@ -161,16 +160,14 @@ class SubprocessSession(BaseSession):
                 )
                 if not raw:
                     # EOF — 进程意外退出
-                    stderr_out = ""
-                    if self._process.stderr:
+                    if self._stderr_task:
                         try:
-                            stderr_out = decode_vivado_output(
-                                await asyncio.wait_for(
-                                    self._process.stderr.read(), timeout=2.0
-                                )
+                            await asyncio.wait_for(
+                                asyncio.shield(self._stderr_task), timeout=2.0
                             )
                         except asyncio.TimeoutError:
                             pass
+                    stderr_out = self._recent_stderr()
                     # 退出码是诊断金标准（如 -1073741515=缺 DLL、1=脚本失败）
                     exit_code: int | None = None
                     try:
@@ -182,7 +179,8 @@ class SubprocessSession(BaseSession):
                     rc_text = exit_code if exit_code is not None else "仍在运行"
                     raise RuntimeError(
                         f"Vivado 进程意外退出(退出码={rc_text})。"
-                        f"stderr: {stderr_out}\n"
+                        f"stdout (最近 30 行): {' '.join(lines[-30:])}\n"
+                        f"stderr (最近 30 行): {stderr_out}\n"
                         "反复出现时运行 `vivado-mcp doctor` 检查宿主环境，"
                         "或在 start_session 显式传 vivado_path。"
                     )

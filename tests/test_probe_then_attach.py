@@ -623,6 +623,21 @@ class TestAdoptExternal:
             if session_manager.get(f"external@{port}"):
                 await session_manager.stop_session(f"external@{port}")
 
+    async def test_legacy_id_start_get_and_stop(self, session_manager: SessionManager):
+        port, stop, _ = _serve_length_prefix(_vmcp_handler)
+        try:
+            session, _ = await session_manager.start_session(f"<external@{port}>")
+            assert session_manager.get(f"<external@{port}>") is session
+            await session_manager.stop_session(f"<external@{port}>")
+            assert session_manager.get(f"external@{port}") is None
+        finally:
+            stop.set()
+
+    @pytest.mark.parametrize("session_id", ["external@0", "external@65536", "<external@1234"])
+    async def test_invalid_external_id_does_not_spawn(self, session_manager, session_id):
+        with pytest.raises(ValueError):
+            await session_manager.start_session(session_id)
+
 
 # --------------------------------------------------------------------------- #
 #  握手 token 校验归一(0.3.21 修复补到 _handshake / attach 路径)

@@ -31,7 +31,7 @@ _SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_\-@]{1,64}$")
 
 # 外部 GUI 会话 id（list_sessions 发现的未托管 vmcp server）。
 # 兼容旧展示格式 <external@9999>；canonical 形式为 external@9999。
-_EXTERNAL_SESSION_ID_RE = re.compile(r"^<?external@(\d{1,5})>?$")
+_EXTERNAL_SESSION_ID_RE = re.compile(r"^(?:external@(\d{1,5})|<external@(\d{1,5})>)$")
 
 SessionMode = Literal["gui", "tcl", "attach"]
 _VALID_MODES: tuple[str, ...] = ("gui", "tcl", "attach")
@@ -48,6 +48,8 @@ _KNOWN_PROBE_TIMEOUT = 1.0
 
 def _validate_session_id(session_id: str) -> str:
     """验证 session_id 格式，拒绝非法字符。"""
+    if session_id.startswith("external@") and parse_external_session_id(session_id) is None:
+        raise ValueError(f"外部会话端口无效: {session_id!r}。")
     if not _SESSION_ID_RE.match(session_id):
         raise ValueError(
             f"session_id 格式非法: {session_id!r}。"
@@ -58,8 +60,11 @@ def _validate_session_id(session_id: str) -> str:
 
 def parse_external_session_id(session_id: str) -> int | None:
     """识别外部会话 id（external@端口 或旧 <external@端口>），返回端口。"""
-    m = _EXTERNAL_SESSION_ID_RE.match(session_id.strip())
-    return int(m.group(1)) if m else None
+    m = _EXTERNAL_SESSION_ID_RE.fullmatch(session_id)
+    if not m:
+        return None
+    port = int(m.group(1) or m.group(2))
+    return port if 1 <= port <= 65535 else None
 
 
 class SessionManager:
@@ -83,6 +88,9 @@ class SessionManager:
 
     def get(self, session_id: str) -> BaseSession | None:
         """获取已有会话（不自动创建）。"""
+        port = parse_external_session_id(session_id)
+        if port is not None:
+            session_id = f"external@{port}"
         _validate_session_id(session_id)
         session = self._sessions.get(session_id)
         if session and not session.is_alive:
@@ -117,7 +125,6 @@ class SessionManager:
         Returns:
             (会话实例, 启动横幅/状态消息) 元组。
         """
-        _validate_session_id(session_id)
         if mode not in _VALID_MODES:
             raise ValueError(
                 f"无效的 mode: {mode!r}。支持: {_VALID_MODES}"
@@ -131,6 +138,7 @@ class SessionManager:
                 f"已接管外部 Vivado 会话 '{session_id}'（attach 模式）。"
                 "stop_session 只断开 MCP 连接，不会关闭该 GUI。"
             )
+        _validate_session_id(session_id)
 
         selected_path = vivado_path or os.environ.get("VIVADO_PATH")
         existing = self.get(session_id)
@@ -280,6 +288,9 @@ class SessionManager:
         Returns:
             操作结果描述。
         """
+        port = parse_external_session_id(session_id)
+        if port is not None:
+            session_id = f"external@{port}"
         session = self._sessions.get(session_id)
         if not session:
             return f"会话 '{session_id}' 不存在。"

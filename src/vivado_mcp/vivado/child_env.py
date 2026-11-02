@@ -5,11 +5,8 @@ Cursor、VS Code、CodeBuddy 等宿主会给 MCP 进程注入 ``ELECTRON_RUN_AS_
 启动 Code.exe / Cursor.exe 时会按 Node 子进程起来，窗口出不来。
 attach 用户自己开的 GUI 不受影响；spawn 路径必须显式传净化后的 env。
 
-部分宿主（实测 Codex 沙箱化 MCP）反而给 MCP 进程**极简环境**：子进程连
-``SystemRoot``/``PATH``/``COMSPEC`` 都没有。``create_subprocess_exec`` 直接跑
-``vivado.bat`` 时，cmd 链初始化即静默退出（stdout 立刻 EOF），tcl 模式表现为
-"Vivado 进程意外退出"。因此这里以注册表登录环境（HKLM Session Manager +
-HKCU）为底座、静态系统目录变量兜底，补齐缺失的基本变量。
+在 Windows 缺少基本环境变量时，使用注册表和系统目录补齐；保留已有值。
+此前对某次 MCP 启动失败的环境归因尚未证实，这个兜底不保证所有宿主均可启动。
 """
 
 from __future__ import annotations
@@ -140,5 +137,6 @@ def sanitize_vivado_child_env(
     for key in list(env):
         if _is_ide_leak(key):
             del env[key]
-    _ensure_windows_essentials(env)
+    if os.name == "nt":
+        _ensure_windows_essentials(env)
     return env
