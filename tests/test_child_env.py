@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from vivado_mcp.vivado import gui_session
+from vivado_mcp.vivado import child_env, gui_session
 from vivado_mcp.vivado.child_env import sanitize_vivado_child_env
 from vivado_mcp.vivado.session import SubprocessSession
 
@@ -51,6 +51,18 @@ def test_keeps_existing_essentials(monkeypatch):
     assert mapped["PATH"] == r"C:\custom\bin"
     assert mapped["COMSPEC"] == r"C:\custom\cmd.exe"
     assert mapped["SYSTEMROOT"] == r"C:\CustomWindows"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows environment")
+def test_missing_processor_architecture_filled_without_overwriting(monkeypatch):
+    monkeypatch.setattr(child_env, "_native_windows_architecture", lambda: "AMD64")
+    source = {"SystemRoot": r"C:\Windows", "PATH": r"C:\Windows\System32"}
+    env = sanitize_vivado_child_env(source)
+    assert env["PROCESSOR_ARCHITECTURE"] == "AMD64"
+    source["processor_architecture"] = "custom"
+    env = sanitize_vivado_child_env(source)
+    assert env["processor_architecture"] == "custom"
+    assert "PROCESSOR_ARCHITECTURE" not in env
 
 
 @pytest.mark.asyncio

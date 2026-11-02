@@ -87,6 +87,17 @@ def _registry_login_env() -> dict[str, str]:
     return env
 
 
+def _native_windows_architecture() -> str | None:
+    """Read the OS architecture without relying on the host environment."""
+    try:
+        info = ctypes.create_string_buffer(64)
+        ctypes.windll.kernel32.GetNativeSystemInfo(ctypes.byref(info))
+        arch = ctypes.cast(info, ctypes.POINTER(ctypes.c_ushort)).contents.value
+        return {0: "x86", 9: "AMD64", 12: "ARM64"}.get(arch)
+    except (AttributeError, OSError):
+        return None
+
+
 def _essential_fallbacks() -> dict[str, str]:
     """构造缺失的 Windows 基本变量默认值。"""
     windows_dir, system_dir = _windows_directories()
@@ -94,7 +105,7 @@ def _essential_fallbacks() -> dict[str, str]:
     if not temp:
         local = os.environ.get("LOCALAPPDATA")
         temp = rf"{local}\Temp" if local else rf"{windows_dir}\Temp"
-    return {
+    result = {
         "SystemRoot": windows_dir,
         "windir": windows_dir,
         "COMSPEC": rf"{system_dir}\cmd.exe",
@@ -104,6 +115,11 @@ def _essential_fallbacks() -> dict[str, str]:
         "TEMP": temp,
         "TMP": temp,
     }
+    architecture = _native_windows_architecture()
+    if architecture:
+        # Vivado loader.bat exits silently when this variable is absent.
+        result["PROCESSOR_ARCHITECTURE"] = architecture
+    return result
 
 
 def _ensure_windows_essentials(env: dict[str, str]) -> None:

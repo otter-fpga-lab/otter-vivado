@@ -5,6 +5,13 @@ Target: otter-fpga-lab/otter-vivado
 Basis: 现场反馈 MCP 拉起的 Vivado 双击源码无法打开 VS Code
 Next: 重启由插件 spawn 的 GUI 后验证 Custom Editor
 
+* **Codex Tcl 静默退出（2026-11-02）**：现场 MCP 宿主环境包含 SystemRoot，
+  但缺少 PROCESSOR_ARCHITECTURE；Vivado 2024.2 的 loader.bat 对此直接返回 1，
+  没有输出。仅补充系统原生架构即可启动 Tcl 并执行 `version -short`，返回 2024.2。
+  Windows spawn 环境现在通过 GetNativeSystemInfo 补缺，保留宿主已有值；相关
+  会话和环境测试 63 passed、3 skipped。实际 Codex MCP 进程需要重启后加载新代码；
+  上述现场环境复现验证不等于重启后端到端验证。
+
 * **IDE env 泄漏（2026-10-28）**：`sanitize_vivado_child_env` 供 GUI/Tcl/local-batch spawn 使用，丢掉 `ELECTRON_*`/`VSCODE_*`/`CURSOR_*`/`CODEBUDDY_*`。单测 `tests/test_child_env.py` **PASS**（随 `test_gui_bootstrap`/`test_local_batch`/`test_session` 共 59 passed）。已在跑的会话需停掉重开才生效。
 
 ## 历史基线（CLOSED_WAITING_FOR_REAL_USE，2026-10-08）
