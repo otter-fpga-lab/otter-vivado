@@ -396,6 +396,8 @@ async def run_implementation(
     不调用 Tcl wait_on_run(会阻塞 Vivado event loop,GUI 模式冻住界面);
     wait=True 时 Python 每 2 秒查一次 STATUS/PROGRESS；wait=False 时立即
     返回 job_id，随后用 get_run_progress 查询。
+    若 ``impl_1`` 当前 STATUS 含 ERROR（例如 route 后子进程在 write_checkpoint
+    被杀），只 ``reset_run -prev_step`` 再 launch，不清掉已完成的 place/physopt。
 
     Args:
         run_name: 实现 run 名称，默认 "impl_1"。

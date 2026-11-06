@@ -860,8 +860,10 @@ class TestLaunchAndWaitDiag:
         assert session.execute.await_count == 2
         launch_tcl = session.execute.await_args_list[1].args[0]
         assert "*Running*" in launch_tcl
-        assert launch_tcl.index("*Running*") < launch_tcl.index("reset_run synth_1")
-        assert "launch_runs synth_1 -jobs 4" in launch_tcl
+        assert "*ERROR*" in launch_tcl
+        assert launch_tcl.index("*Running*") < launch_tcl.index("reset_run -prev_step")
+        assert "launch_runs $__r -jobs 4" in launch_tcl
+        assert "get_runs -quiet synth_1" in launch_tcl
 
     @pytest.mark.asyncio
     async def test_running_run_is_not_reset(self):
@@ -1449,6 +1451,42 @@ class TestNonStandardFallback:
 
         assert "未发现 ERROR 或 CRITICAL WARNING" in result
         assert "非标错误" not in result
+
+    @pytest.mark.asyncio
+    async def test_silent_child_exit_after_route_without_keywords(self):
+        """messageDb 干净、无 TclStackFree，但 route 成功后子进程没退出。"""
+        from vivado_mcp.tools.diagnostic_tools import get_critical_warnings
+
+        tail_output = (
+            "VMCP_TAIL:status=route_design ERROR\n"
+            "VMCP_TAIL:total=1106\n"
+            "VMCP_TAIL_LINE:1104|route_design completed successfully\n"
+            "VMCP_TAIL_LINE:1105|INFO: [runtcl-4] Executing : report_clock_utilization "
+            "-file XCZU7EV_TOP_clock_utilization_routed.rpt\n"
+            "VMCP_TAIL_LINE:1106|report_clock_utilization: Time (s): cpu = 00:00:06\n"
+            "VMCP_TAIL_DONE\n"
+        )
+        session = AsyncMock()
+        session.execute = AsyncMock(
+            side_effect=[
+                _make_tcl_result("VMCP_DIAG:errors=0,critical_warnings=0,warnings=70"),
+                _make_tcl_result("VMCP_PROJDIR:NONE"),
+                _make_tcl_result(tail_output),
+            ]
+        )
+        ctx = _mock_context(session)
+
+        with patch(
+            "vivado_mcp.tools.diagnostic_tools._require_session",
+            return_value=session,
+        ):
+            result = await get_critical_warnings(
+                run_name="impl_1", session_id="default", ctx=ctx
+            )
+
+        assert "子进程静默退出" in result
+        assert "未发现 ERROR 或 CRITICAL WARNING" not in result
+        assert "reset_run -prev_step" in result
 
     @pytest.mark.asyncio
     async def test_skips_tail_when_errors_present(self):

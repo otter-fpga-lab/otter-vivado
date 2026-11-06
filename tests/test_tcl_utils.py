@@ -319,3 +319,17 @@ class TestSentinel:
         m = pattern.search(f"<<<{sentinel}_RC=1>>>")
         assert m is not None
         assert m.group(1) == "1"
+
+
+class TestLaunchRunIfIdle:
+    """失败的 impl 只清当前步，完整成功才全量 reset_runs。"""
+
+    def test_error_status_uses_prev_step(self):
+        from vivado_mcp.tcl_scripts import LAUNCH_RUN_IF_IDLE
+
+        script = LAUNCH_RUN_IF_IDLE.format(run_name="impl_1", jobs=8)
+        assert "reset_run -prev_step" in script
+        assert "*ERROR*" in script
+        assert "reset_runs $__r" in script
+        assert "launch_runs $__r -jobs 8" in script
+        assert "impl_1" in script

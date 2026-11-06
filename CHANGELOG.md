@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased] — 2026-11-06 impl 子进程静默退出诊断与 -prev_step 续跑
+
+- `get_critical_warnings`：STATUS 含 ERROR、messageDb 0 ERROR/CW、关键词也没有时，
+  若日志已有 `<step> completed successfully` 且没有 `Exiting Vivado`，报告
+  「子进程静默退出」（route 后 report_power / bus_skew / unconstrained timing /
+  write_checkpoint 把子 Vivado 杀掉的现场）。不再给出「未发现 ERROR」的误导结论。
+- `run_synthesis` / `run_implementation`：STATUS 含 ERROR 时 `reset_run -prev_step`
+  再 launch，保留已完成的 opt/place/physopt；失败才回退 `reset_runs`。Complete /
+  Not started 仍全量重置。
+
 ## [Unreleased] — 2026-11-02 启动诊断与外部会话兼容
 
 - Tcl 启动期间同时消费 stderr，失败时保留 stdout、stderr 与退出码；修复旧的

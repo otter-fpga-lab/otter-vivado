@@ -14,6 +14,7 @@ from vivado_mcp.analysis.verilog_compile_check import compile_check, format_comp
 from vivado_mcp.analysis.warning_parser import (
     BatStepResult,
     WarningReport,
+    detect_silent_run_child_exit,
     format_bat_steps_section,
     format_nonstandard_section,
     format_warning_report,
@@ -137,7 +138,10 @@ async def _scan_runme_nonstandard(
         return status, ""
 
     errs = scan_nonstandard_errors(body, start_line=start_line)
-    return status, format_nonstandard_section(errs)
+    section = format_nonstandard_section(errs)
+    if not section:
+        section = detect_silent_run_child_exit(status, body)
+    return status, section
 
 
 async def _get_target_simulator(session) -> str | None:
@@ -414,8 +418,9 @@ async def get_critical_warnings(
     1. ``synth_*`` / ``impl_*`` 等综合实现 run:走原流程(``runme.log`` 解析
        ERROR/CRITICAL WARNING)。**额外**:errors=0 且 cw=0 但 STATUS 含 ERROR 时,
        自动 tail ``runme.log`` 最后 N 行扫非标错误关键词(TclStackFree / segfault /
-       FATAL 等不带 ERROR: 前缀的内部异常),解决"messageDb 显示干净但 run 实际
-       崩了"的盲区。
+       FATAL 等不带 ERROR: 前缀的内部异常)。关键词未命中时再认
+       ``<step> completed successfully`` 且没有 ``Exiting Vivado`` 的子进程静默退出
+       (report_power / bus_skew / unconstrained timing / write_checkpoint 把子 Vivado 杀掉)。
     2. ``sim_*`` simulation fileset:改去 tail ``<proj>.sim/<sim_fs>/*/xsim/*.log``
        (Vivado launch_simulation 的真错误位置,**不在** runme.log),扫非标
        关键词,自动暴露 xvlog 未找到等子进程错误。

@@ -20,6 +20,7 @@ from vivado_mcp.analysis.warning_parser import (
     WarningGroup,
     WarningReport,
     format_bat_steps_section,
+    detect_silent_run_child_exit,
     format_nonstandard_section,
     format_warning_report,
     group_warnings,
@@ -548,6 +549,37 @@ class TestFormatNonstandardSection:
         # medium 没有 hint,只有头部 + 条目
         assert "可能的修复方向" not in out
         assert "permission_denied" in out
+
+
+class TestDetectSilentRunChildExit:
+    """STATUS=ERROR 但日志显示步骤已成功、子进程未正常退出。"""
+
+    def test_route_completed_without_checkpoint_or_exit(self):
+        body = (
+            "187 Infos, 107 Warnings, 0 Critical Warnings and 0 Errors encountered.\n"
+            "route_design completed successfully\n"
+            "INFO: [runtcl-4] Executing : report_clock_utilization "
+            "-file XCZU7EV_TOP_clock_utilization_routed.rpt\n"
+            "report_clock_utilization: Time (s): cpu = 00:00:06 ; elapsed = 00:00:06\n"
+        )
+        out = detect_silent_run_child_exit("route_design ERROR", body)
+        assert "子进程静默退出" in out
+        assert "route_design completed successfully" in out
+        assert "write_checkpoint" in out
+        assert "reset_run -prev_step" in out
+
+    def test_ignores_complete_status(self):
+        body = "route_design completed successfully\n"
+        assert detect_silent_run_child_exit("route_design Complete!", body) == ""
+
+    def test_ignores_normal_vivado_exit(self):
+        body = (
+            "route_design completed successfully\n"
+            "INFO: [Common 17-1381] The checkpoint 'XCZU7EV_TOP_routed.dcp' "
+            "has been generated.\n"
+            "INFO: [Common 17-206] Exiting Vivado at Fri Nov  6 11:27:37 2026...\n"
+        )
+        assert detect_silent_run_child_exit("route_design ERROR", body) == ""
 
 
 # ====================================================================== #

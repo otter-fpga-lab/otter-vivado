@@ -1,9 +1,14 @@
 # Otter Vivado：远程构建合入与既有能力维护
 
-Status: OPEN（2026-10-28 spawn 去掉 IDE 环境泄漏，待重启 MCP GUI 验证 Custom Editor）
+Status: OPEN（2026-11-06 impl 子进程静默退出诊断与 ERROR 时 -prev_step 续跑）
 Target: otter-fpga-lab/otter-vivado
-Basis: 现场反馈 MCP 拉起的 Vivado 双击源码无法打开 VS Code
-Next: 重启由插件 spawn 的 GUI 后验证 Custom Editor
+Basis: 采集板 impl_1 route 成功后 write_checkpoint 前子进程被杀；messageDb 干净导致「未发现 ERROR」；`run_implementation` 全量 reset_runs 丢掉 physopt
+Next: 重启 MCP 后现场用失败的 impl 再调 get_critical_warnings / run_implementation 验证；已有 GUI 会话不必为加载本改动而停掉当前板上调试
+
+* **子进程静默退出 + prev_step（2026-11-06）**：`detect_silent_run_child_exit` 认
+  `completed successfully` 且无 `Exiting Vivado`。`LAUNCH_RUN_IF_IDLE` 对 ERROR
+  走 `reset_run -prev_step`。单测见 `tests/analysis/test_warning_parser.py`、
+  `tests/test_diagnostic_tools.py`、`tests/test_tcl_utils.py`。未重启 MCP 前旧进程仍是旧逻辑。
 
 * **Codex Tcl 静默退出（2026-11-02）**：现场 MCP 宿主环境包含 SystemRoot，
   但缺少 PROCESSOR_ARCHITECTURE；Vivado 2024.2 的 loader.bat 对此直接返回 1，

@@ -67,6 +67,8 @@ puts "VMCP_POLL|$__s|$__p|$__e"
 # --------------------------------------------------------------------------- #
 #  原子启动 run：同一条 Tcl 命令内检查运行态，再 reset + launch。
 #  防止两个并发 MCP 工作流在 Python 多次 execute 之间交错，重置正在运行的同名 run。
+#  STATUS 含 ERROR 时 reset_run -prev_step（保留已完成的 opt/place/physopt）；
+#  失败则回退 reset_runs。Complete / Not started 仍全量 reset_runs。
 #  输出：VMCP_RUN_LAUNCH|started/busy/missing|<STATUS>
 # --------------------------------------------------------------------------- #
 
@@ -79,9 +81,15 @@ if {{$__r eq ""}} {{
     if {{[string match -nocase "*Running*" $__s]
          || [string match -nocase "*Queued*" $__s]}} {{
         puts "VMCP_RUN_LAUNCH|busy|$__s"
+    }} elseif {{[string match -nocase "*ERROR*" $__s]}} {{
+        if {{[catch {{reset_run -prev_step $__r}}]}} {{
+            reset_runs $__r
+        }}
+        launch_runs $__r -jobs {jobs}
+        puts "VMCP_RUN_LAUNCH|started|[get_property STATUS $__r]"
     }} else {{
-        reset_runs {run_name}
-        launch_runs {run_name} -jobs {jobs}
+        reset_runs $__r
+        launch_runs $__r -jobs {jobs}
         puts "VMCP_RUN_LAUNCH|started|[get_property STATUS $__r]"
     }}
 }}

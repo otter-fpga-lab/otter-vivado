@@ -757,6 +757,65 @@ def format_nonstandard_section(errors: list[NonStandardError]) -> str:
     return "\n".join(lines)
 
 
+_RE_STEP_COMPLETED = re.compile(
+    r"(synth_design|opt_design|place_design|phys_opt_design|"
+    r"route_design|write_bitstream)\s+completed successfully",
+    re.IGNORECASE,
+)
+_RE_CHECKPOINT_WRITTEN = re.compile(
+    r"The checkpoint .+ has been generated",
+    re.IGNORECASE,
+)
+
+
+def detect_silent_run_child_exit(status: str, body: str) -> str:
+    """STATUS 含 ERROR、日志却显示某步已成功、且子进程没有正常退出时的说明。
+
+    现场：``route_design completed successfully`` 之后跑 ``report_*`` /
+    ``write_checkpoint``，子 Vivado 被杀，``runme.log`` 无 ``ERROR:`` 前缀，
+    ``.vivado.error.rst`` 常为空。关键词扫描抓不到 TclStackFree/segfault。
+    """
+    if "ERROR" not in (status or "").upper():
+        return ""
+    if not (body or "").strip():
+        return ""
+    if "Exiting Vivado" in body:
+        return ""
+    match = None
+    for found in _RE_STEP_COMPLETED.finditer(body):
+        match = found
+    if match is None:
+        return ""
+    step = match.group(1)
+    lines = [
+        "=== 子进程静默退出 ===",
+        f"Vivado STATUS=`{status}`，messageDb 0 ERROR / 0 CW，但 run 失败。",
+        f"日志末尾有 `{step} completed successfully`，没有 `Exiting Vivado`。",
+    ]
+    if _RE_CHECKPOINT_WRITTEN.search(body):
+        lines.append(
+            "checkpoint 已写出，子进程仍未正常退出；检查该步之后的 report 是否把进程杀掉。"
+        )
+    else:
+        lines.append(
+            "没有 `The checkpoint ... has been generated`："
+            "子进程多半死在该步之后的 report_* 或 write_checkpoint。"
+        )
+    lines.extend(
+        [
+            "",
+            "这不是 RTL/时序 ERROR。常见原因：",
+            "  • ROUTE 后 report_power / report_bus_skew / "
+            "report_timing_summary -report_unconstrained 把子 Vivado 杀掉",
+            "  • 同一 .xpr 开了第二份 Vivado（GUI + Tcl）",
+            "建议：禁用上述 ROUTE 报告，`reset_run -prev_step` 后 `launch_runs` 续跑；"
+            "不要对同一工程再 start_session(mode=\"tcl\")。",
+            "Otter `run_implementation` 在 STATUS 含 ERROR 时走 -prev_step，不再全量 reset_runs。",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def parse_pre_bitstream(raw: str) -> tuple[str, int, list[str]]:
     """解析 CHECK_PRE_BITSTREAM 脚本输出。
 

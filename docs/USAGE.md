@@ -116,7 +116,7 @@ get_run_progress(run_name="synth_1", session_id="default")
 | 工具 | 说明 |
 |------|------|
 | `run_synthesis` | 运行综合，Python 轮询不阻塞，完成后自动 open_run + 诊断 |
-| `run_implementation` | 运行实现（布局布线） |
+| `run_implementation` | 运行实现（布局布线）。STATUS 含 ERROR 时 `reset_run -prev_step` 续跑，不清掉已完成的 place/physopt |
 | `get_run_progress` | 查询指定 run 的原生状态、百分比、最近观测阶段与日志尾部；日志更新时间不能单独证明运行卡住 |
 | `generate_bitstream` | 生成比特流（默认前置 CRITICAL WARNING 安全检查） |
 | `program_device` | 编程 FPGA 设备（封装 open_hw_manager → connect → program） |
@@ -180,7 +180,7 @@ get_run_progress(run_name="synth_1", session_id="default")
 ### 诊断
 | 工具 | 说明 |
 |------|------|
-| `get_critical_warnings` | 提取并按 ID 分类 CRITICAL WARNING + ERROR,含 18+ 种已知 ID 的中文修复建议。**0.3.9** 加 `compare_with_last=True` 差分。**0.3.14** errors=0+cw=0 但 STATUS=ERROR 时 tail runme.log 扫非标关键词(TclStackFree/segfault/中文路径 cmd 报错)。**0.3.15/16** `run_name='sim_*'` 时:先 glob xsim/*.log;全空就自动 `launch_simulation -scripts_only` + Vivado session 内 `exec` 跑 compile/elaborate.bat 抓真错 |
+| `get_critical_warnings` | 提取并按 ID 分类 CRITICAL WARNING + ERROR,含 18+ 种已知 ID 的中文修复建议。**0.3.9** 加 `compare_with_last=True` 差分。**0.3.14** errors=0+cw=0 但 STATUS=ERROR 时 tail runme.log 扫非标关键词(TclStackFree/segfault/中文路径 cmd 报错)。关键词未命中时再认「步骤 completed successfully 但没有 Exiting Vivado」的子进程静默退出。**0.3.15/16** `run_name='sim_*'` 时:先 glob xsim/*.log;全空就自动 `launch_simulation -scripts_only` + Vivado session 内 `exec` 跑 compile/elaborate.bat 抓真错 |
 | `check_bitstream_readiness` | **0.3.0** 烧板前一键 READY/WARN/BLOCK 综合判定 |
 | `verify_io_placement_tool` | 对比 XDC 约束（-dict/传统两种语法）与实际 IO 布局，GT 不匹配标为 CRITICAL |
 | `xdc_lint` | **0.3.0** 纯 Python 静态 XDC 检查(PIN_CONFLICT / 漏 IOSTANDARD / DUPLICATE_PORT / CLOCK_NO_PERIOD / 跨文件冲突),不需 Vivado |
