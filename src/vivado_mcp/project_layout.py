@@ -45,7 +45,7 @@ _XPR_SEARCH_DEPTH = 4
 DEFAULT_DEBUG_SIZE_LIMIT_BYTES = 1024 * 1024 * 1024  # 1 GiB
 DEFAULT_HYGIENE_MAX_FILES = 10_000
 DEFAULT_HYGIENE_TIMEOUT_SECONDS = 2.0
-_LEFTOVER_HIDDEN_NAMES = (".vmcp", ".work")
+_LEFTOVER_HIDDEN_NAMES = (".vmcp", ".work", ".otter")
 
 
 class LayoutError(ValueError):
@@ -206,11 +206,12 @@ def _rules(root: Path, values: dict[str, Path | None]) -> tuple[str, ...]:
         else "未找到 99_垃圾堆：不要自动创建回收站，需要丢弃文件时先问用户。"
     )
     return (
-        "不要在工程内创建 .work、.vmcp 等隐藏目录或自造工作树。",
+        "不要在工程内创建 .work、.vmcp、.otter 等隐藏目录或自造工作树。",
         f"过程文件（导出、实验、临时报告）放 {show('debug_dir')}<YYYYMMDD_主题>/ 子目录。",
         f"关键结论只追加到 {show('notes_file')}，不另建零散笔记。",
-        f"智能体生成的临时 Tcl/Python 脚本放 {show('scripts_dir')}，"
-        "不要挂到 run 的 TCL.PRE/TCL.POST。",
+        f"智能体生成的脚本放 {show('scripts_dir')}；"
+        "临时脚本不要挂到 run 的 TCL.PRE/POST；严禁挂指向工程外或 %TEMP% 的钩子；"
+        "确需规避（见 PITFALLS C3）时用工程内脚本。",
         "构建使用 Vivado 原生 .runs/.gen 目录，重新编译直接覆盖，不另建工作树。",
         f"交付固件与说明放 {show('download_dir')}。",
         f"Vivado 运行目录（.Xil/.jou/.log）默认 {values['vivado_cwd']}，不要落在工程根。",
@@ -416,6 +417,27 @@ def inspect_layout_hygiene(
                 ),
                 "suggestion": _trash_suggestion(layout.trash_dir, "旧 Debug 子目录"),
             })
+        elif scan.truncated:
+            reason = (
+                f"达到扫描超时上限（{timeout_seconds:.1f}s）"
+                if scan.timed_out
+                else f"达到扫描文件数上限（{max_files} 个文件）"
+            )
+            items.append({
+                "kind": "debug_dir_scan_truncated",
+                "path": str(layout.debug_dir),
+                "total_bytes": scan.total_bytes,
+                "threshold_bytes": debug_size_limit_bytes,
+                "scanned_files": scan.scanned_files,
+                "truncated": True,
+                "timed_out": scan.timed_out,
+                "message": (
+                    f"debug_dir 扫描因{reason}提前结束（已扫 {scan.scanned_files} 个文件、"
+                    f"累计 {_format_bytes(scan.total_bytes)}，未超过阈值 "
+                    f"{_format_bytes(debug_size_limit_bytes)}，总大小未知）：{layout.debug_dir}。"
+                ),
+                "suggestion": _trash_suggestion(layout.trash_dir, "旧 Debug 子目录"),
+            })
 
     return items
 
@@ -442,14 +464,21 @@ def _candidate_names(topic: str, now: datetime | None):
 
 
 def reserve_debug_subdir(
-    layout: ProjectLayout | dict, topic: str, *, now: datetime | None = None,
+    layout: ProjectLayout | dict,
+    topic: str,
+    *,
+    now: datetime | None = None,
+    create_parent: bool = True,
 ) -> Path:
-    """确保 debug_dir 存在，返回尚不存在的 ``YYYYMMDD_HHMMSS_<topic>`` 路径（不创建它）。
+    """返回尚不存在的 ``YYYYMMDD_HHMMSS_<topic>`` 路径（不创建子目录本身）。
 
-    供要求“父目录存在的新目录”的严格导出入口使用：子目录由调用方以排他语义创建。
+    ``create_parent=True``（默认）时确保父目录 ``debug_dir`` 存在，供要求
+    “父目录存在的新目录”的严格导出入口使用；传 ``create_parent=False`` 时
+    保持只读，留待调用方在校验通过后创建。
     """
     debug_dir = _debug_dir_of(layout)
-    debug_dir.mkdir(parents=True, exist_ok=True)
+    if create_parent:
+        debug_dir.mkdir(parents=True, exist_ok=True)
     for name in _candidate_names(topic, now):
         candidate = debug_dir / name
         if not os.path.lexists(candidate):
@@ -522,15 +551,17 @@ NO_PROJECT_FOR_OUTPUT = (
 )
 
 
-async def default_output_dir(session, topic: str, *, hint_path: str | None = None) -> str:
+async def default_output_dir(
+    session, topic: str, *, hint_path: str | None = None, create_parent: bool = True,
+) -> str:
     """按工程约定预留 ``Debug/YYYYMMDD_HHMMSS_<topic>``（不创建子目录本身）。
 
     ``hint_path`` 是工程内文件（如 DCP），优先从它向上查找 .xpr；否则取会话当前工程。
-    推不出工程时抛出带中文说明的 LayoutError。
+    推不出工程时抛出带中文说明的 LayoutError。``create_parent=False`` 时不创建 Debug/。
     """
     xpr: str | Path | None = find_project_from_path(hint_path) if hint_path else None
     if xpr is None and session is not None:
         xpr = await query_session_xpr(session)
     if not xpr:
         raise LayoutError(NO_PROJECT_FOR_OUTPUT)
-    return str(reserve_debug_subdir(resolve_layout(xpr), topic))
+    return str(reserve_debug_subdir(resolve_layout(xpr), topic, create_parent=create_parent))

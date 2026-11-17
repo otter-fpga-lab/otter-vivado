@@ -57,8 +57,16 @@ def test_defaults_from_xpr_and_directory_do_not_create(tmp_path):
         assert layout.download_dir == root / "Download"
         assert layout.vivado_cwd == default_vivado_cwd()
         assert layout.config_path is None
-        assert any(".work" in rule and ".vmcp" in rule for rule in layout.rules)
-        assert any("TCL.PRE" in rule for rule in layout.rules)
+        assert any(
+            ".work" in rule and ".vmcp" in rule and ".otter" in rule
+            for rule in layout.rules
+        )
+        assert any(
+            "临时脚本不要挂到 run 的 TCL.PRE/POST" in rule
+            and "严禁挂指向工程外或 %TEMP% 的钩子" in rule
+            and "PITFALLS C3" in rule
+            for rule in layout.rules
+        )
     assert sorted(p.name for p in root.iterdir()) == before
     data = layout.to_dict()
     assert set(data) == {
@@ -258,8 +266,10 @@ def test_hygiene_detects_leftovers_singular_script_and_oversized_debug(tmp_path)
     root, _ = _project(tmp_path)
     (root / ".vmcp").mkdir()
     (root / ".work").mkdir()
+    (root / ".otter").mkdir()
     debug_dir = root / "Debug"
     (debug_dir / ".work").mkdir(parents=True)
+    (debug_dir / ".otter").mkdir()
     big_sub = debug_dir / "20261117_heap"
     big_sub.mkdir()
     (big_sub / "trace.bin").write_bytes(b"x" * 2048)
@@ -271,14 +281,16 @@ def test_hygiene_detects_leftovers_singular_script_and_oversized_debug(tmp_path)
     hygiene = inspect_layout_hygiene(layout, debug_size_limit_bytes=1024)
 
     kinds = [item["kind"] for item in hygiene]
-    assert kinds.count("leftover_hidden_dir") == 3
+    assert kinds.count("leftover_hidden_dir") == 5
     assert "singular_script_dir" in kinds
     assert "oversized_debug_dir" in kinds
 
     paths = {item["path"] for item in hygiene}
     assert str(root / ".vmcp") in paths
     assert str(root / ".work") in paths
+    assert str(root / ".otter") in paths
     assert str(debug_dir / ".work") in paths
+    assert str(debug_dir / ".otter") in paths
     assert str(singular) in paths
     assert str(debug_dir) in paths
 
@@ -345,11 +357,39 @@ def test_hygiene_scan_bounds_max_files_and_timeout(monkeypatch, tmp_path):
     assert hygiene[0]["truncated"] is True
     assert hygiene[0]["scanned_files"] == 4
 
-    ticks = iter([100.0, 100.0, 105.0])
-    monkeypatch.setattr("vivado_mcp.project_layout.time.monotonic", lambda: next(ticks, 105.0))
+    # 截断但累计未超阈值时，仍给出截断提示（总大小未知）
+    truncated_under = inspect_layout_hygiene(
+        layout, debug_size_limit_bytes=100_000, max_files=4, timeout_seconds=5.0,
+    )
+    assert len(truncated_under) == 1
+    assert truncated_under[0]["kind"] == "debug_dir_scan_truncated"
+    assert truncated_under[0]["truncated"] is True
+    assert truncated_under[0]["timed_out"] is False
+    assert truncated_under[0]["scanned_files"] == 4
+    assert "扫描文件数上限" in truncated_under[0]["message"]
+    assert "总大小未知" in truncated_under[0]["message"]
+
+    ticks = iter([100.0, 100.0, 105.0, 200.0, 200.0, 205.0])
+    monkeypatch.setattr("vivado_mcp.project_layout.time.monotonic", lambda: next(ticks, 205.0))
     timed_out = _scan_dir_size(debug_dir, max_files=100, timeout_seconds=1.0)
     assert timed_out.truncated is True
     assert timed_out.timed_out is True
+
+    timed_out_hygiene = inspect_layout_hygiene(
+        layout, debug_size_limit_bytes=100_000, max_files=100, timeout_seconds=1.0,
+    )
+    assert len(timed_out_hygiene) == 1
+    assert timed_out_hygiene[0]["kind"] == "debug_dir_scan_truncated"
+    assert timed_out_hygiene[0]["timed_out"] is True
+    assert "扫描超时上限" in timed_out_hygiene[0]["message"]
+
+
+def test_reserve_debug_subdir_can_skip_creating_parent(tmp_path):
+    root, _ = _project(tmp_path)
+    layout = resolve_layout(root)
+    path = reserve_debug_subdir(layout, "bundle", now=NOW, create_parent=False)
+    assert path == root / "Debug" / "20261117_093005_bundle"
+    assert not (root / "Debug").exists()
 
 
 async def test_get_project_layout_tool_includes_hygiene(tmp_path):

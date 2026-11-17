@@ -23,6 +23,98 @@ def _error(exc):
     return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
 
+def _rmdir_if_empty(directory: Path) -> None:
+    try:
+        directory.rmdir()
+    except OSError:
+        pass
+
+
+def _preflight_service_ai_write(
+    service,
+    expected_revision: int,
+    *,
+    experiment_mode: bool = False,
+) -> dict | None:
+    """校验共享服务处于可提交状态；兼容无 snapshot 的测试桩。"""
+    if hasattr(service, "_session_ready"):
+        service._session_ready()
+    if not hasattr(service, "snapshot"):
+        if type(expected_revision) is not int:
+            raise ValueError("expected_revision 必须是整数")
+        return None
+    lease = getattr(service, "experiment", None)
+    if lease is not None and lease.active:
+        msg = (
+            "已有活动实验；先中止并等待回执"
+            if experiment_mode
+            else "活动实验正在使用共享服务；先暂停观察或中止后再操作"
+        )
+        raise RuntimeError(msg)
+    snapshot = service.snapshot()
+    if type(expected_revision) is not int or snapshot["revision"] != expected_revision:
+        raise RuntimeError(
+            "调试状态已变化或正在执行，请重新读取快照"
+            if experiment_mode
+            else "状态已变化；请读取最新快照后重新操作"
+        )
+    if snapshot["busy"] or getattr(service, "_sampling", False):
+        raise RuntimeError(
+            "调试状态已变化或正在执行，请重新读取快照"
+            if experiment_mode
+            else "已有调试操作或采样正在执行，请读取状态后重试"
+        )
+    if snapshot["control"] != "ai":
+        raise RuntimeError(
+            "实验 owner 与共享控制权不一致"
+            if experiment_mode
+            else "当前控制权属于另一方，请先明确切换控制权"
+        )
+    if snapshot["connection"] != "connected" or not snapshot["hardware"]:
+        raise RuntimeError(
+            "创建实验前必须选择设备并成功刷新"
+            if experiment_mode
+            else "缺少最新硬件状态，请先选择设备并成功刷新"
+        )
+    return snapshot
+
+
+def _preflight_export_ila(service, params: dict, expected_revision: int) -> None:
+    if not isinstance(params, dict):
+        raise ValueError("params 必须是对象")
+    allowed = {"core", "output_dir"}
+    if "core" not in params or set(params) - allowed:
+        raise ValueError("export_ila 参数不符合约定")
+    if type(expected_revision) is not int:
+        raise ValueError("expected_revision 必须是整数")
+    for key, value in params.items():
+        if key == "output_dir" and value in (None, ""):
+            continue
+        if not isinstance(value, str) or not 1 <= len(value) <= 4096 or "\x00" in value:
+            raise ValueError(f"{key} 必须是非空文本")
+    _preflight_service_ai_write(service, expected_revision, experiment_mode=False)
+
+
+def _preflight_create_experiment(service, spec: dict, expected_revision: int) -> None:
+    from vivado_mcp.debug_experiment import validate_experiment
+
+    validate_experiment(spec)
+    snapshot = _preflight_service_ai_write(service, expected_revision, experiment_mode=True)
+    if snapshot is None:
+        return
+    hardware = snapshot["hardware"]
+    for step in spec["steps"]:
+        if step["kind"] not in ("debug", "wait_capture"):
+            continue
+        core = step["params"]["core"] if step["kind"] == "debug" else step["core"]
+        kind = "vios" if step.get("action") == "write_vio" else "ilas"
+        matches = [c for c in hardware[kind] if c["name"] == core]
+        if len(matches) != 1 or not matches[0].get("uuid"):
+            raise ValueError("实验需要唯一的核和实际 UUID")
+        if kind == "ilas" and matches[0].get("status") != "IDLE":
+            raise RuntimeError("创建或重做前 ILA 必须明确 IDLE；本地中止不会停止 FPGA 采集")
+
+
 @mcp.tool()
 async def open_debug_panel(
     session_id: str = "default", panel_path: str | None = None, ctx: Context = None,
@@ -96,19 +188,33 @@ async def debug_action(
     try:
         service = await _service(ctx, session_id)
         output_dir = None
+        created_parent: Path | None = None
         if action == "export_ila" and isinstance(params, dict):
             if params.get("output_dir") in (None, ""):
-                output_dir = await default_output_dir(service.session, "ila")
+                _preflight_export_ila(service, params, expected_revision)
+                output_dir = await default_output_dir(
+                    service.session, "ila", create_parent=False,
+                )
+                _preflight_export_ila(service, params, expected_revision)
                 params = {**params, "output_dir": output_dir}
+                parent = Path(output_dir).parent
+                if not parent.exists():
+                    parent.mkdir(parents=True, exist_ok=True)
+                    created_parent = parent
             elif isinstance(params["output_dir"], str):
                 output_dir = str(Path(params["output_dir"]).expanduser().absolute())
-        result = service.submit({
-            "action": action, "params": params, "expected_revision": expected_revision,
-        }, source="ai")
+        try:
+            result = service.submit({
+                "action": action, "params": params, "expected_revision": expected_revision,
+            }, source="ai")
+        except Exception:
+            if created_parent is not None:
+                _rmdir_if_empty(created_parent)
+            raise
         if output_dir is not None:
             result = {**result, "output_dir": output_dir}
         return json.dumps(result, ensure_ascii=False)
-    except (ValueError, RuntimeError) as exc:
+    except (ValueError, RuntimeError, OSError) as exc:
         return _error(exc)
 
 
@@ -141,9 +247,23 @@ async def create_debug_experiment(
 
     try:
         service = await _service(ctx, session_id)
+        created_parent: Path | None = None
         if not output_dir:
-            output_dir = await default_output_dir(service.session, "experiment")
-        experiment = DebugExperiment(service, spec, output_dir, expected_revision, owner="ai")
+            _preflight_create_experiment(service, spec, expected_revision)
+            output_dir = await default_output_dir(
+                service.session, "experiment", create_parent=False,
+            )
+            _preflight_create_experiment(service, spec, expected_revision)
+            parent = Path(output_dir).parent
+            if not parent.exists():
+                parent.mkdir(parents=True, exist_ok=True)
+                created_parent = parent
+        try:
+            experiment = DebugExperiment(service, spec, output_dir, expected_revision, owner="ai")
+        except Exception:
+            if created_parent is not None:
+                _rmdir_if_empty(created_parent)
+            raise
         return json.dumps({**experiment.snapshot(), "experiment_dir": str(experiment.root)},
                           ensure_ascii=False)
     except (ValueError, RuntimeError, OSError) as exc:

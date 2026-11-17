@@ -366,33 +366,71 @@ class TestStepHooks:
                 step_id="synth_design",
                 hook_type="pre",
                 path_raw="$PSRCDIR/utils_1/synth_pre.tcl",
-                path_resolved="$PSRCDIR/utils_1/synth_pre.tcl",
+                path_resolved=utils_pre.as_posix(),
                 category="工程内",
                 exists=True,
+                labels=("工程内",),
             ),
         )
 
         impl_hooks = by_id["impl_1"].step_hooks
         assert len(impl_hooks) == 5
-        assert [(h.step_id, h.hook_type, h.category, h.exists) for h in impl_hooks] == [
-            ("place_design", "post", "工程内", True),
-            ("route_design", "pre", "工程内", True),
-            ("route_design", "post", "工程外/TEMP", True),
-            ("write_bitstream", "pre", "不存在", False),
-            ("write_bitstream", "post", "工程外/TEMP", True),
+        assert [
+            (h.step_id, h.hook_type, h.labels, h.category, h.exists)
+            for h in impl_hooks
+        ] == [
+            ("place_design", "post", ("工程内",), "工程内", True),
+            ("route_design", "pre", ("工程内",), "工程内", True),
+            ("route_design", "post", ("工程外/TEMP",), "工程外/TEMP", True),
+            ("write_bitstream", "pre", ("工程内", "不存在"), "工程内；不存在", False),
+            ("write_bitstream", "post", ("工程外/TEMP",), "工程外/TEMP", True),
         ]
 
         d = cfg.to_dict()
         impl_dict = next(r for r in d["runs"] if r["run_id"] == "impl_1")
         assert len(impl_dict["step_hooks"]) == 5
         assert impl_dict["step_hooks"][1]["category"] == "工程内"
+        assert impl_dict["step_hooks"][3]["labels"] == ("工程内", "不存在")
 
         text = format_xpr(cfg)
         assert "步骤钩子(1 个):" in text
         assert "步骤钩子(5 个):" in text
+        assert f"$PSRCDIR/utils_1/synth_pre.tcl -> {utils_pre.as_posix()}" in text
         assert "route_design [PRE] [工程内] $PPRDIR/scripts/vivado_route_pre.tcl" in text
         assert f"route_design [POST] [工程外/TEMP] {outside.as_posix()}" in text
-        assert "write_bitstream [PRE] [不存在] $PPRDIR/scripts/missing.tcl" in text
+        assert (
+            "write_bitstream [PRE] [工程内；不存在] $PPRDIR/scripts/missing.tcl"
+            in text
+        )
+
+    def test_step_hooks_multi_label_temp_env_and_deleted_external(self, tmp_path):
+        proj = tmp_path / "env_proj"
+        proj.mkdir()
+        deleted_ext = tmp_path / "gone" / "ext.tcl"
+        xpr = proj / "env_proj.xpr"
+        xpr.write_text(
+            '<Project Version="7" Minor="40"><Runs><Run Id="impl_1" Type="Ft2:EntireDesign">'
+            '<Strategy>'
+            '<Step Id="opt_design" PreStepTclHook="%TEMP%/tmp_hook.tcl" '
+            'PostStepTclHook="$env(TEMP)/tcl_tmp.tcl"/>'
+            f'<Step Id="route_design" PreStepTclHook="{deleted_ext.as_posix()}" '
+            'PostStepTclHook="$CUSTOM_MACRO/unknown.tcl"/>'
+            '</Strategy></Run></Runs></Project>',
+            encoding="utf-8",
+        )
+        cfg = parse_xpr(str(xpr))
+        hooks = cfg.runs[0].step_hooks
+        assert [(h.step_id, h.hook_type, h.labels, h.exists) for h in hooks] == [
+            ("opt_design", "pre", ("工程外/TEMP", "不存在"), False),
+            ("opt_design", "post", ("工程外/TEMP", "不存在"), False),
+            ("route_design", "pre", ("工程外/TEMP", "不存在"), False),
+            ("route_design", "post", ("不存在",), False),
+        ]
+        text = format_xpr(cfg)
+        assert "opt_design [PRE] [工程外/TEMP；不存在] %TEMP%/tmp_hook.tcl" in text
+        assert "opt_design [POST] [工程外/TEMP；不存在] $env(TEMP)/tcl_tmp.tcl" in text
+        assert f"route_design [PRE] [工程外/TEMP；不存在] {deleted_ext.as_posix()}" in text
+        assert "route_design [POST] [不存在] $CUSTOM_MACRO/unknown.tcl" in text
 
     async def test_parse_xpr_mcp_tool_renders_hooks(self, tmp_path):
         from vivado_mcp.tools.introspect_tools import parse_xpr as parse_xpr_tool
@@ -412,4 +450,4 @@ class TestStepHooks:
         )
         out = await parse_xpr_tool(str(xpr))
         assert "route_design [PRE] [工程内] $PPRDIR/scripts/pre.tcl" in out
-        assert "route_design [POST] [不存在] C:/no_such_dir/post.tcl" in out
+        assert "route_design [POST] [工程外/TEMP；不存在] C:/no_such_dir/post.tcl" in out

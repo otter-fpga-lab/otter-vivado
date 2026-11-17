@@ -120,15 +120,24 @@ async def export_debug_bundle(
     source = Path(checkpoint_path).expanduser().absolute()
     if source.suffix.lower() != ".dcp" or not source.is_file():
         raise ValueError("checkpoint_path 必须是实际存在的 .dcp 文件")
-    if output_dir is None:
+    auto_output = output_dir is None
+    if auto_output:
         from vivado_mcp.project_layout import default_output_dir
 
-        output_dir = await default_output_dir(session, "bundle", hint_path=str(source))
+        if (
+            session is None
+            or not hasattr(session, "execute")
+            or not getattr(session, "is_alive", True)
+        ):
+            raise RuntimeError("调试/导出会话不可用，请先连接或启动专用会话")
+        output_dir = await default_output_dir(
+            session, "bundle", hint_path=str(source), create_parent=False,
+        )
     elif not isinstance(output_dir, str) or not output_dir or "\x00" in output_dir:
         raise ValueError("output_dir 必须是父目录已存在的新目录路径")
     destination = Path(output_dir).expanduser().absolute()
     # mkdir 的排他语义拒绝已有目录/文件/链接；即使上次失败也使用新目录。
-    destination.mkdir(parents=False, exist_ok=False)
+    destination.mkdir(parents=auto_output, exist_ok=False)
     destination = destination.resolve()
     paths = {key: destination / name for key, name in _FILES.items()}
     attempt_id = uuid.uuid4().hex
