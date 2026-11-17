@@ -95,7 +95,7 @@ def resolve_spawn_cwd(cwd: str | None) -> str:
 
 
 async def _probe_runtime(session: BaseSession) -> None:
-    """启动/接管后低成本核对实际版本与 pwd；测试替身或失败时静默跳过。"""
+    """spawn 成功后低成本核对实际版本与 pwd；测试替身或失败时静默跳过。"""
     probe = getattr(session, "probe_runtime_info", None)
     if probe is None:
         return
@@ -253,7 +253,9 @@ class SessionManager:
             getattr(session, "connected_port", None),
             getattr(session, "pid", None),
         )
-        await _probe_runtime(session)
+        # 只核对本插件自己 spawn 的进程；attach（含 gui 端口命中已有 GUI）不附带查询。
+        if getattr(session, "mode", None) != "attach":
+            await _probe_runtime(session)
 
         return session, banner
 
@@ -313,8 +315,8 @@ class SessionManager:
             getattr(session, "connected_port", None),
             getattr(session, "pid", None),
         )
-        # 不改外部 GUI 的工作目录，只读核对版本与 pwd 供回显。
-        await _probe_runtime(session)
+        # 不改外部 GUI 的工作目录，也不附带查询：外部 GUI 可能正在跑长命令，
+        # 接管不能因核对 version/pwd 被阻塞。
         logger.info("已接管外部 GUI 会话 '%s'（端口 %d）", canonical, port)
         return session
 

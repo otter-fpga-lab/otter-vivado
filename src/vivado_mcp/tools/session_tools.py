@@ -164,7 +164,7 @@ def _cwd_line(status: dict, requested_cwd: str, reused: bool) -> str:
     """回显 Vivado 实际工作目录；attach / 复用会话明确说明未改变。"""
     pwd = status.get("runtime_pwd")
     spawn_cwd = status.get("cwd")
-    pwd_text = f"实际 pwd: {pwd}" if pwd else "实际 pwd 未能读取"
+    pwd_text = f"实际 pwd: {pwd}" if pwd else "实际 pwd 未查询"
     ignored = f"；未应用传入的 cwd={requested_cwd!r}" if requested_cwd else ""
     if status.get("mode") == "attach":
         return f"工作目录: 未改变（attach 已有 Vivado，{pwd_text}{ignored}）"
@@ -225,8 +225,9 @@ async def start_session(
         cwd: 新 spawn 的 Vivado 工作目录（``.Xil/`` 等运行文件落点）。留空使用与开始菜单
             GUI 快捷方式一致的 Vivado 标准目录（Windows ``%APPDATA%\\Xilinx\\Vivado``，
             不存在时创建）；显式值必须是已存在的目录。不要用业务仓根，也不要事后
-            ``run_tcl cd`` 到临时目录。attach、external@ 和复用已有会话不改变工作目录，
-            只回显实际 pwd。
+            ``run_tcl cd`` 到临时目录。新 spawn 的进程启动后核对 ``version -short`` 与
+            ``pwd``；attach、external@ 和复用已有会话不改变工作目录，也不附带查询
+            （外部 GUI 可能正在跑长命令），版本沿用已有信息或写明未核对。
     """
     manager = _get_manager(ctx)
 
@@ -260,11 +261,12 @@ async def start_session(
             "启动候选路径（不代表已连接 GUI 的实际版本）"
             if status.get("vivado_path_is_launch_candidate") else "Vivado"
         )
-        version_line = (
-            f"已核对运行版本: {runtime_version}"
-            if runtime_version != "unknown"
-            else "运行版本: 未核对（version -short 未返回可识别版本）"
-        )
+        if runtime_version != "unknown":
+            version_line = f"已核对运行版本: {runtime_version}"
+        elif status.get("mode") == "attach" or reused:
+            version_line = "运行版本: 未核对（未附带查询）"
+        else:
+            version_line = "运行版本: 未核对（version -short 未返回可识别版本）"
         return (
             f"会话 '{session_id}' 已就绪（mode={status['mode']}）。\n"
             f"{path_label}: {status['vivado_path']}\n"

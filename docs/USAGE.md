@@ -76,8 +76,9 @@ AI: [调用 start_session(mode="tcl")] → 无 GUI,跑得更快
 
 新 spawn 的 GUI/Tcl 进程默认在与开始菜单快捷方式一致的 `%APPDATA%\Xilinx\Vivado` 运行
 （Linux 为 `~/.Xilinx/Vivado`，缺失时创建），`.Xil/` 不再落到 MCP 宿主所在的业务仓根；
-需要其他位置时传已存在的 `cwd`。attach、`external@` 和复用已有会话不改变工作目录，
-返回中回显实际 `pwd` 与 `version -short`。不要用 `run_tcl cd` 切到临时目录，也不要把
+需要其他位置时传已存在的 `cwd`，新进程启动后返回中回显核对过的 `pwd` 与 `version -short`。
+attach、`external@` 和复用已有会话不改变工作目录，也不附带查询（外部 GUI 可能正在跑长命令）。
+不要用 `run_tcl cd` 切到临时目录，也不要把
 临时 Tcl 挂到 run 的 `STEPS.*.TCL.PRE/POST`。
 
 长时间综合/实现可以启动后立即返回，不占住一次 MCP 调用：
