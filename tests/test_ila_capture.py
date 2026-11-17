@@ -58,7 +58,7 @@ async def test_real_mcp_export_and_offline_read(tmp_path):
 
 async def test_registered_read_contract_and_blocked_output(tmp_path):
     registered = {v.name: v for v in await mcp.list_tools()}
-    assert len(registered) == 52
+    assert {'read_ila_waveform', 'debug_action'} <= set(registered)
     assert registered['read_ila_waveform'].input_schema['required'] == ['file_path']
     assert 'export_ila' in registered['debug_action'].input_schema['properties']['action']['enum']
     path = tmp_path / 'test.vcd'

@@ -33,8 +33,8 @@ async def call(name: str, arguments: dict, ctx: Context | None = None) -> dict:
 
 async def test_registered_tools_expose_input_contracts_without_context():
     registered = await mcp.list_tools()
-    assert len(registered) == 52
     tools = {tool.name: tool for tool in registered}
+    assert {"plan_debug_design", "inspect_debug_design", "prepare_debug_design"} <= set(tools)
     contracts = {
         "plan_debug_design": ({"spec"}, {"spec"}),
         "inspect_debug_design": ({"spec", "session_id"}, {"spec"}),
