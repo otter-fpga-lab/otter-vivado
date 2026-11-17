@@ -1260,8 +1260,9 @@ class TestGetTimingReport:
 class TestGetTimingReportWithPaths:
     """测试 get_timing_report 在 timing_met=False 时自动追加违例路径详情。"""
 
-    # 构造一份 WNS 为负的 report_timing_summary 最小文本
+    # 构造一份 WNS 为负的 report_timing_summary 最小文本（53cfa8ee 起阶段取自报告头 Design State）
     _VIOLATED_SUMMARY = """\
+| Design State : Routed
 ------------------------------------------------------------------------------------
 | Design Timing Summary
 | ---------------------
@@ -1274,7 +1275,7 @@ class TestGetTimingReportWithPaths:
 
     @pytest.mark.asyncio
     async def test_triggers_violating_paths_query_on_fail(self):
-        """timing_met=False → 第三次 execute 必须跑 REPORT_VIOLATING_PATHS。"""
+        """timing_met=False → 第二次 execute 必须跑 REPORT_VIOLATING_PATHS。"""
         from vivado_mcp.tcl_scripts import REPORT_VIOLATING_PATHS
         from vivado_mcp.tools.report_tools import get_timing_report
 
@@ -1283,15 +1284,9 @@ class TestGetTimingReportWithPaths:
         session = AsyncMock()
         session.execute = AsyncMock(
             side_effect=[
-                # 1. QUERY_DESIGN_STAGE
-                _make_tcl_result(
-                    "VMCP_STAGE:stage=post-route"
-                    "|synth_status=synth_design Complete!"
-                    "|impl_status=route_design Complete!"
-                ),
-                # 2. report_timing_summary -> 违例
+                # 1. report_timing_summary -> 违例（含 Design State 头）
                 _make_tcl_result(self._VIOLATED_SUMMARY),
-                # 3. REPORT_VIOLATING_PATHS
+                # 2. REPORT_VIOLATING_PATHS
                 _make_tcl_result(violating_text),
             ]
         )
@@ -1301,11 +1296,11 @@ class TestGetTimingReportWithPaths:
         with patch("vivado_mcp.tools.report_tools._require_session", return_value=session):
             result = await get_timing_report(session_id="default", ctx=ctx)
 
-        # 调用序列 = stage + summary + violating_paths
-        assert session.execute.call_count == 3
-        # 第三次调用必须是 REPORT_VIOLATING_PATHS 脚本本体
-        third_call_cmd = session.execute.call_args_list[2].args[0]
-        assert third_call_cmd == REPORT_VIOLATING_PATHS
+        # 调用序列 = summary + violating_paths
+        assert session.execute.call_count == 2
+        # 第二次调用必须是 REPORT_VIOLATING_PATHS 脚本本体
+        second_call_cmd = session.execute.call_args_list[1].args[0]
+        assert second_call_cmd == REPORT_VIOLATING_PATHS
 
         # 报告必须含违例路径段和具体模式标签
         assert "FAIL" in result
@@ -1319,20 +1314,14 @@ class TestGetTimingReportWithPaths:
         from vivado_mcp.tools.report_tools import get_timing_report
 
         # sample_report_timing.txt 里 WNS=0.234, WHS=0.045 → timing_met=True
-        timing_text = _load_fixture("sample_report_timing.txt")
+        timing_text = "| Design State : Routed\n" + _load_fixture("sample_report_timing.txt")
 
         session = AsyncMock()
         session.execute = AsyncMock(
             side_effect=[
-                # 1. QUERY_DESIGN_STAGE
-                _make_tcl_result(
-                    "VMCP_STAGE:stage=post-route"
-                    "|synth_status=synth_design Complete!"
-                    "|impl_status=route_design Complete!"
-                ),
-                # 2. report_timing_summary -> PASS
+                # 1. report_timing_summary -> PASS
                 _make_tcl_result(timing_text),
-                # 不应该有第 3 次调用!
+                # 不应该有第 2 次调用!
             ]
         )
 
@@ -1341,8 +1330,8 @@ class TestGetTimingReportWithPaths:
         with patch("vivado_mcp.tools.report_tools._require_session", return_value=session):
             result = await get_timing_report(session_id="default", ctx=ctx)
 
-        # 只调两次:stage + summary
-        assert session.execute.call_count == 2
+        # 只调一次:summary（不再额外查 QUERY_DESIGN_STAGE）
+        assert session.execute.call_count == 1
         assert "PASS" in result
         assert "违例路径 Top" not in result
 
@@ -1354,13 +1343,8 @@ class TestGetTimingReportWithPaths:
         session = AsyncMock()
         session.execute = AsyncMock(
             side_effect=[
-                _make_tcl_result(
-                    "VMCP_STAGE:stage=post-route"
-                    "|synth_status=synth_design Complete!"
-                    "|impl_status=route_design Complete!"
-                ),
                 _make_tcl_result(self._VIOLATED_SUMMARY),
-                # 第三次返回错误
+                # 第二次返回错误
                 _make_tcl_result("ERROR: some tcl error", return_code=1),
             ]
         )
@@ -1370,6 +1354,7 @@ class TestGetTimingReportWithPaths:
         with patch("vivado_mcp.tools.report_tools._require_session", return_value=session):
             result = await get_timing_report(session_id="default", ctx=ctx)
 
+        assert session.execute.call_count == 2
         # 主报告仍然返回,但末尾有失败提示
         assert "FAIL" in result
         assert "违例路径查询失败" in result
