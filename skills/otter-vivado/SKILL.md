@@ -5,7 +5,7 @@ description: 操作 AMD Vivado 工程、本地或远程综合与实现、查看�
 
 # Otter Vivado
 
-本 Skill 负责选择工作路径，当前 MCP 的工具 schema 负责参数与执行约定；CLI、MCP 和消费者可视化复用同一份 `vivado_mcp` 实现。使用客户端实际配置的工具前缀。
+本 Skill 负责选择工作路径，当前 MCP 的工具 schema 负责参数与执行约定；CLI、MCP 和消费者可视化复用同一份 `vivado_mcp` 实现。使用客户端实际配置的工具前缀。读取指南或工程目录约定直接调用 `vivado_guide` / `get_project_layout`，不要猜宿主缓存的 JSON 路径。
 
 本产品负责 Vivado 工程、执行、仿真、IP、状态与报告工具。RTL 设计和编码由 Coding 产品负责；此处保留已有检查器作为验证入口，并提供可以交给人用原生 Vivado GUI 继续操作的工程与证据。
 

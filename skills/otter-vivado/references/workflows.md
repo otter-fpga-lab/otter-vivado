@@ -49,7 +49,7 @@ GUI 使用已有 `start_session` 的 `gui`/`attach` 模式和 Vivado 工程命�
 3. 区分目标完成、失败、取消与仅中间阶段完成：place 完成不代表 route 完成，route 完成不代表 bitstream 完成。
 4. 查看报告来源与陈旧、设计不匹配等标记。面板中的文件只是该 run 目录中的候选报告，不能仅凭时间较新确认它属于本轮。
 
-`get_run_progress` 适合单次状态查询；要等到某阶段或结束，用 `wait_run(run_name, until, timeout_seconds)` 在服务端等待，不要 sleep 后反复查询。它报告子进程静默退出时，按其返回的推荐动作续跑，不要手工翻 ISEWrap/系统事件日志。重复刷新优先使用快照，避免用户界面和模型各自密集查询 Tcl。面板扫描文件数量、大小、日志窗口都有边界；完整规则见仓库 `docs/RUN_MONITOR.md`，摘要里的 0 条错误不代表完整日志无错误。
+`get_run_progress` 适合单次状态查询；要等到某阶段或结束，用 `wait_run(run_name, until, timeout_seconds)` 在服务端等待，不要 sleep 后反复查询。它报告子进程静默退出时，诊断会自动采集线程数、Vivado_init.tcl 和事件日志，先看诊断结果，再按其推荐动作处理或续跑。重复刷新优先使用快照，避免用户界面和模型各自密集查询 Tcl。面板扫描文件数量、大小、日志窗口都有边界；完整规则见仓库 `docs/RUN_MONITOR.md`，摘要里的 0 条错误不代表完整日志无错误。
 
 运行状态与报告各自采样；`reports_status` 为 loading/error/stale 时可能显示旧报告，应同时核对 `reports_observed_at` 和 `reports_source`。慢报告不会阻塞 STATUS 更新。不再需要面板时用 `close_run_monitor` 释放指定 session/run/目标的观察器；它不停止 Vivado 或 run。只关浏览器标签会保留观察器以便再看。
 

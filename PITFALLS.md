@@ -64,6 +64,23 @@ if {[llength $w]} {
 
 ---
 
+## C3. Vivado 2024.2 Windows 高线程 route 静默崩溃与 GUI 钩子限制
+
+**现象与证据特征**:
+- Vivado 2024.2 / Windows 上，`impl_1` 的 `runme.log` 写着 `route_design completed successfully`，但子进程没有 `Exiting Vivado` 即静默退出，`STATUS` 记为 `route_design ERROR`。
+- 常见放大因素是全局 `Vivado_init.tcl`（如 `%APPDATA%\Xilinx\Vivado\Vivado_init.tcl`）设了较高 `set_param general.maxThreads`（> 8，如 `32`）；Windows Application 事件日志可见 `vivado.exe` 异常码 `0xC0000374`（堆损坏）及 WER `RADAR_PRE_LEAK_64`。
+- 本地分析认为可能与 `route_design` 阶段高线程竞态有关（**本地分析，未经 AMD 确认**）。
+
+**规避方法**:
+- 在工程内脚本目录（如 `scripts/` 或 `Debug/scripts/`，勿放 `%TEMP%`）创建 PRE/POST 脚本，挂到 `STEPS.ROUTE_DESIGN.TCL.PRE`（`set_param general.maxThreads 1`）与 `STEPS.ROUTE_DESIGN.TCL.POST`（恢复原线程数）；**只在 `POST` 中降线程无效**。
+- 或删去/调低用户级 `Vivado_init.tcl` 中的全局 `general.maxThreads`（如 ≤ 8）。
+
+**GUI 手动操作注意**:
+- 在 Vivado GUI 中**切换实现 Strategy 或新建 run 会清空 `tcl.pre` / `tcl.post` 钩子**，操作后需要重新挂回。
+- 修改或挂载钩子后，工程状态显示 **Implementation Out-of-date 属正常现象**，按正常流程重新运行或续跑即可。
+
+---
+
 ## 跟 quirks 文档的区别
 
 | 文档 | 给谁看 | 内容性质 |
