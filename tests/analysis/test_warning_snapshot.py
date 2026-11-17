@@ -5,7 +5,7 @@
 - ``diff_warnings`` 三种分类(resolved / newly_added / persistent)
 - ``format_diff_report`` 输出包含关键标记
 - 上次快照不存在时 load 返回 ``(None, [])`` 不抛异常
-- 项目目录不可写时 fallback 到 ``~/.claude/vivado-mcp/``
+- 快照只写用户缓存,工程里不创建 ``.vmcp``;旧 ``.vmcp`` 快照只读兼容
 - 指纹对文件行号漂移免疫(防误判)
 """
 
@@ -16,11 +16,13 @@ from pathlib import Path
 from vivado_mcp.analysis.warning_parser import CriticalWarning, WarningReport
 from vivado_mcp.analysis.warning_snapshot import (
     WarningDiff,
+    _resolve_snapshot_path,
     diff_warnings,
     format_diff_report,
     load_snapshot,
     snapshot_cw,
 )
+from vivado_mcp.project_layout import project_cache_key, user_cache_root
 
 # ====================================================================== #
 #  构造器
@@ -78,10 +80,14 @@ class TestSnapshotRoundTrip:
 
         path = snapshot_cw(report, cws, "impl_1", str(project_dir))
 
-        # 落盘路径应该在 project_dir/.vmcp/ 下
-        assert path.parent == project_dir / ".vmcp"
+        # 落盘在用户缓存下按工程分隔的目录,工程里不创建 .vmcp
+        assert path.parent == (
+            user_cache_root() / "cw_snapshots" / project_cache_key(project_dir)
+        )
         assert path.name == "last_cw_impl_1.json"
         assert path.exists()
+        assert not (project_dir / ".vmcp").exists()
+        assert list(project_dir.iterdir()) == []
 
         loaded_report, loaded_cws = load_snapshot("impl_1", str(project_dir))
         assert loaded_report is not None
@@ -104,9 +110,8 @@ class TestSnapshotRoundTrip:
         assert report is None
         assert cws == []
 
-    def test_project_dir_none_falls_back_to_home(self, tmp_path, monkeypatch):
-        """project_dir=None 时写到 ~/.claude/vivado-mcp/。"""
-        # 劫持 Path.home() 返回 tmp_path
+    def test_project_dir_none_uses_no_project_cache(self, tmp_path, monkeypatch):
+        """project_dir=None 时写到用户缓存的 _no_project,不再写 ~/.claude/vivado-mcp/。"""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         cws = [_cw("Vivado 12-1411")]
@@ -114,51 +119,77 @@ class TestSnapshotRoundTrip:
 
         path = snapshot_cw(report, cws, "synth_1", None)
 
-        expected_dir = tmp_path / ".claude" / "vivado-mcp"
-        assert path.parent == expected_dir
+        assert path.parent == user_cache_root() / "cw_snapshots" / "_no_project"
         assert path.exists()
+        assert not (tmp_path / ".claude").exists()
 
         # 反向读取
         loaded_report, loaded_cws = load_snapshot("synth_1", None)
         assert loaded_report is not None
         assert len(loaded_cws) == 1
 
-    def test_readonly_project_dir_falls_back(self, tmp_path, monkeypatch):
-        """项目目录不可写时自动降级到 fallback。
+    def test_platform_cache_location(self, tmp_path, monkeypatch):
+        """未显式覆盖时:Windows 用 LOCALAPPDATA,其它平台用 XDG cache。"""
+        import os
 
-        跨平台一致:monkeypatch ``Path.mkdir`` 只对项目目录下的 ``.vmcp`` 抛 OSError,
-        fallback 目录下的 mkdir 走原行为。原版用 ``Z:/`` 假盘符,Linux 下 ``Z:`` 是
-        合法目录名能直接创建,fallback 不触发(0.3.9 子代理写测试时只考虑了 Windows)。
-        """
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("OTTER_VIVADO_CACHE_DIR", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
 
-        bad_project = str(tmp_path / "readonly_project")
-        real_mkdir = Path.mkdir
+        path = snapshot_cw(_empty_report(), [], "impl_1", str(project_dir))
 
-        def fake_mkdir(self, *args, **kwargs):
-            if "readonly_project" in str(self) and ".vmcp" in str(self):
-                raise OSError("simulated read-only project dir")
-            return real_mkdir(self, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "mkdir", fake_mkdir)
-
-        cws = [_cw("Vivado 12-1411")]
-        report = _empty_report(cw_count=1)
-
-        path = snapshot_cw(report, cws, "impl_1", bad_project)
-
-        expected_dir = tmp_path / ".claude" / "vivado-mcp"
-        assert path.parent == expected_dir
+        base = tmp_path / ("Local" if os.name == "nt" else "xdg") / "otter-vivado"
+        assert path.parent == base / "cw_snapshots" / project_cache_key(project_dir)
         assert path.exists()
 
-    def test_corrupted_snapshot_returns_none(self, tmp_path, monkeypatch):
-        """快照文件损坏时 load 返回 (None, []) 不抛异常。"""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    def test_write_failure_raises_and_never_touches_project(self, tmp_path, monkeypatch):
+        """缓存不可写时抛 OSError 交给调用方记录,绝不降级写进工程目录。"""
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        blocker = tmp_path / "blocked"
+        blocker.write_text("not a directory")
+        monkeypatch.setenv("OTTER_VIVADO_CACHE_DIR", str(blocker))
 
+        try:
+            snapshot_cw(_empty_report(), [], "impl_1", str(project_dir))
+        except OSError:
+            pass
+        else:  # pragma: no cover - 防御:不应成功
+            raise AssertionError("缓存不可写时应抛 OSError")
+        assert list(project_dir.iterdir()) == []
+
+    def test_legacy_vmcp_snapshot_is_read_only_compat(self, tmp_path):
+        """新位置无快照而旧 .vmcp 有时只读兼容;写入仍去用户缓存。"""
+        project_dir = tmp_path / "legacy_proj"
+        legacy_dir = project_dir / ".vmcp"
+        legacy_dir.mkdir(parents=True)
+        legacy = legacy_dir / "last_cw_impl_1.json"
+        legacy.write_text(
+            '{"version": 1, "run_name": "impl_1", "report": {"critical_warnings": 1},'
+            ' "raw_cws": [{"warning_id": "Vivado 12-1411", "message": "m"}]}',
+            encoding="utf-8",
+        )
+        before = legacy.read_bytes()
+
+        report, cws = load_snapshot("impl_1", str(project_dir))
+        assert report is not None and report.critical_warnings == 1
+        assert [cw.warning_id for cw in cws] == ["Vivado 12-1411"]
+
+        path = snapshot_cw(_empty_report(), [], "impl_1", str(project_dir))
+        assert legacy_dir not in path.parents
+        assert legacy.read_bytes() == before
+        # 新快照存在后优先读取新位置
+        report, cws = load_snapshot("impl_1", str(project_dir))
+        assert report is not None and report.critical_warnings == 0 and cws == []
+
+    def test_corrupted_snapshot_returns_none(self, tmp_path):
+        """快照文件损坏时 load 返回 (None, []) 不抛异常。"""
         # 手动创建一个非 JSON 垃圾文件
-        fallback_dir = tmp_path / ".claude" / "vivado-mcp"
-        fallback_dir.mkdir(parents=True)
-        (fallback_dir / "last_cw_impl_1.json").write_text("this is not json {{{")
+        target = _resolve_snapshot_path("impl_1", None)
+        target.parent.mkdir(parents=True)
+        target.write_text("this is not json {{{")
 
         report, cws = load_snapshot("impl_1", None)
         assert report is None

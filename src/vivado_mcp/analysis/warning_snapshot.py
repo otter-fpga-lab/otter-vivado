@@ -7,9 +7,12 @@
 - 新出现 (newly_added):这次有上次没 —— 警告"可能改坏了什么"
 - 仍存在 (persistent):两次都有 —— 需要继续排查
 
-存储位置优先级:
-1. ``<project_dir>/.vmcp/last_cw_{run_name}.json``
-2. ``~/.claude/vivado-mcp/last_cw_{run_name}.json`` (fallback)
+存储位置(永远不在工程里创建 ``.vmcp``):
+  ``<用户缓存>/cw_snapshots/<规范化工程路径短哈希>_<工程名>/last_cw_{run_name}.json``
+  - Windows:``%LOCALAPPDATA%\\otter-vivado``;其它平台:``$XDG_CACHE_HOME/otter-vivado``
+    (缺省 ``~/.cache/otter-vivado``);``OTTER_VIVADO_CACHE_DIR`` 可覆盖。
+  - 读取时新位置没有、而旧 ``<project_dir>/.vmcp/last_cw_{run_name}.json`` 存在,
+    则只读兼容旧快照;不写回、不删除旧文件。
 
 本模块不依赖 Vivado,不做任何 I/O 之外的副作用,方便单元测试。
 """
@@ -29,6 +32,7 @@ from vivado_mcp.analysis.warning_parser import (
     WarningReport,
     group_warnings,
 )
+from vivado_mcp.project_layout import project_cache_key, user_cache_root
 
 logger = logging.getLogger(__name__)
 
@@ -93,37 +97,27 @@ def _fingerprint(cw: CriticalWarning) -> str:
 # ====================================================================== #
 
 
-def _resolve_snapshot_path(run_name: str, project_dir: str | None) -> Path:
-    """按优先级决定快照 JSON 路径。
+def _snapshot_dir(project_dir: str | None) -> Path:
+    """快照目录:用户缓存下按工程分隔,永远不落在工程目录里。
 
-    1. ``<project_dir>/.vmcp/last_cw_{run_name}.json`` —— 如果 project_dir 可用且目录可写
-    2. ``~/.claude/vivado-mcp/last_cw_{run_name}.json`` —— 兜底
-
-    目录不存在会自动 ``mkdir(exist_ok=True, parents=True)``。
-    ``project_dir`` 创建失败(只读/不存在等)时静默降级到 fallback,保证快照逻辑
-    不会中断主流程。
+    ``<cache>/cw_snapshots/<规范化工程路径短哈希>_<工程名>/``;``project_dir`` 为
+    None 时用 ``_no_project``。缓存根见 :func:`vivado_mcp.project_layout.user_cache_root`
+    (Windows ``%LOCALAPPDATA%\\otter-vivado``,其它平台 XDG cache)。
     """
-    filename = f"last_cw_{run_name}.json"
+    key = project_cache_key(project_dir) if project_dir else "_no_project"
+    return user_cache_root() / "cw_snapshots" / key
 
-    if project_dir:
-        try:
-            vmcp_dir = Path(project_dir) / ".vmcp"
-            vmcp_dir.mkdir(parents=True, exist_ok=True)
-            # 权限探针:确认目录可写(Windows 上只读盘会卡这一步)
-            probe = vmcp_dir / ".vmcp_write_probe"
-            probe.touch()
-            probe.unlink()
-            return vmcp_dir / filename
-        except (OSError, PermissionError) as e:
-            logger.warning(
-                "项目目录 %s 不可写,快照降级到 ~/.claude/vivado-mcp/: %s",
-                project_dir,
-                e,
-            )
 
-    fallback_dir = Path.home() / ".claude" / "vivado-mcp"
-    fallback_dir.mkdir(parents=True, exist_ok=True)
-    return fallback_dir / filename
+def _resolve_snapshot_path(run_name: str, project_dir: str | None) -> Path:
+    """本次快照的写入/读取路径(不创建目录)。"""
+    return _snapshot_dir(project_dir) / f"last_cw_{run_name}.json"
+
+
+def _legacy_snapshot_path(run_name: str, project_dir: str | None) -> Path | None:
+    """旧版 ``<project_dir>/.vmcp/last_cw_{run}.json``,仅供只读兼容。"""
+    if not project_dir:
+        return None
+    return Path(project_dir) / ".vmcp" / f"last_cw_{run_name}.json"
 
 
 # ====================================================================== #
@@ -190,12 +184,13 @@ def snapshot_cw(
         raw_cws: 本次 parse_critical_warnings 得到的原始 CW 列表
             (diff 要用它来算指纹,不能只拿分组后的 message_template)。
         run_name: run 名(如 impl_1 / synth_1),作为文件名后缀。
-        project_dir: Vivado 项目目录,可为 None(走 fallback)。
+        project_dir: Vivado 项目目录(仅用于计算缓存子目录),可为 None。
 
     Returns:
-        实际写入的 Path,调用方可以据此提示用户"快照已保存到 xxx"。
+        实际写入的 Path(用户缓存内),调用方可以据此提示用户"快照已保存到 xxx"。
     """
     path = _resolve_snapshot_path(run_name, project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "version": 1,
         "run_name": run_name,
@@ -214,12 +209,17 @@ def load_snapshot(
 ) -> tuple[WarningReport | None, list[CriticalWarning]]:
     """读上次快照,不存在或损坏返回 ``(None, [])``。
 
+    先读用户缓存;缺失时只读兼容旧 ``<project_dir>/.vmcp/`` 快照(不创建目录)。
+
     Returns:
         (report, raw_cws) —— 其中 raw_cws 是做 diff 需要的原始列表。
     """
     path = _resolve_snapshot_path(run_name, project_dir)
     if not path.exists():
-        return None, []
+        legacy = _legacy_snapshot_path(run_name, project_dir)
+        if legacy is None or not legacy.is_file():
+            return None, []
+        path = legacy
 
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))

@@ -69,11 +69,11 @@ _QUERY_PROJECT_DIR = (
 
 
 async def _get_project_dir(session) -> str | None:
-    """查当前项目目录;未打开项目或查询失败返回 None(走 fallback 路径)。"""
+    """查当前项目目录;未打开项目或查询失败返回 None(快照归入 _no_project)。"""
     try:
         r = await session.execute(_QUERY_PROJECT_DIR, timeout=5.0)
     except Exception as e:
-        logger.warning("查询项目目录失败,快照将走 fallback: %s", e)
+        logger.warning("查询项目目录失败,快照将归入 _no_project: %s", e)
         return None
 
     for line in r.output.splitlines():
@@ -424,8 +424,9 @@ async def get_critical_warnings(
     2. ``sim_*`` simulation fileset:改去 tail ``<proj>.sim/<sim_fs>/*/xsim/*.log``
        (Vivado launch_simulation 的真错误位置,**不在** runme.log),扫非标
        关键词,自动暴露 xvlog 未找到等子进程错误。
-    3. 任何 run:无论结果如何,都会静默把本次 CW 列表写快照(存到项目目录 ``.vmcp/`` 下,
-       或 fallback 到 ``~/.claude/vivado-mcp/``)。启用 ``compare_with_last=True`` 时,
+    3. 任何 run:无论结果如何,都会静默把本次 CW 列表写快照到用户缓存(Windows
+       ``%LOCALAPPDATA%\\otter-vivado\\cw_snapshots\\``,其它平台 XDG cache),
+       **不在工程里创建 .vmcp**;旧工程内 ``.vmcp`` 快照只读兼容。启用 ``compare_with_last=True`` 时,
        读上次快照与本次对比,报告消除/新增/仍存在的条目。(sim 模式不写快照)
 
     Args:
@@ -512,7 +513,7 @@ async def get_critical_warnings(
         error_groups=error_groups,
     )
 
-    # 查项目目录,失败走 fallback
+    # 查项目目录(只用于区分用户缓存中的快照子目录),失败时归入 _no_project
     project_dir = await _get_project_dir(session)
 
     # 读上次快照(diff 时要用,所以要在覆盖前读)

@@ -63,7 +63,7 @@ class TestGetCriticalWarnings:
 
     @pytest.fixture(autouse=True)
     def _isolate_home(self, tmp_path, monkeypatch):
-        """把 Path.home() 劫持到 tmp_path,避免快照写入污染真实 ~/.claude/vivado-mcp/。
+        """把 Path.home() 劫持到 tmp_path;快照缓存由 conftest 指向临时目录。
 
         每个 test 独立 tmp_path,互不干扰。
         """
@@ -380,9 +380,12 @@ class TestCompareWithLast:
             )
 
         assert "差分报告" not in result
-        # 但快照必须已经落盘到 proj/.vmcp/
-        snapshot_path = proj / ".vmcp" / "last_cw_impl_1.json"
+        # 但快照必须已经落盘到用户缓存,且工程里不创建 .vmcp
+        from vivado_mcp.analysis.warning_snapshot import _resolve_snapshot_path
+
+        snapshot_path = _resolve_snapshot_path("impl_1", str(proj))
         assert snapshot_path.exists()
+        assert not (proj / ".vmcp").exists()
 
     @pytest.mark.asyncio
     async def test_compare_without_prior_snapshot_shows_baseline_hint(
@@ -525,7 +528,7 @@ class TestCompareWithLast:
     async def test_project_dir_none_still_snapshots_to_fallback(
         self, tmp_path, monkeypatch
     ):
-        """没打开项目时快照也要落到 ~/.claude/vivado-mcp/ 不崩溃。"""
+        """没打开项目时快照落到用户缓存的 _no_project 子目录,不崩溃。"""
         from vivado_mcp.tools.diagnostic_tools import get_critical_warnings
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -546,8 +549,11 @@ class TestCompareWithLast:
 
         # 没有错误、主报告正常
         assert "!! 发现 1 条 CRITICAL WARNING !!" in result
-        # 快照落在 fallback 路径
-        fallback = tmp_path / ".claude" / "vivado-mcp" / "last_cw_impl_1.json"
+        # 快照落在用户缓存的 _no_project 子目录
+        from vivado_mcp.analysis.warning_snapshot import _resolve_snapshot_path
+
+        fallback = _resolve_snapshot_path("impl_1", None)
+        assert fallback.parent.name == "_no_project"
         assert fallback.exists()
 
 
