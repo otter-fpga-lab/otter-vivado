@@ -12,9 +12,11 @@
 
 先复用已有会话/DebugService，明确 control、target/device，成功刷新。创建时记录设备、
 核 UUID 和探针结构，相关 ILA 必须为 IDLE；运行前及硬件步骤执行时均核对身份。
-`create_debug_experiment(spec,output_dir,expected_revision,session_id)` 使用 control=ai。
+`create_debug_experiment(spec,expected_revision,output_dir?,session_id)` 使用 control=ai。
 Python 消费者可用 `DebugExperiment(service,...,owner="manual")` 复用人工控制的服务。
-expected_revision 来自 `get_debug_snapshot`；output_dir 父目录须存在，目录必须不存在。
+expected_revision 来自 `get_debug_snapshot`。output_dir 可省略：按会话当前工程的目录约定新建
+`Debug/YYYYMMDD_HHMMSS_experiment`，推不出工程时报错需显式传入；显式传入时父目录须存在，
+目录必须不存在。返回的 `experiment_dir` 是实验根目录，`output_dir` 是当前轮次目录。
 
 以下是格式示例；核名称必须替换成实际发现值，时长和时序由消费者任务决定：
 

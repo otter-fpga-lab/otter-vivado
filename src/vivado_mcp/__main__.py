@@ -129,7 +129,10 @@ def main() -> None:
     p_artifacts.add_argument("--manifest", help="导出交付包的 manifest.json，核对全包指纹。")
     p_export = sub.add_parser("debug-export", help="在专用空会话中从实现 DCP 导出调试交付包。")
     p_export.add_argument("--checkpoint", required=True, help="已完成实现的 DCP 路径。")
-    p_export.add_argument("--output-dir", required=True, help="父目录已存在的新交付目录。")
+    p_export.add_argument(
+        "--output-dir",
+        help="父目录已存在的新交付目录；省略时按工程约定新建 Debug/<时间>_bundle。",
+    )
     p_export.add_argument("--part", required=True, help="检查点的完整器件名称。")
     p_export.add_argument("--port", type=int, required=True, help="专用空 GUI 会话的协议端口。")
     p_export.add_argument("--source-revision", help="声明的源码提交；不作为已验证的来源。")

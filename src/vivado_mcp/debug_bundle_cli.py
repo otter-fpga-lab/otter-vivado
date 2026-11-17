@@ -13,7 +13,7 @@ async def run_debug_export_cli(args) -> int:
     try:
         await session.start(timeout=5)
         result = await export_debug_bundle(
-            session, args.checkpoint, args.output_dir, args.part,
+            session, args.checkpoint, getattr(args, "output_dir", None) or None, args.part,
             args.source_revision, args.timeout,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))

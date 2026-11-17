@@ -104,10 +104,15 @@ def _parse_response(output, attempt_id):
 
 
 async def export_debug_bundle(
-    session, checkpoint_path: str, output_dir: str, expected_part: str,
+    session, checkpoint_path: str, output_dir: str | None, expected_part: str,
     source_revision: str | None = None, timeout_seconds: int = 1800,
 ) -> dict:
-    """在专用空会话中生成 bit/ltx/报告；未知回执不重试、不删除现场。"""
+    """在专用空会话中生成 bit/ltx/报告；未知回执不重试、不删除现场。
+
+    output_dir 为 None 时按工程目录约定新建 ``Debug/YYYYMMDD_HHMMSS_bundle``：工程优先
+    从检查点向上查找 .xpr，其次取会话当前工程；都推不出时报错要求显式传入。
+    显式传入时保持“父目录已存在的新目录”严格语义。
+    """
     if not isinstance(expected_part, str) or not re.fullmatch(r"[A-Za-z0-9-]+", expected_part):
         raise ValueError("expected_part 必须是检查点的完整器件名称（含速度等级）")
     if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 7200:
@@ -120,6 +125,12 @@ async def export_debug_bundle(
     source = Path(checkpoint_path).expanduser().absolute()
     if source.suffix.lower() != ".dcp" or not source.is_file():
         raise ValueError("checkpoint_path 必须是实际存在的 .dcp 文件")
+    if output_dir is None:
+        from vivado_mcp.project_layout import default_output_dir
+
+        output_dir = await default_output_dir(session, "bundle", hint_path=str(source))
+    elif not isinstance(output_dir, str) or not output_dir or "\x00" in output_dir:
+        raise ValueError("output_dir 必须是父目录已存在的新目录路径")
     destination = Path(output_dir).expanduser().absolute()
     # mkdir 的排他语义拒绝已有目录/文件/链接；即使上次失败也使用新目录。
     destination.mkdir(parents=False, exist_ok=False)

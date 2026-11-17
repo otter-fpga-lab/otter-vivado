@@ -26,8 +26,10 @@ export_debug_bundle(
 )
 ```
 
-上面是调用示意，替换成已核实的路径和对象。`output_dir` 的父目录须存在，目标目录
-必须不存在，已有目录/文件/链接全部拒绝。MCP、Python 和 Vivado 必须共享本机文件系统。
+上面是调用示意，替换成已核实的路径和对象。`output_dir` 可省略：按工程目录约定新建
+`<工程根>/Debug/YYYYMMDD_HHMMSS_bundle`（工程由 DCP 向上查找 `.xpr`，其次取会话当前工程；
+都推不出时报错，需显式传入），实际目录见返回的 `bundle_directory`。显式传入时父目录须存在，
+目标目录必须不存在，已有目录/文件/链接全部拒绝。MCP、Python 和 Vivado 必须共享本机文件系统。
 
 导出会拒绝已打开工程或设计的会话，不会执行 close_project、close_design、reset_runs
 或关闭原 GUI。独立会话在完成后保留打开的检查点，方便检查；确认空闲后按正常会话
@@ -41,7 +43,8 @@ export_debug_bundle(
 python -m vivado_mcp debug-export --checkpoint /project/top_routed.dcp --output-dir /project/debug/delivery-001 --part xc7k325tffg900-2 --port 10003 --source-revision 实际源码提交
 ```
 
-只 attach，不自动启动/替换 Vivado。CLI 结束只断开本次连接；不会关闭 GUI、取消导出
+只 attach，不自动启动/替换 Vivado。`--output-dir` 可省略，规则同上（由 `--checkpoint`
+推出工程）。CLI 结束只断开本次连接；不会关闭 GUI、取消导出
 或删除文件。`--timeout` 默认 1800 秒，范围 1~7200，超时只表示等候结束。
 **超时后 Vivado 仍可能正在执行**；不要直接重放，不要为了重试杀掉原进程。
 `exported` 退出 0，其余退出 1。

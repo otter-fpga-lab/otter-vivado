@@ -69,15 +69,17 @@ async def prepare_debug_design(
 
 @mcp.tool()
 async def export_debug_bundle(
-    checkpoint_path: str, output_dir: str, expected_part: str,
+    checkpoint_path: str, expected_part: str, output_dir: str | None = None,
     source_revision: str | None = None, timeout_seconds: int = 1800,
     session_id: str = "default", ctx: Context = None,
 ) -> str:
     """在专用空闲会话中从明确的实现 DCP 导出 bit/ltx/报告和来源清单。
 
     必须使用没有打开工程/设计的独立会话；不关闭已有 GUI，不自动运行综合/实现。
-    checkpoint_path 是已完成实现的 DCP；expected_part 为完整器件名；output_dir
-    必须是父目录已存在的新目录。复制检查点后，同一 execute 中打开该副本，生成 bit、
+    checkpoint_path 是已完成实现的 DCP；expected_part 为完整器件名。output_dir 可省略：
+    按工程约定新建 Debug/YYYYMMDD_HHMMSS_bundle（工程由 DCP 向上找 .xpr，其次取会话
+    当前工程，推不出则报错要求显式传入）；显式传入时必须是父目录已存在的新目录。
+    实际目录见返回的 bundle_directory。复制检查点后，同一 execute 中打开该副本，生成 bit、
     ltx、timing/utilization/DRC 报告；SHA256 清单保存到消费者目录，不提供固定页面。
     source_revision 仅记录调用方声明；不自动认证检查点源码来源。
     exported 只表示导出和文件核对完成；不代表时序、板卡配对通过。
@@ -91,7 +93,8 @@ async def export_debug_bundle(
         if session is None:
             raise ValueError(_NO_SESSION.format(sid=session_id))
         return _result(await export(
-            session, checkpoint_path, output_dir, expected_part, source_revision, timeout_seconds,
+            session, checkpoint_path, output_dir or None, expected_part, source_revision,
+            timeout_seconds,
         ))
     except (ValueError, RuntimeError, OSError) as exc:
         return _result({"status": "blocked", "error": str(exc)})

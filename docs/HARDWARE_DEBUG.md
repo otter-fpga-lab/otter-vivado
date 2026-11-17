@@ -100,7 +100,7 @@ Vivado GUI、`run_tcl` 或其他进程；从那些入口操作时仍需协调。
 | `write_vio` | `{"core":"核名称","probe":"探针名称","value":"123"}` | 写非负十进制或 `0x` 十六进制整数 |
 | `configure_ila` | `{"core":"核名称","probe":"探针名称","trigger_value":"eq1'b1","trigger_position":0}` | 使用 Vivado 原生触发值语法；位置可省略 |
 | `arm_ila` | `{"core":"核名称","immediate":false}` | 等待触发；`true` 为立即采集 |
-| `export_ila` | `{"core":"核名称","output_dir":"消费者新目录"}` | MCP/共享服务导出完整单窗口 VCD，不经参考页 HTTP |
+| `export_ila` | `{"core":"核名称","output_dir?":"消费者新目录"}` | MCP/共享服务导出完整单窗口 VCD，不经参考页 HTTP；省略 output_dir 时新建工程 `Debug/<时间>_ila`，回执返回实际目录 |
 | `upload_ila` | `{"core":"核名称"}` | 仅上传已经完整结束的单窗口采集 |
 
 配置一个探针不会自动清空其他探针的触发条件。执行前应检查完整触发设置，避免把

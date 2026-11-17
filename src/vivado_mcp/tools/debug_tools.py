@@ -1,11 +1,13 @@
 """人和 AI 共用的硬件调试入口；独立于只读构建观察器。"""
 
 import json
+from pathlib import Path
 from typing import Literal
 
 from mcp.server.mcpserver import Context
 
 from vivado_mcp.debug_service import load_panel
+from vivado_mcp.project_layout import default_output_dir
 from vivado_mcp.server import _NO_SESSION, _require_session, mcp
 
 
@@ -82,7 +84,9 @@ async def debug_action(
     control={owner:'ai'|'manual'}；write_vio={core,probe,value}（非负十进制或0x字符串）；
     configure_ila={core,probe,trigger_value,trigger_position?}（原生触发值语法）；
     arm_ila={core,immediate?}；upload_ila={core}（首批仅完整单窗口，上传至Vivado）。
-    export_ila={core,output_dir}：完整单窗口上传并导出到消费者新目录，返回 VCD/清单。
+    export_ila={core,output_dir?}：完整单窗口上传并导出，返回 VCD/清单。output_dir 省略时
+    按会话当前工程的目录约定新建 Debug/YYYYMMDD_HHMMSS_ila（推不出工程则报错，需显式传
+    父目录已存在的新目录）；回执的 output_dir 是实际导出目录。
     不覆盖文件；失败/unknown 保留现场，不自动重试；不启动新采集。
     expected_revision 必须取自最新 get_debug_snapshot。设备选择/硬件操作前显式切换
     control 为 ai，已授权范围内可逐步执行；交回人工后不能继续写。控制权仅覆盖本服务，
@@ -91,9 +95,18 @@ async def debug_action(
     """
     try:
         service = await _service(ctx, session_id)
+        output_dir = None
+        if action == "export_ila" and isinstance(params, dict):
+            if params.get("output_dir") in (None, ""):
+                output_dir = await default_output_dir(service.session, "ila")
+                params = {**params, "output_dir": output_dir}
+            elif isinstance(params["output_dir"], str):
+                output_dir = str(Path(params["output_dir"]).expanduser().absolute())
         result = service.submit({
             "action": action, "params": params, "expected_revision": expected_revision,
         }, source="ai")
+        if output_dir is not None:
+            result = {**result, "output_dir": output_dir}
         return json.dumps(result, ensure_ascii=False)
     except (ValueError, RuntimeError) as exc:
         return _error(exc)
@@ -109,7 +122,7 @@ async def close_debug_panel(session_id: str = "default", ctx: Context = None) ->
 
 @mcp.tool()
 async def create_debug_experiment(
-    spec: dict, output_dir: str, expected_revision: int,
+    spec: dict, expected_revision: int, output_dir: str | None = None,
     session_id: str = "default", ctx: Context = None,
 ) -> str:
     """在已选择设备且 control=ai 的共享服务上创建本地实验，尚不执行步骤。
@@ -118,15 +131,21 @@ async def create_debug_experiment(
     ready={label}；countdown={label,duration_ms}；cue={label,tone:'none'|'beep'}；
     debug={action,params} 仅 configure_ila/write_vio/arm_ila/export_ila，导出目录自动生成；
     wait_capture={core,timeout_ms}。时长1~600000ms、最多64步；详细约定见 DEBUG_EXPERIMENT.md。
-    output_dir 必须是新目录，保存计划/每轮事件/导出数据；expected_revision 来自调试快照。
+    output_dir 保存计划/每轮事件/导出数据；省略时按会话当前工程的目录约定新建
+    Debug/YYYYMMDD_HHMMSS_experiment（推不出工程则报错，需显式传父目录已存在的新目录）。
+    返回 experiment_dir 为实验根目录，output_dir 为当前轮次目录。
+    expected_revision 来自调试快照。
     倒计时是主机时间，声音由消费者播放，不保证 FPGA 精确触发。无固定实验页面。
     """
     from vivado_mcp.debug_experiment import DebugExperiment
 
     try:
         service = await _service(ctx, session_id)
+        if not output_dir:
+            output_dir = await default_output_dir(service.session, "experiment")
         experiment = DebugExperiment(service, spec, output_dir, expected_revision, owner="ai")
-        return json.dumps(experiment.snapshot(), ensure_ascii=False)
+        return json.dumps({**experiment.snapshot(), "experiment_dir": str(experiment.root)},
+                          ensure_ascii=False)
     except (ValueError, RuntimeError, OSError) as exc:
         return _error(exc)
 

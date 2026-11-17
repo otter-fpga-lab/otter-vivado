@@ -15,7 +15,7 @@ async def test_registered_experiment_flow_and_local_human_ready(tmp_path):
         tools = {t.name: t for t in await mcp.list_tools()}
         assert len(tools) == 51
         assert set(tools['create_debug_experiment'].input_schema['required']) == {
-            'spec', 'output_dir', 'expected_revision',
+            'spec', 'expected_revision',
         }
         assert 'confirm_ready' not in (
             tools['debug_experiment_action'].input_schema['properties']['action']['enum']

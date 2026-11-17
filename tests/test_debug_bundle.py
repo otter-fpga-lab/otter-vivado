@@ -255,7 +255,7 @@ async def test_real_mcp_export_contract(inputs):
     tools = {tool.name: tool for tool in await mcp.list_tools()}
     assert len(tools) == 51
     assert set(tools["export_debug_bundle"].input_schema["required"]) == {
-        "checkpoint_path", "output_dir", "expected_part",
+        "checkpoint_path", "expected_part",
     }
     result = await call("export_debug_bundle", {
         "checkpoint_path": str(inputs[0]), "output_dir": str(inputs[1]),
