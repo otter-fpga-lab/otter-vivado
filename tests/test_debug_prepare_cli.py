@@ -114,12 +114,16 @@ async def test_invalid_options_fail_before_read_or_attach(arguments, live, overr
     live[1].assert_not_called()
 
 
-@pytest.mark.parametrize("data, message", [
-    (b" " * (64 * 1024 + 1), "64 KiB"),
-    (b"[]", "JSON 对象"),
-    (b"{", "UTF-8 JSON"),
-    (b"\xff", "UTF-8 JSON"),
-])
+@pytest.mark.parametrize(
+    "data, message",
+    [
+        (b" " * (64 * 1024 + 1), "64 KiB"),
+        (b"[]", "JSON 对象"),
+        (b"{", "UTF-8 JSON"),
+        (b"\xff", "UTF-8 JSON"),
+    ],
+    ids=["oversized", "array", "truncated", "invalid-utf8"],
+)
 async def test_bad_spec_fails_before_attach(arguments, tmp_path, live, data, message):
     source = tmp_path / "bad.json"
     source.write_bytes(data)

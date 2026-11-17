@@ -394,7 +394,12 @@ async def test_existing_or_dangling_debug_directory_symlink_blocks_before_write(
 
 async def test_non_ascii_project_path_and_exact_run_name_roundtrip(tmp_path):
     directory = tmp_path / "消费$者[工程]\n目录"
-    directory.mkdir()
+    try:
+        directory.mkdir()
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 123:
+            pytest.skip("Windows 文件系统不支持含换行的目录名")
+        raise
     run = "impl[2]$调试\n分支"
     session = PreparationSession(directory, f"dict set ::__props impl NAME {tcl_quote(run)}")
     spec = {**ILA, "run": run}

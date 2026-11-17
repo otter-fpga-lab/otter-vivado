@@ -201,9 +201,19 @@ async def test_never_overwrite_existing_destination(inputs, kind):
     elif kind == "file":
         path.write_text("preserve")
     elif kind == "symlink":
-        path.symlink_to(inputs[0])
+        try:
+            path.symlink_to(inputs[0])
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                pytest.skip("当前系统没有创建符号链接的权限")
+            raise
     else:
-        path.symlink_to(path.parent / "absent")
+        try:
+            path.symlink_to(path.parent / "absent")
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                pytest.skip("当前系统没有创建符号链接的权限")
+            raise
     session = TclSession()
     with pytest.raises(FileExistsError):
         await export(inputs, session)

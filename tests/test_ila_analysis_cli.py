@@ -56,8 +56,11 @@ def test_cli_status_and_evidence_contract(tmp_path, mode, exit_code):
     assert json.loads(result.stdout)['status'] == mode
 
 
-@pytest.mark.parametrize('content', ['{"signals":["c"],"signals":["d"]}', ' ' * 65537,
-                                    '{bad', 'null'])
+@pytest.mark.parametrize(
+    'content',
+    ['{"signals":["c"],"signals":["d"]}', ' ' * 65537, '{bad', 'null'],
+    ids=['duplicate-key', 'oversized-whitespace', 'bad-json', 'null'],
+)
 def test_cli_rejects_ambiguous_or_invalid_spec(tmp_path, content):
     description = tmp_path / 'bad.json'
     description.write_text(content)

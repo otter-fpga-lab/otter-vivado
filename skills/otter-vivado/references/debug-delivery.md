@@ -11,7 +11,7 @@
    是否变化；记录消费者源码提交和原构建报告。不能自动取目录中时间最新的检查点。
 4. 使用相同实际 Vivado 安装建立专用空会话（独立 GUI 用 `port=0`，或独立 Tcl
    session），保留原 GUI。不要把原工程的 session 传给导出以图自动关闭工程。
-5. 调用 `export_debug_bundle(checkpoint_path, output_dir, expected_part, ...)`。
+5. 调用 `export_debug_bundle(checkpoint_path, expected_part, output_dir=None, ...)`。
    `output_dir` 可省略，省略时自动落到 `debug_dir/<时间>_bundle`；显式传入时必须是父目录已存在的新目录。
    需要交付的包再复制到 `download_dir`。`expected_part` 是完整 part。
    `source_revision` 是调用方声明，不是工具已验证的源码证明。

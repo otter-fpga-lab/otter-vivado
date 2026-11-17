@@ -1,13 +1,13 @@
-"""README hook 配置示例的可执行性测试。
+"""Claude Code hook 配置示例的可执行性测试。
 
 背景(2026-06 审计 docs 分区):
   - P1: bitstream-guard 旧示例无条件 exit(2),会永久阻断 generate_bitstream
-    (README 自己的烧板示例流程都跑不通)→ 改为输出 permissionDecision "ask"
+    (文档中的烧板示例流程都跑不通)→ 改为输出 permissionDecision "ask"
     的 JSON,由用户确认放行。
   - P2: 5 条 hook 的多行 python -c 在 Windows cmd 下 SyntaxError 静默失效
     (非 2 的非零退出码 = 非阻断错误,hook 等于没装)→ 全部改为单行分号串联。
 
-本文件直接从 README.md 提取 settings.json 片段,锁住三件事:
+本文件从 docs/USAGE.md 提取 settings.json 片段,锁住三件事:
   1. 片段是合法 JSON;
   2. 每条 hook command 是单行(跨 cmd/bash 安全的前提);
   3. 每条命令喂 stdin JSON 实跑(shell=True,Windows 下即 cmd 语境),
@@ -16,22 +16,24 @@
 """
 
 import json
+import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-README = Path(__file__).resolve().parent.parent / "README.md"
+USAGE_DOC = Path(__file__).resolve().parent.parent / "docs" / "USAGE.md"
 
 
 def _extract_settings_snippet() -> dict:
-    """从 README 的「可复制的 settings.json 片段」提取并解析 JSON。"""
-    text = README.read_text(encoding="utf-8")
+    """从 docs/USAGE.md 的「可复制的 settings.json 片段」提取并解析 JSON。"""
+    text = USAGE_DOC.read_text(encoding="utf-8")
     m = re.search(
         r"可复制的 settings\.json 片段.*?```json\n(.*?)\n```", text, re.DOTALL
     )
-    assert m, "README 中找不到 settings.json 片段代码块"
+    assert m, "docs/USAGE.md 中找不到 settings.json 片段代码块"
     return json.loads(m.group(1))  # 不合法 JSON 直接抛错让测试红
 
 
@@ -48,12 +50,15 @@ def _all_hook_commands(snippet: dict) -> dict[str, str]:
 def _run_hook(command: str, stdin_payload: dict, cwd: Path | None = None):
     """用 shell=True 模拟 hook 实际执行环境(Windows 下即 cmd /c <command>,
     正是审计 P2 多行 python -c 失效的那个语境)。"""
+    env = os.environ.copy()
+    env["PATH"] = os.path.dirname(sys.executable) + os.pathsep + env.get("PATH", "")
     return subprocess.run(
         command,
         shell=True,
         input=json.dumps(stdin_payload).encode("utf-8"),
         capture_output=True,
         cwd=cwd,
+        env=env,
         timeout=60,
     )
 

@@ -114,7 +114,12 @@ def test_reports_stale_mismatch_unknown_stage_and_no_live_design_mix(tmp_path):
 def test_report_reads_are_bounded_and_symlinks_excluded(tmp_path):
     large = tmp_path / "a_timing.rpt"
     large.write_bytes(b"x" * (256 * 1024 + 50))
-    (tmp_path / "b_link.rpt").symlink_to(large)
+    try:
+        (tmp_path / "b_link.rpt").symlink_to(large)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("当前系统没有创建符号链接的权限")
+        raise
     report, = read_reports({"directory": str(tmp_path)})
     assert len(report["text"]) == 256 * 1024
     assert report["summary"] is None

@@ -118,7 +118,12 @@ def test_response_budget_and_full_validation_after_page(tmp_path):
 
 def test_size_symlink_encoding_and_read_change(vcd, tmp_path, monkeypatch):
     link = tmp_path / 'link.vcd'
-    link.symlink_to(vcd)
+    try:
+        link.symlink_to(vcd)
+    except OSError as exc:
+        if getattr(exc, 'winerror', None) == 1314:
+            pytest.skip('当前系统没有创建符号链接的权限')
+        raise
     with pytest.raises(ValueError, match='符号链接'):
         read_ila_waveform(str(link))
     vcd.write_bytes(b'\xff')

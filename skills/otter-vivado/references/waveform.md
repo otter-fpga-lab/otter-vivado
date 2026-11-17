@@ -8,7 +8,8 @@
 
 1. 有现成 VCD 时直接 `read_ila_waveform(file_path, signal_ids=[])` 读取目录，不连板。
    新采样则沿用已有会话/共享服务，明确控制权、设备、ILA 和触发需求。已授权范围内
-   才 configure/arm；等待单窗口完整后，`debug_action(export_ila)` 指定消费者新目录。
+   才 configure/arm；等待单窗口完整后，`debug_action(export_ila)` 省略 `output_dir`
+   时默认放到 `Debug/<时间>_ila`，也可指定消费者新目录。
 2. 查询操作回执至最终状态，保存 manifest 和原始 VCD。unknown 核对现场，不自动重复
    上传、采集或覆盖目录；导出成功之后的刷新失败也可能使服务回执 unknown，先看已保存
    result/manifest 与操作 result，不把这种情况当作从未导出。

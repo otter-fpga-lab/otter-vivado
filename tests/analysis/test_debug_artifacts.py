@@ -278,7 +278,12 @@ def test_parser_detects_replacement_during_read(pair, monkeypatch, kind):
         def read(self, size=-1):
             data = self.source.read(size)
             if not self.changed:
-                replacement.replace(target)
+                try:
+                    replacement.replace(target)
+                except PermissionError as exc:
+                    if getattr(exc, "winerror", None) == 5:
+                        pytest.skip("Windows 不允许替换已打开文件")
+                    raise
                 self.changed = True
             return data
 

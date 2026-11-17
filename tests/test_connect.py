@@ -3,12 +3,30 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
 from vivado_mcp import connect, doctor
+
+
+def _symlink_or_skip(link: Path, target: Path, *, target_is_directory: bool = False) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("当前系统没有创建符号链接的权限")
+        raise
+
+
+def _is_link_or_junction(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    if sys.platform == "win32" and path.exists():
+        return os.path.realpath(path) != os.path.abspath(path)
+    return False
 
 
 @pytest.fixture
@@ -51,7 +69,7 @@ def test_connect_preserves_config_and_is_idempotent(home, client):
 
     first = connect.connect_source(client)
     link = Path(first["skill"])
-    assert link.is_symlink()
+    assert _is_link_or_junction(link)
     assert link.resolve() == Path(first["skill_source"])
     assert first["config_changed"] is True
     assert first["skill_changed"] is True
@@ -89,7 +107,7 @@ def test_occupied_skill_never_overwritten(home, tmp_path, kind):
         destination = tmp_path / "foreign"
         if kind == "foreign-link":
             destination.mkdir()
-        target.symlink_to(destination, target_is_directory=True)
+        _symlink_or_skip(target, destination, target_is_directory=True)
     with pytest.raises(FileExistsError, match="拒绝覆盖"):
         connect.connect_source("codex", skills)
     assert not (home / ".codex").exists()
@@ -210,8 +228,8 @@ def test_explicit_skills_only_preserves_existing_mcp(home):
 def test_cursor_existing_native_link_is_reused(home):
     target = home / ".cursor" / "skills" / "otter-vivado"
     target.parent.mkdir(parents=True)
-    target.symlink_to(
-        connect._editable_source() / "skills" / "otter-vivado", target_is_directory=True
+    _symlink_or_skip(
+        target, connect._editable_source() / "skills" / "otter-vivado", target_is_directory=True
     )
     result = connect.connect_source("cursor")
     assert result["skill"] == str(target)
@@ -250,7 +268,7 @@ def test_existing_config_symlink_preserved(home, tmp_path):
     config.parent.mkdir()
     real = tmp_path / "shared-mcp.json"
     real.write_text('{"mcpServers":{"other":{"command":"user-tool"}}}')
-    config.symlink_to(real)
+    _symlink_or_skip(config, real)
     connect.connect_source("cursor")
     assert config.is_symlink()
     assert json.loads(real.read_text())["mcpServers"]["other"]["command"] == "user-tool"
@@ -274,6 +292,7 @@ def test_concurrent_config_change_is_not_overwritten(home, monkeypatch):
 
 def test_junction_fallback_is_only_for_windows_privilege_failure(home, monkeypatch):
     original_symlink = Path.symlink_to
+    real_junction = connect._create_junction
     created = []
 
     def denied(*args, **kwargs):
@@ -283,7 +302,13 @@ def test_junction_fallback_is_only_for_windows_privilege_failure(home, monkeypat
 
     def junction(target, source):
         created.append((target, source))
-        original_symlink(target, source, target_is_directory=True)
+        try:
+            original_symlink(target, source, target_is_directory=True)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314 and sys.platform == "win32":
+                real_junction(target, source)
+                return
+            raise
 
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(Path, "symlink_to", denied)
@@ -319,7 +344,7 @@ def test_multiple_clients_can_link_to_one_existing_mcp_config(home, tmp_path):
     paths = [home / ".cursor/mcp.json", home / ".gemini/config/mcp_config.json"]
     for path in paths:
         path.parent.mkdir(parents=True)
-        path.symlink_to(shared)
+        _symlink_or_skip(path, shared)
     first = connect.connect_clients(("cursor", "antigravity"))
     assert first["status"] == "connected"
     assert sum(c["config_changed"] for c in first["clients"]) == 1
@@ -407,12 +432,12 @@ def test_config_link_retargeted_during_connect_is_left_untouched(home, tmp_path,
     new.write_text('{"mcpServers":{}}')
     path = home / ".cursor/mcp.json"
     path.parent.mkdir()
-    path.symlink_to(old)
+    _symlink_or_skip(path, old)
     original_apply = connect._apply
 
     def retarget(plan, mode):
         path.unlink()
-        path.symlink_to(new)
+        _symlink_or_skip(path, new)
         return original_apply(plan, mode)
 
     monkeypatch.setattr(connect, "_apply", retarget)
