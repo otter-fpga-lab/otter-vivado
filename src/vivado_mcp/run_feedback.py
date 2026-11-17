@@ -44,6 +44,12 @@ from vivado_mcp.tcl_scripts import (
     TAIL_RUNME_LOG,
 )
 from vivado_mcp.vivado.tcl_utils import validate_identifier
+from vivado_mcp.vivado_init import (
+    infer_install_init_tcl,
+    inspect_init_tcl_file,
+    parse_general_max_threads,
+    resolve_user_init_tcl,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -210,13 +216,7 @@ async def query_hook_warnings(session, run_name: str) -> str:
 
 _EVENT_LOG_TIMEOUT_SEC = 5.0
 _EVENT_LOG_WINDOW_MIN = 10
-_MAX_INIT_FILE_BYTES = 1024 * 1024
 
-_COMMENT_BEFORE_RE = re.compile(r"(?:^|;)\s*#")
-_SET_PARAM_THREADS_RE = re.compile(
-    r'(?:^|[;\s{])set_param\s+(?:\{general\.maxThreads\}|"general\.maxThreads"|'
-    r'general\.maxThreads)\s+(?:\{([^\s}]+)\}|"([^"\s]+)"|([^\s;#\}]+))'
-)
 _RE_EVENT_EX_CODE = re.compile(
     r"(?:Exception\s+code|异常代码)\s*[:：]\s*(?:0x)?([0-9a-fA-F]{8})\b",
     re.IGNORECASE,
@@ -259,46 +259,17 @@ class SilentExitDiagnosis:
 
 
 def parse_vivado_init_max_threads(content: str) -> tuple[str, int]:
-    """从 Vivado_init.tcl 文本提取最后一个非注释 ``set_param general.maxThreads`` 值及行号。"""
-    found_val = ""
-    found_line = 0
-    for lineno, line in enumerate(content.splitlines(), 1):
-        stripped = line.lstrip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        comment = _COMMENT_BEFORE_RE.search(line)
-        comment_pos = comment.start() if comment is not None else len(line) + 1
-        for match in _SET_PARAM_THREADS_RE.finditer(line):
-            if match.start() >= comment_pos:
-                break
-            val = next((g for g in match.groups() if g), "")
-            if val:
-                found_val = val
-                found_line = lineno
-    return found_val, found_line
+    """从 Vivado_init.tcl 文本提取最后一个非注释 ``general.maxThreads`` 值及行号。"""
+    matches = parse_general_max_threads(content)
+    if not matches:
+        return "", 0
+    last = matches[-1]
+    return str(last["raw"]), int(last["line"])
 
 
 def user_vivado_init_tcl_path() -> Path:
-    """返回当前平台用户级 ``Vivado_init.tcl`` 路径（不创建目录或文件）。"""
-    if sys.platform == "win32":
-        appdata = os.environ.get("APPDATA")
-        base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
-        return base / "Xilinx" / "Vivado" / "Vivado_init.tcl"
-    return Path.home() / ".Xilinx" / "Vivado" / "Vivado_init.tcl"
-
-
-def infer_install_init_tcl(vivado_path: str | None) -> Path | None:
-    """从会话 ``vivado_path`` 推出安装目录 ``scripts/Vivado_init.tcl``；无法推出返回 None。"""
-    if not isinstance(vivado_path, str) or not vivado_path.strip():
-        return None
-    parent = Path(vivado_path.strip()).parent
-    for _ in range(4):
-        if parent.name.lower() == "bin" and parent.parent != parent:
-            return parent.parent / "scripts" / "Vivado_init.tcl"
-        if parent.parent == parent:
-            break
-        parent = parent.parent
-    return None
+    """返回当前平台用户级 ``Vivado_init.tcl`` 路径（委托共用 helper）。"""
+    return resolve_user_init_tcl()
 
 
 def inspect_vivado_init_files(
@@ -308,7 +279,7 @@ def inspect_vivado_init_files(
 ) -> list[VivadoInitThreadSetting]:
     """只读检查候选 ``Vivado_init.tcl`` 文件中的 ``general.maxThreads`` 设置。"""
     if candidates is None:
-        raw_candidates = [user_vivado_init_tcl_path()]
+        raw_candidates = [resolve_user_init_tcl()]
         install_init = infer_install_init_tcl(vivado_path)
         if install_init is not None:
             raw_candidates.append(install_init)
@@ -322,27 +293,15 @@ def inspect_vivado_init_files(
         if key in seen:
             continue
         seen.add(key)
-        try:
-            exists = path.is_file()
-        except OSError as exc:
-            results.append(VivadoInitThreadSetting(path=str(path), exists=False, error=str(exc)))
-            continue
-        if not exists:
-            results.append(VivadoInitThreadSetting(path=str(path), exists=False))
-            continue
-        try:
-            with path.open("rb") as handle:
-                text = handle.read(_MAX_INIT_FILE_BYTES).decode("utf-8", errors="replace")
-        except OSError as exc:
-            results.append(VivadoInitThreadSetting(path=str(path), exists=True, error=str(exc)))
-            continue
-        val, lineno = parse_vivado_init_max_threads(text)
+        info = inspect_init_tcl_file(path)
+        last = info["matches"][-1] if info["matches"] else None
         results.append(
             VivadoInitThreadSetting(
                 path=str(path),
-                exists=True,
-                max_threads=val,
-                line_number=lineno,
+                exists=bool(info["exists"]),
+                max_threads=str(last["raw"]) if last is not None else "",
+                line_number=int(last["line"]) if last is not None else 0,
+                error=str(info["error"] or ""),
             )
         )
     return results

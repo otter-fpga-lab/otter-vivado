@@ -526,6 +526,8 @@ def test_install_uses_same_directory_fsync_replace_and_backup(monkeypatch, tmp_p
         ("# set_param general.maxThreads 32\n", "ok", None),
         ("set_param general.maxThreads 8\nset_param general.maxThreads 16\n", "warn", 16),
         ("set_param general.maxThreads 32\nset_param general.maxThreads 4\n", "ok", 4),
+        ('set_param {general.maxThreads} { 32 }\n', "warn", 32),
+        ('puts "a;b"; set_param -name "general.maxThreads" -value { 16 }\n', "warn", 16),
     ],
 )
 def test_user_vivado_init_max_threads_windows(

@@ -26,12 +26,11 @@ from vivado_mcp.install import (
     _END_MARK,
     _atomic_write_text,
     _has_other_vendor_injection,
-    _resolve_init_tcl,
-    inspect_user_init_tcl,
     install,
 )
 from vivado_mcp.vivado.gui_session import _locate_server_script, probe_vmcp_server
 from vivado_mcp.vivado.tcl_utils import tcl_source_utf8
+from vivado_mcp.vivado_init import inspect_user_init_tcl, resolve_install_init_tcl
 
 _SCHEMA_VERSION = 1
 _DEFAULT_PORT = 9999
@@ -515,7 +514,7 @@ def _collect_checks(
                 version=get_vivado_version(resolved_vivado),
             )
         )
-        init_tcl = _resolve_init_tcl(resolved_vivado)
+        init_tcl = resolve_install_init_tcl(resolved_vivado)
     except (FileNotFoundError, OSError) as exc:
         checks.append(
             _check(

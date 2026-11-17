@@ -363,6 +363,12 @@ def test_parse_vivado_init_max_threads_ignores_comments():
     )
     assert parse_vivado_init_max_threads(text) == ("32", 4)
 
+    variants = (
+        'puts "a;b"; set_param {general.maxThreads} { 24 }\n'
+        'set_param -name "general.maxThreads" -value { 16 } ;# comment\n'
+    )
+    assert parse_vivado_init_max_threads(variants) == ("16", 2)
+
 
 def test_inspect_vivado_init_files_windows_and_linux_read_only(tmp_path, monkeypatch):
     appdata = tmp_path / "AppData" / "Roaming"

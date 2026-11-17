@@ -141,7 +141,11 @@ async def _scan_runme_nonstandard(
     section = format_nonstandard_section(errs)
     if not section:
         silent = await diagnose_silent_run_child_exit(
-            session, status, body, run_name=run_name,
+            session,
+            status,
+            body,
+            run_name=run_name,
+            counts_note="runme.log ERROR=0 / CRITICAL WARNING=0",
         )
         section = silent.section
     return status, section

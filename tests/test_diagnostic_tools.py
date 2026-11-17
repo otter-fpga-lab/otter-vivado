@@ -1551,6 +1551,8 @@ class TestNonStandardFallback:
             )
 
         assert "自动取证:" in result
+        assert "runme.log ERROR=0 / CRITICAL WARNING=0" in result
+        assert "messageDb 0 ERROR / 0 CW" not in result
         assert "Vivado 版本: 2024.2" in result
         assert "会话生效 general.maxThreads: 32" in result
         assert "set_param general.maxThreads 32" in result

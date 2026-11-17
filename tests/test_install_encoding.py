@@ -80,6 +80,11 @@ def test_parse_general_max_threads_handles_tcl_variants():
         "catch {set_param general.maxThreads 32}\n"
         'set_param general.maxThreads "8"\n'
         "set_param general.maxThreads $::env(THREADS)\n"
+        'set_param {general.maxThreads} { 24 }; puts "a;b"; '
+        'set_param "general.maxThreads" "12"\n'
+        'set_param -name general.maxThreads -value { 32 }\n'
+        'set_param -quiet -value "6" -name "general.maxThreads"\n'
+        'puts "set_param general.maxThreads 77"\n'
     )
     parsed = installer.parse_general_max_threads(content)
     assert parsed == [
@@ -87,6 +92,10 @@ def test_parse_general_max_threads_handles_tcl_variants():
         {"line": 4, "raw": "32", "value": 32},
         {"line": 5, "raw": "8", "value": 8},
         {"line": 6, "raw": "$::env(THREADS)", "value": None},
+        {"line": 7, "raw": "24", "value": 24},
+        {"line": 7, "raw": "12", "value": 12},
+        {"line": 8, "raw": "32", "value": 32},
+        {"line": 9, "raw": "6", "value": 6},
     ]
 
 
