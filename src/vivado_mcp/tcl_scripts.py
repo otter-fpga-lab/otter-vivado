@@ -564,6 +564,38 @@ puts "VMCP_TAIL_DONE"
 
 
 # --------------------------------------------------------------------------- #
+#  子进程静默退出取证：同会话轻量查询 general.maxThreads、版本与 runme.log mtime
+#  仅在检测到静默退出时执行一次；占位符 {run_name} 可为空串。
+# --------------------------------------------------------------------------- #
+
+QUERY_SILENT_EXIT_FORENSICS = """\
+if {{[catch {{get_param general.maxThreads}} __mt]}} {{
+    puts "VMCP_FORENSICS:max_threads_err=$__mt"
+}} else {{
+    puts "VMCP_FORENSICS:max_threads=$__mt"
+}}
+if {{[catch {{version -short}} __ver]}} {{
+    puts "VMCP_FORENSICS:version="
+}} else {{
+    puts "VMCP_FORENSICS:version=$__ver"
+}}
+set __target_run "{run_name}"
+if {{$__target_run ne ""}} {{
+    catch {{
+        set __r [get_runs -quiet $__target_run]
+        if {{$__r ne ""}} {{
+            set __log "[get_property DIRECTORY $__r]/runme.log"
+            if {{[file exists $__log]}} {{
+                puts "VMCP_FORENSICS:log_mtime=[file mtime $__log]"
+            }}
+        }}
+    }}
+}}
+puts "VMCP_FORENSICS_DONE"
+"""
+
+
+# --------------------------------------------------------------------------- #
 #  Tail simulation fileset (sim_*) 下所有 xsim 子日志
 #  Vivado launch_simulation 走 .bat/.sh 子进程调 xvlog/xelab/xsim,真错误在
 #  <proj>.sim/<sim_fs>/<phase>/xsim/*.log,不进 runme.log。本脚本 glob 扫

@@ -1,12 +1,24 @@
 """构建反馈：静默退出说明、钩子告警、wait_run 与异步比特流；全部 mock，不启动 Vivado。"""
 
 import asyncio
+import json
+import subprocess
+import sys
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from vivado_mcp.run_feedback import classify_hooks, evaluate_wait, status_step
+from vivado_mcp.run_feedback import (
+    classify_hooks,
+    evaluate_wait,
+    infer_install_init_tcl,
+    inspect_vivado_init_files,
+    parse_vivado_init_max_threads,
+    query_windows_crash_events,
+    status_step,
+)
 from vivado_mcp.tools.flow_tools import generate_bitstream, wait_run
 from vivado_mcp.tools.report_tools import get_run_progress
 from vivado_mcp.vivado.base_session import SessionState
@@ -52,7 +64,7 @@ _HOOKS_BAD = "\n".join([
 
 def _session(
     *, status="route_design ERROR", tail=None, diag="errors=0,critical_warnings=2,warnings=9",
-    hooks=_HOOKS_CLEAN, polls=None,
+    hooks=_HOOKS_CLEAN, polls=None, forensics="", vivado_path="",
 ):
     """按命令内容分派的会话替身。"""
     tail = _SILENT_TAIL if tail is None else tail
@@ -60,6 +72,8 @@ def _session(
     session = AsyncMock()
     session.session_id = "default"
     session.state = SessionState.READY
+    session.vivado_path = vivado_path
+    session.runtime_version = None
 
     async def execute(command, timeout=None):
         if "VMCP_POLL" in command:
@@ -74,6 +88,8 @@ def _session(
             body = "\n".join(f"VMCP_TAIL_LINE:{i + 1}|{t}" for i, t in enumerate(tail))
             return _result(f"VMCP_TAIL:status={status}\nVMCP_TAIL:total={len(tail)}\n"
                            f"{body}\nVMCP_TAIL_DONE")
+        if "VMCP_FORENSICS_DONE" in command:
+            return _result(forensics)
         return _result("")
 
     session.execute.side_effect = execute
@@ -331,3 +347,240 @@ async def test_generate_bitstream_async_keeps_cw_gate():
         result = await generate_bitstream(wait=False, ctx=_ctx())
     assert "安全检查未通过" in result
     assert session.execute.await_count == 1
+
+
+# --------------------------------------------------------------------------- #
+#  静默退出自动取证：Vivado_init.tcl / Windows 事件日志 / get_run_progress / wait_run
+# --------------------------------------------------------------------------- #
+
+
+def test_parse_vivado_init_max_threads_ignores_comments():
+    text = (
+        "# set_param general.maxThreads 99\n"
+        "puts ok ;# set_param general.maxThreads 64\n"
+        "set_param general.maxThreads 8\n"
+        "if {[catch {set_param general.maxThreads 32}]} {}\n"
+    )
+    assert parse_vivado_init_max_threads(text) == ("32", 4)
+
+
+def test_inspect_vivado_init_files_windows_and_linux_read_only(tmp_path, monkeypatch):
+    appdata = tmp_path / "AppData" / "Roaming"
+    win_user_init = appdata / "Xilinx" / "Vivado" / "Vivado_init.tcl"
+    win_user_init.parent.mkdir(parents=True)
+    original_text = "set_param general.maxThreads 32\n"
+    win_user_init.write_text(original_text, encoding="utf-8")
+
+    vivado_exe = tmp_path / "Xilinx" / "Vivado" / "2024.2" / "bin" / "vivado.bat"
+    install_init = tmp_path / "Xilinx" / "Vivado" / "2024.2" / "scripts" / "Vivado_init.tcl"
+    install_init.parent.mkdir(parents=True)
+    install_init.write_text("# clean\n", encoding="utf-8")
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("APPDATA", str(appdata))
+    items = inspect_vivado_init_files(str(vivado_exe))
+    assert len(items) == 2
+    assert items[0].exists and items[0].max_threads == "32" and items[0].line_number == 1
+    assert items[1].exists and items[1].max_threads == ""
+    assert win_user_init.read_text(encoding="utf-8") == original_text
+
+    # Linux ~/.Xilinx/Vivado/Vivado_init.tcl
+    linux_home = tmp_path / "home"
+    linux_init = linux_home / ".Xilinx" / "Vivado" / "Vivado_init.tcl"
+    linux_init.parent.mkdir(parents=True)
+    linux_init.write_text("set_param general.maxThreads 16\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(Path, "home", lambda: linux_home)
+    linux_items = inspect_vivado_init_files("/tools/Xilinx/Vivado/2024.2/bin/vivado")
+    assert linux_items[0].path == str(linux_init)
+    assert linux_items[0].max_threads == "16"
+    assert infer_install_init_tcl("/fake/vivado") is None
+
+
+def test_query_windows_crash_events_parses_1000_and_radar(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    events_json = json.dumps([
+        {
+            "Id": 1000,
+            "Time": "2026-11-17T15:10:02+08:00",
+            "Provider": "Application Error",
+            "Message": (
+                "错误应用程序名称: vivado.exe，版本: 2024.2.0.0\n"
+                "错误模块名称: ntdll.dll，版本: 10.0.22621.4317\n"
+                "异常代码: 0xc0000374\n"
+            ),
+        },
+        {
+            "Id": 1001,
+            "Time": "2026-11-17T15:09:58+08:00",
+            "Provider": "Windows Error Reporting",
+            "Message": "事件名称: RADAR_PRE_LEAK_64\nP1: vivado.exe\n",
+        },
+    ])
+    mock_run = MagicMock(
+        return_value=subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=events_json, stderr="",
+        )
+    )
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    status, note, window, events = query_windows_crash_events(log_mtime=1763363400)
+    assert status == "ok"
+    assert note == ""
+    assert "±10 分钟" in window
+    assert len(events) == 2
+    assert events[0].event_id == 1000
+    assert events[0].exception_code == "0xC0000374"
+    assert events[0].faulting_module == "ntdll.dll"
+    assert events[1].event_id == 1001
+    assert events[1].wer_event_name == "RADAR_PRE_LEAK_64"
+
+    cmd = mock_run.call_args.args[0]
+    assert cmd[0] == "powershell"
+    assert "Get-WinEvent -FilterHashtable" in cmd[-1]
+    assert mock_run.call_args.kwargs["timeout"] <= 5.0
+
+
+def test_query_windows_crash_events_timeout_and_non_windows(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    mock_run = MagicMock()
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    status, note, _, events = query_windows_crash_events(log_mtime=1763363400)
+    assert status == "skipped"
+    assert events == []
+    mock_run.assert_not_called()
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        MagicMock(side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=5.0)),
+    )
+    status, note, _, events = query_windows_crash_events(log_mtime=1763363400)
+    assert status == "unavailable"
+    assert "超时" in note
+    assert events == []
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        MagicMock(
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=1, stdout="", stderr="Access denied",
+            )
+        ),
+    )
+    status, note, _, events = query_windows_crash_events(log_mtime=1763363400)
+    assert status == "unavailable"
+    assert "Access denied" in note
+    assert events == []
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        MagicMock(
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="{not-json", stderr="",
+            )
+        ),
+    )
+    status, note, _, events = query_windows_crash_events(log_mtime=1763363400)
+    assert status == "unavailable"
+    assert "JSON" in note
+    assert events == []
+
+
+async def test_get_run_progress_and_wait_run_share_silent_exit_forensics(tmp_path, monkeypatch):
+    appdata = tmp_path / "AppData" / "Roaming"
+    user_init = appdata / "Xilinx" / "Vivado" / "Vivado_init.tcl"
+    user_init.parent.mkdir(parents=True)
+    user_init.write_text("set_param general.maxThreads 32\n", encoding="utf-8")
+
+    vivado_exe = tmp_path / "Vivado" / "2024.2" / "bin" / "vivado.bat"
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("APPDATA", str(appdata))
+
+    events_json = json.dumps([
+        {
+            "Id": 1000,
+            "Time": "2026-11-17T15:10:02+08:00",
+            "Provider": "Application Error",
+            "Message": "Faulting application name: vivado.exe\nException code: 0xc0000374",
+        },
+        {
+            "Id": 1001,
+            "Time": "2026-11-17T15:09:58+08:00",
+            "Provider": "Windows Error Reporting",
+            "Message": "Event Name: RADAR_PRE_LEAK_64\nP1: vivado.exe",
+        },
+    ])
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        MagicMock(
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=events_json, stderr="",
+            )
+        ),
+    )
+
+    forensics_out = (
+        "VMCP_FORENSICS:max_threads=32\n"
+        "VMCP_FORENSICS:version=2024.2\n"
+        "VMCP_FORENSICS_DONE\n"
+    )
+    session_progress = _session(forensics=forensics_out, vivado_path=str(vivado_exe))
+    with patch("vivado_mcp.tools.report_tools._require_session", return_value=session_progress):
+        progress_res = await get_run_progress(ctx=_ctx())
+
+    session_wait = _session(
+        polls=["route_design ERROR"], forensics=forensics_out, vivado_path=str(vivado_exe),
+    )
+    wait_res, _ = await _call_wait(session_wait)
+
+    for text in (progress_res, wait_res):
+        assert "子进程静默退出" in text
+        assert "Vivado 版本: 2024.2" in text
+        assert "会话生效 general.maxThreads: 32" in text
+        assert "set_param general.maxThreads 32" in text
+        assert "0xC0000374" in text
+        assert "RADAR_PRE_LEAK_64" in text
+        assert "本地分析，未经 AMD 确认" in text
+        assert "STEPS.ROUTE_DESIGN.TCL.PRE" in text
+        assert "STEPS.ROUTE_DESIGN.TCL.POST" in text
+        assert "scripts/" in text
+
+    # 验证通过同一个 Tcl 会话发起了 get_param general.maxThreads
+    assert any(
+        "get_param general.maxThreads" in c.args[0]
+        for c in session_progress.execute.await_args_list
+    )
+
+
+async def test_silent_exit_forensics_degrades_gracefully_on_tcl_and_ps_failure(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("APPDATA", str(tmp_path / "missing_appdata"))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        MagicMock(side_effect=OSError("powershell not found")),
+    )
+
+    session = _session()
+    orig_exec = session.execute.side_effect
+
+    async def failing_forensics(command, timeout=None):
+        if "VMCP_FORENSICS_DONE" in command:
+            return _result("ERROR: failed", error=True)
+        return await orig_exec(command, timeout=timeout)
+
+    session.execute.side_effect = failing_forensics
+    with patch("vivado_mcp.tools.report_tools._require_session", return_value=session):
+        result = await get_run_progress(ctx=_ctx())
+
+    assert "子进程静默退出" in result
+    assert "会话生效 general.maxThreads: 未取得" in result
+    assert "Windows 事件日志" in result and "未取得" in result
+    assert not result.startswith("[ERROR]")

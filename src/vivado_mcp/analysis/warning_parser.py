@@ -105,6 +105,45 @@ class WarningReport:
     error_groups: list[WarningGroup] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class VivadoInitThreadSetting:
+    """单个 Vivado_init.tcl 候选文件的 general.maxThreads 解析结果。"""
+
+    path: str
+    exists: bool
+    max_threads: str = ""
+    line_number: int = 0
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class WindowsCrashEvent:
+    """Windows Application 事件日志中一条 vivado.exe 崩溃或 WER 记录。"""
+
+    event_id: int
+    time_created: str = ""
+    provider: str = ""
+    exception_code: str = ""
+    wer_event_name: str = ""
+    faulting_module: str = ""
+    summary: str = ""
+
+
+@dataclass(frozen=True)
+class SilentExitForensics:
+    """子进程静默退出时的自动取证快照。"""
+
+    vivado_version: str = ""
+    effective_max_threads: int | None = None
+    effective_max_threads_raw: str = ""
+    max_threads_note: str = ""
+    init_files: list[VivadoInitThreadSetting] = field(default_factory=list)
+    event_log_status: str = "not_queried"
+    event_log_note: str = ""
+    event_log_window: str = ""
+    events: list[WindowsCrashEvent] = field(default_factory=list)
+
+
 # ====================================================================== #
 #  已知分类表——内置中文修复建议
 # ====================================================================== #
@@ -766,18 +805,41 @@ _RE_CHECKPOINT_WRITTEN = re.compile(
     r"The checkpoint .+ has been generated",
     re.IGNORECASE,
 )
+_RE_VIVADO_2024X = re.compile(r"^2024\.\d+")
 
 
-def detect_silent_run_child_exit(
-    status: str, body: str, *, counts_note: str = "messageDb 0 ERROR / 0 CW",
-) -> str:
-    """STATUS 含 ERROR、日志却显示某步已成功、且子进程没有正常退出时的说明。
+def parse_silent_exit_tcl_output(raw: str) -> tuple[int | None, str, str, str, int]:
+    """解析 QUERY_SILENT_EXIT_FORENSICS 输出。
 
-    现场：``route_design completed successfully`` 之后跑 ``report_*`` /
-    ``write_checkpoint``，子 Vivado 被杀，``runme.log`` 无 ``ERROR:`` 前缀，
-    ``.vivado.error.rst`` 常为空。关键词扫描抓不到 TclStackFree/segfault。
-    ``counts_note`` 由调用方按实际核对的计数来源填写。
+    返回 ``(max_threads, max_threads_raw, max_threads_err, version, log_mtime)``。
     """
+    max_threads: int | None = None
+    max_threads_raw = ""
+    max_threads_err = ""
+    version = ""
+    log_mtime = 0
+
+    for line in (raw or "").splitlines():
+        text = line.strip()
+        if text.startswith("VMCP_FORENSICS:max_threads="):
+            val = text[len("VMCP_FORENSICS:max_threads="):].strip()
+            max_threads_raw = val
+            if re.fullmatch(r"\d+", val):
+                max_threads = int(val)
+        elif text.startswith("VMCP_FORENSICS:max_threads_err="):
+            max_threads_err = text[len("VMCP_FORENSICS:max_threads_err="):].strip()
+        elif text.startswith("VMCP_FORENSICS:version="):
+            version = text[len("VMCP_FORENSICS:version="):].strip()
+        elif text.startswith("VMCP_FORENSICS:log_mtime="):
+            val = text[len("VMCP_FORENSICS:log_mtime="):].strip()
+            if re.fullmatch(r"\d+", val):
+                log_mtime = int(val)
+
+    return max_threads, max_threads_raw, max_threads_err, version, log_mtime
+
+
+def match_silent_run_child_exit(status: str, body: str) -> str:
+    """判定是否为子进程静默退出；命中则返回最后完成的步骤名，否则返回空串。"""
     if "ERROR" not in (status or "").upper():
         return ""
     if not (body or "").strip():
@@ -787,9 +849,162 @@ def detect_silent_run_child_exit(
     match = None
     for found in _RE_STEP_COMPLETED.finditer(body):
         match = found
-    if match is None:
+    return match.group(1) if match is not None else ""
+
+
+def is_high_thread_route_heap_risk(
+    status: str,
+    step: str,
+    forensics: SilentExitForensics | None,
+) -> bool:
+    """判定是否命中 2024.x + 高线程 (>8) + route + (0xC0000374 若取到) 堆损坏特征。"""
+    if forensics is None:
+        return False
+    is_route = (step or "").lower() == "route_design" or "route_design" in (status or "").lower()
+    if not is_route:
+        return False
+    if not _RE_VIVADO_2024X.match((forensics.vivado_version or "").strip()):
+        return False
+    if forensics.effective_max_threads is None or forensics.effective_max_threads <= 8:
+        return False
+    codes = {
+        ev.exception_code.strip().upper().removeprefix("0X")
+        for ev in forensics.events
+        if ev.exception_code and ev.exception_code.strip()
+    }
+    return (not codes) or ("C0000374" in codes)
+
+
+def _format_event_line(ev: WindowsCrashEvent) -> str:
+    parts = [f"[Event {ev.event_id}]"]
+    if ev.time_created:
+        parts.append(ev.time_created)
+    if ev.provider:
+        parts.append(ev.provider)
+    details: list[str] = []
+    if ev.exception_code:
+        details.append(f"异常码 {ev.exception_code}")
+    if ev.wer_event_name:
+        details.append(f"WER {ev.wer_event_name}")
+    if ev.faulting_module:
+        details.append(f"模块 {ev.faulting_module}")
+    if not details and ev.summary:
+        details.append(ev.summary)
+    if details:
+        parts.append(" | ".join(details))
+    return "    • " + " | ".join(parts[:3]) + (f" | {parts[3]}" if len(parts) > 3 else "")
+
+
+def _format_forensics_lines(forensics: SilentExitForensics) -> list[str]:
+    lines: list[str] = ["", "自动取证:"]
+    lines.append(f"  - Vivado 版本: {forensics.vivado_version or '未取得'}")
+
+    if forensics.effective_max_threads is not None:
+        mt_text = str(forensics.effective_max_threads)
+    elif forensics.effective_max_threads_raw:
+        mt_text = forensics.effective_max_threads_raw
+    else:
+        note = f"（{forensics.max_threads_note}）" if forensics.max_threads_note else ""
+        mt_text = f"未取得{note}"
+    lines.append(f"  - 会话生效 general.maxThreads: {mt_text}")
+
+    if forensics.init_files:
+        lines.append("  - Vivado_init.tcl 候选文件（只读）:")
+        for item in forensics.init_files:
+            if item.error:
+                lines.append(f"    • {item.path}: 未取得（读取失败: {item.error}）")
+            elif not item.exists:
+                lines.append(f"    • {item.path}: 不存在")
+            elif item.max_threads:
+                loc = f"（第 {item.line_number} 行）" if item.line_number else ""
+                lines.append(
+                    f"    • {item.path}: set_param general.maxThreads {item.max_threads}{loc}"
+                )
+            else:
+                lines.append(f"    • {item.path}: 未设置 general.maxThreads")
+
+    win_label = f", {forensics.event_log_window}" if forensics.event_log_window else ""
+    header = f"  - Windows 事件日志 (Application{win_label}):"
+    if forensics.event_log_status == "skipped":
+        lines.append(f"{header} {forensics.event_log_note or '非 Windows 平台，跳过'}")
+    elif forensics.event_log_status == "unavailable":
+        note = f"（{forensics.event_log_note}）" if forensics.event_log_note else ""
+        lines.append(f"{header} 未取得{note}")
+    elif forensics.event_log_status == "ok":
+        if forensics.events:
+            lines.append(header)
+            for ev in forensics.events:
+                lines.append(_format_event_line(ev))
+        else:
+            lines.append(f"{header} 时间窗口内未见 vivado.exe 崩溃或 WER 记录")
+    return lines
+
+
+def _format_high_thread_advice_lines(forensics: SilentExitForensics) -> list[str]:
+    init_hits = [
+        item.path
+        for item in forensics.init_files
+        if item.exists and item.max_threads and re.fullmatch(r"\d+", item.max_threads)
+        and int(item.max_threads) > 8
+    ]
+    codes = sorted(
+        {
+            f"0x{ev.exception_code.strip().upper().removeprefix('0X')}"
+            for ev in forensics.events
+            if ev.exception_code and ev.exception_code.strip()
+        }
+    )
+    radars = sorted({ev.wer_event_name for ev in forensics.events if ev.wer_event_name})
+    sigs: list[str] = []
+    if codes:
+        sigs.append(f"异常码 {'/'.join(codes)}")
+    if radars:
+        sigs.append(f"WER {'/'.join(radars)}")
+    sig_note = f"、并见 {'、'.join(sigs)}" if sigs else "（异常码未取到，按版本与线程特征提示）"
+
+    lines = [
+        "",
+        "高线程 route 堆损坏风险提示（本地分析，未经 AMD 确认）:",
+        f"  当前为 Vivado {forensics.vivado_version}、会话生效 "
+        f"general.maxThreads={forensics.effective_max_threads} (> 8){sig_note}。",
+        "  这属于已知的高线程 route 堆损坏风险（本地分析，未经 AMD 确认，"
+        "怀疑与 route_design 多线程竞态有关）。",
+        "  规避建议（只建议，不自动修改工程或 Vivado_init.tcl）:",
+        "    1. 用工程内脚本给 route_design 挂钩子（脚本须放在工程内，如 scripts/ 或 "
+        "Debug/scripts/，禁止放在 %TEMP% 或工程外）:",
+        "       - STEPS.ROUTE_DESIGN.TCL.PRE：set_param general.maxThreads 1",
+        "       - STEPS.ROUTE_DESIGN.TCL.POST：恢复原线程数（仅在 POST 中降线程无效）",
+    ]
+    if init_hits:
+        lines.append(
+            "    2. 或删去/调低全局 Vivado_init.tcl 中的 general.maxThreads（建议 ≤ 8；"
+            f"当前命中: {', '.join(init_hits)}）。"
+        )
+    else:
+        lines.append(
+            "    2. 或检查并调低全局 Vivado_init.tcl / 启动脚本中的 "
+            "general.maxThreads（建议 ≤ 8）。"
+        )
+    return lines
+
+
+def detect_silent_run_child_exit(
+    status: str,
+    body: str,
+    *,
+    counts_note: str = "messageDb 0 ERROR / 0 CW",
+    forensics: SilentExitForensics | None = None,
+) -> str:
+    """STATUS 含 ERROR、日志却显示某步已成功、且子进程没有正常退出时的说明。
+
+    现场：``route_design completed successfully`` 之后跑 ``report_*`` /
+    ``write_checkpoint``，子 Vivado 被杀，``runme.log`` 无 ``ERROR:`` 前缀，
+    ``.vivado.error.rst`` 常为空。关键词扫描抓不到 TclStackFree/segfault。
+    ``counts_note`` 由调用方按实际核对的计数来源填写。
+    """
+    step = match_silent_run_child_exit(status, body)
+    if not step:
         return ""
-    step = match.group(1)
     lines = [
         "=== 子进程静默退出 ===",
         f"Vivado STATUS=`{status}`，{counts_note}，但 run 失败。",
@@ -804,6 +1019,10 @@ def detect_silent_run_child_exit(
             "没有 `The checkpoint ... has been generated`："
             "子进程多半死在该步之后的 report_* 或 write_checkpoint。"
         )
+    if forensics is not None:
+        lines.extend(_format_forensics_lines(forensics))
+        if is_high_thread_route_heap_risk(status, step, forensics):
+            lines.extend(_format_high_thread_advice_lines(forensics))
     lines.extend(
         [
             "",

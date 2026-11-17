@@ -6,11 +6,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 import re
+import subprocess
+import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from vivado_mcp.analysis.run_progress_parser import (
     RunProgress,
@@ -19,13 +25,25 @@ from vivado_mcp.analysis.run_progress_parser import (
     run_state,
 )
 from vivado_mcp.analysis.warning_parser import (
+    SilentExitForensics,
+    VivadoInitThreadSetting,
+    WindowsCrashEvent,
     detect_silent_run_child_exit,
     format_nonstandard_section,
+    is_high_thread_route_heap_risk,
+    match_silent_run_child_exit,
     parse_diag_counts,
+    parse_silent_exit_tcl_output,
     parse_tail_runme_output,
     scan_nonstandard_errors,
 )
-from vivado_mcp.tcl_scripts import COUNT_WARNINGS, QUERY_RUN_PROGRESS, TAIL_RUNME_LOG
+from vivado_mcp.tcl_scripts import (
+    COUNT_WARNINGS,
+    QUERY_RUN_PROGRESS,
+    QUERY_SILENT_EXIT_FORENSICS,
+    TAIL_RUNME_LOG,
+)
+from vivado_mcp.vivado.tcl_utils import validate_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -187,8 +205,36 @@ async def query_hook_warnings(session, run_name: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-#  失败诊断：子进程静默退出 / 非标错误
+#  失败诊断：子进程静默退出取证 / 非标错误
 # --------------------------------------------------------------------------- #
+
+_EVENT_LOG_TIMEOUT_SEC = 5.0
+_EVENT_LOG_WINDOW_MIN = 10
+_MAX_INIT_FILE_BYTES = 1024 * 1024
+
+_COMMENT_BEFORE_RE = re.compile(r"(?:^|;)\s*#")
+_SET_PARAM_THREADS_RE = re.compile(
+    r'(?:^|[;\s{])set_param\s+(?:\{general\.maxThreads\}|"general\.maxThreads"|'
+    r'general\.maxThreads)\s+(?:\{([^\s}]+)\}|"([^"\s]+)"|([^\s;#\}]+))'
+)
+_RE_EVENT_EX_CODE = re.compile(
+    r"(?:Exception\s+code|异常代码)\s*[:：]\s*(?:0x)?([0-9a-fA-F]{8})\b",
+    re.IGNORECASE,
+)
+_RE_EVENT_P7 = re.compile(r"\bP7\s*[:：]\s*(?:0x)?([0-9a-fA-F]{8})\b", re.IGNORECASE)
+_RE_EVENT_HEX_CODE = re.compile(r"\b(?:0x)?([cC]000[0-9a-fA-F]{4}|8000[0-9a-fA-F]{4})\b")
+_RE_EVENT_WER_NAME = re.compile(
+    r"(?:Event\s+Name|事件名称)\s*[:：]\s*([A-Za-z0-9_.-]+)",
+    re.IGNORECASE,
+)
+_RE_EVENT_WER_KW = re.compile(
+    r"\b(RADAR_PRE_LEAK(?:_64|_32)?|APPCRASH|BEX64)\b",
+    re.IGNORECASE,
+)
+_RE_EVENT_MODULE = re.compile(
+    r"(?:Faulting\s+module\s+name|错误模块名称)\s*[:：]\s*([^\s,，;；]+)",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -198,6 +244,340 @@ class FailureInsight:
     kind: str  # "silent_exit" / "nonstandard"
     section: str
     step: str = ""
+    high_thread_risk: bool = False
+
+
+@dataclass
+class SilentExitDiagnosis:
+    """``get_run_progress`` / ``wait_run`` / ``get_critical_warnings`` 共用的静默退出结果。"""
+
+    matched: bool
+    step: str = ""
+    section: str = ""
+    high_thread_risk: bool = False
+    forensics: SilentExitForensics | None = None
+
+
+def parse_vivado_init_max_threads(content: str) -> tuple[str, int]:
+    """从 Vivado_init.tcl 文本提取最后一个非注释 ``set_param general.maxThreads`` 值及行号。"""
+    found_val = ""
+    found_line = 0
+    for lineno, line in enumerate(content.splitlines(), 1):
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        comment = _COMMENT_BEFORE_RE.search(line)
+        comment_pos = comment.start() if comment is not None else len(line) + 1
+        for match in _SET_PARAM_THREADS_RE.finditer(line):
+            if match.start() >= comment_pos:
+                break
+            val = next((g for g in match.groups() if g), "")
+            if val:
+                found_val = val
+                found_line = lineno
+    return found_val, found_line
+
+
+def user_vivado_init_tcl_path() -> Path:
+    """返回当前平台用户级 ``Vivado_init.tcl`` 路径（不创建目录或文件）。"""
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+        return base / "Xilinx" / "Vivado" / "Vivado_init.tcl"
+    return Path.home() / ".Xilinx" / "Vivado" / "Vivado_init.tcl"
+
+
+def infer_install_init_tcl(vivado_path: str | None) -> Path | None:
+    """从会话 ``vivado_path`` 推出安装目录 ``scripts/Vivado_init.tcl``；无法推出返回 None。"""
+    if not isinstance(vivado_path, str) or not vivado_path.strip():
+        return None
+    parent = Path(vivado_path.strip()).parent
+    for _ in range(4):
+        if parent.name.lower() == "bin" and parent.parent != parent:
+            return parent.parent / "scripts" / "Vivado_init.tcl"
+        if parent.parent == parent:
+            break
+        parent = parent.parent
+    return None
+
+
+def inspect_vivado_init_files(
+    vivado_path: str | None = None,
+    *,
+    candidates: list[Path] | None = None,
+) -> list[VivadoInitThreadSetting]:
+    """只读检查候选 ``Vivado_init.tcl`` 文件中的 ``general.maxThreads`` 设置。"""
+    if candidates is None:
+        raw_candidates = [user_vivado_init_tcl_path()]
+        install_init = infer_install_init_tcl(vivado_path)
+        if install_init is not None:
+            raw_candidates.append(install_init)
+    else:
+        raw_candidates = list(candidates)
+
+    seen: set[str] = set()
+    results: list[VivadoInitThreadSetting] = []
+    for path in raw_candidates:
+        key = os.path.normcase(os.path.normpath(str(path)))
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            exists = path.is_file()
+        except OSError as exc:
+            results.append(VivadoInitThreadSetting(path=str(path), exists=False, error=str(exc)))
+            continue
+        if not exists:
+            results.append(VivadoInitThreadSetting(path=str(path), exists=False))
+            continue
+        try:
+            with path.open("rb") as handle:
+                text = handle.read(_MAX_INIT_FILE_BYTES).decode("utf-8", errors="replace")
+        except OSError as exc:
+            results.append(VivadoInitThreadSetting(path=str(path), exists=True, error=str(exc)))
+            continue
+        val, lineno = parse_vivado_init_max_threads(text)
+        results.append(
+            VivadoInitThreadSetting(
+                path=str(path),
+                exists=True,
+                max_threads=val,
+                line_number=lineno,
+            )
+        )
+    return results
+
+
+def _parse_windows_event_record(item: dict) -> WindowsCrashEvent:
+    try:
+        event_id = int(item.get("Id") or 0)
+    except (TypeError, ValueError):
+        event_id = 0
+    time_created = str(item.get("Time") or item.get("TimeCreated") or "").strip()
+    provider = str(item.get("Provider") or item.get("ProviderName") or "").strip()
+    message = str(item.get("Message") or "")
+
+    ex_match = (
+        _RE_EVENT_EX_CODE.search(message)
+        or _RE_EVENT_P7.search(message)
+        or _RE_EVENT_HEX_CODE.search(message)
+    )
+    exception_code = f"0x{ex_match.group(1).upper()}" if ex_match else ""
+
+    wer_match = _RE_EVENT_WER_NAME.search(message) or _RE_EVENT_WER_KW.search(message)
+    wer_event_name = wer_match.group(1) if wer_match else ""
+
+    mod_match = _RE_EVENT_MODULE.search(message)
+    faulting_module = mod_match.group(1).rstrip("，。,.") if mod_match else ""
+
+    first_line = next((ln.strip() for ln in message.splitlines() if ln.strip()), "")
+    summary = first_line[:160]
+    return WindowsCrashEvent(
+        event_id=event_id,
+        time_created=time_created,
+        provider=provider,
+        exception_code=exception_code,
+        wer_event_name=wer_event_name,
+        faulting_module=faulting_module,
+        summary=summary,
+    )
+
+
+def query_windows_crash_events(
+    log_mtime: int = 0,
+    *,
+    timeout_sec: float = _EVENT_LOG_TIMEOUT_SEC,
+    window_minutes: int = _EVENT_LOG_WINDOW_MIN,
+) -> tuple[str, str, str, list[WindowsCrashEvent]]:
+    """仅在 Windows 上限时查询 Application 日志中 vivado.exe 的崩溃与 WER 事件。
+
+    返回 ``(status, note, window_label, events)``；失败或超时标记 ``unavailable``。
+    """
+    if sys.platform != "win32":
+        return "skipped", "非 Windows 平台，跳过系统事件日志查询", "", []
+
+    if log_mtime and log_mtime > 0:
+        delta = max(60, int(window_minutes) * 60)
+        start_epoch = max(0, int(log_mtime) - delta)
+        end_epoch = int(log_mtime) + delta
+        window_label = f"runme.log mtime ±{window_minutes} 分钟"
+    else:
+        now = int(time.time())
+        start_epoch = max(0, now - 1800)
+        end_epoch = now + 60
+        window_label = "最近 30 分钟"
+
+    ps_script = (
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+        f"$s=[DateTimeOffset]::FromUnixTimeSeconds({start_epoch}).LocalDateTime;"
+        f"$e=[DateTimeOffset]::FromUnixTimeSeconds({end_epoch}).LocalDateTime;"
+        "$err=@();"
+        "$raw=Get-WinEvent -FilterHashtable "
+        "@{LogName='Application';Id=1000,1001;StartTime=$s;EndTime=$e} "
+        "-MaxEvents 200 -ErrorAction SilentlyContinue -ErrorVariable err;"
+        "$realErr=@($err | Where-Object { "
+        "$_.FullyQualifiedErrorId -notmatch '^NoMatchingEventsFound' });"
+        "if ($realErr.Count -gt 0) { Write-Error ($realErr[0].ToString()); exit 1 };"
+        "$ev=@($raw | Where-Object { $_.Message -match 'vivado\\.exe' } "
+        "| Select-Object -First 10 "
+        "| ForEach-Object { [PSCustomObject]@{Id=$_.Id;Time=$_.TimeCreated.ToString('o');"
+        "Provider=$_.ProviderName;Message=$_.Message} });"
+        "ConvertTo-Json -InputObject $ev -Compress"
+    )
+    effective_timeout = min(max(0.5, float(timeout_sec)), _EVENT_LOG_TIMEOUT_SEC)
+    kwargs: dict[str, object] = {}
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=effective_timeout,
+            **kwargs,
+        )
+    except subprocess.TimeoutExpired:
+        return "unavailable", f"超时(>{effective_timeout:g}s)", window_label, []
+    except (OSError, ValueError) as exc:
+        return "unavailable", str(exc), window_label, []
+
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or f"exit={proc.returncode}").strip()
+        return "unavailable", err[:200], window_label, []
+
+    raw_out = (proc.stdout or "").lstrip("\ufeff").strip()
+    if not raw_out or raw_out == "null":
+        return "ok", "", window_label, []
+
+    try:
+        parsed = json.loads(raw_out)
+    except json.JSONDecodeError:
+        return "unavailable", "事件日志输出 JSON 解析失败", window_label, []
+
+    if isinstance(parsed, dict):
+        items = [parsed]
+    elif isinstance(parsed, list):
+        items = [entry for entry in parsed if isinstance(entry, dict)]
+    else:
+        return "unavailable", "事件日志输出格式异常", window_label, []
+
+    events = [_parse_windows_event_record(item) for item in items]
+    return "ok", "", window_label, events
+
+
+async def collect_silent_exit_forensics(
+    session,
+    *,
+    run_name: str = "",
+    log_mtime: int = 0,
+    vivado_version: str = "",
+) -> SilentExitForensics:
+    """收集子进程静默退出的多维取证数据；单项失败不抛出异常。"""
+    safe_run = ""
+    if run_name:
+        try:
+            safe_run = validate_identifier(run_name, "run_name")
+        except ValueError:
+            safe_run = ""
+
+    max_threads: int | None = None
+    max_threads_raw = ""
+    max_threads_note = ""
+    tcl_version = ""
+    tcl_mtime = 0
+
+    try:
+        res = await session.execute(
+            QUERY_SILENT_EXIT_FORENSICS.format(run_name=safe_run),
+            timeout=10.0,
+        )
+        if getattr(res, "is_error", False):
+            max_threads_note = f"Tcl 查询失败 rc={getattr(res, 'return_code', '?')}"
+        else:
+            output = getattr(res, "output", "") or ""
+            (
+                max_threads,
+                max_threads_raw,
+                err_msg,
+                tcl_version,
+                tcl_mtime,
+            ) = parse_silent_exit_tcl_output(output)
+            if err_msg and max_threads is None and not max_threads_raw:
+                max_threads_note = err_msg[:120]
+            elif max_threads is None and not max_threads_raw:
+                max_threads_note = "Tcl 输出未返回 general.maxThreads"
+    except Exception as exc:
+        logger.warning("静默退出取证查询 maxThreads 失败: %s", exc)
+        max_threads_note = str(exc)[:120] or type(exc).__name__
+
+    raw_rt_ver = getattr(session, "runtime_version", None)
+    rt_ver = (
+        raw_rt_ver.strip()
+        if isinstance(raw_rt_ver, str) and raw_rt_ver.strip() not in ("", "unknown")
+        else ""
+    )
+    resolved_version = tcl_version or (vivado_version or "").strip() or rt_ver
+
+    raw_vivado_path = getattr(session, "vivado_path", None)
+    vivado_path = raw_vivado_path if isinstance(raw_vivado_path, str) else None
+    init_files = inspect_vivado_init_files(vivado_path)
+
+    effective_mtime = log_mtime if log_mtime and log_mtime > 0 else tcl_mtime
+    ev_status, ev_note, ev_window, events = await asyncio.to_thread(
+        query_windows_crash_events, effective_mtime,
+    )
+
+    return SilentExitForensics(
+        vivado_version=resolved_version,
+        effective_max_threads=max_threads,
+        effective_max_threads_raw=max_threads_raw,
+        max_threads_note=max_threads_note,
+        init_files=init_files,
+        event_log_status=ev_status,
+        event_log_note=ev_note,
+        event_log_window=ev_window,
+        events=events,
+    )
+
+
+async def diagnose_silent_run_child_exit(
+    session,
+    status: str,
+    body: str,
+    *,
+    run_name: str = "",
+    counts_note: str = "messageDb 0 ERROR / 0 CW",
+    log_mtime: int = 0,
+    vivado_version: str = "",
+) -> SilentExitDiagnosis:
+    """``get_run_progress`` / ``wait_run`` / ``get_critical_warnings`` 共用的静默退出诊断与取证。"""
+    step = match_silent_run_child_exit(status, body)
+    if not step:
+        return SilentExitDiagnosis(matched=False)
+
+    forensics = await collect_silent_exit_forensics(
+        session,
+        run_name=run_name,
+        log_mtime=log_mtime,
+        vivado_version=vivado_version,
+    )
+    section = detect_silent_run_child_exit(
+        status,
+        body,
+        counts_note=counts_note,
+        forensics=forensics,
+    )
+    risk = is_high_thread_route_heap_risk(status, step, forensics)
+    return SilentExitDiagnosis(
+        matched=True,
+        step=step.lower(),
+        section=section,
+        high_thread_risk=risk,
+        forensics=forensics,
+    )
 
 
 def _last_completed_step(body: str) -> str:
@@ -210,7 +590,7 @@ def _last_completed_step(body: str) -> str:
 async def diagnose_failed_run(session, rp: RunProgress) -> FailureInsight | None:
     """STATUS 失败且 runme.log 无 ERROR 行时，复用静默退出 / 非标错误检测。
 
-    只在失败时多发两条只读查询；runme.log 有 ERROR 行时交给 get_critical_warnings。
+    只在失败时多发只读查询；runme.log 有 ERROR 行时交给 get_critical_warnings。
     """
     if not rp.found or rp.state() != "failed":
         return None
@@ -239,13 +619,22 @@ async def diagnose_failed_run(session, rp: RunProgress) -> FailureInsight | None
     if nonstandard:
         return FailureInsight(kind="nonstandard", section=nonstandard)
     cw_text = f"{cw}" if cw >= 0 else "未知"
-    section = detect_silent_run_child_exit(
-        status or rp.status, body,
+    silent = await diagnose_silent_run_child_exit(
+        session,
+        status or rp.status,
+        body,
+        run_name=rp.run_name,
         counts_note=f"runme.log ERROR=0 / CRITICAL WARNING={cw_text}",
+        log_mtime=rp.log_mtime,
     )
-    if not section:
+    if not silent.matched:
         return None
-    return FailureInsight(kind="silent_exit", section=section, step=_last_completed_step(body))
+    return FailureInsight(
+        kind="silent_exit",
+        section=silent.section,
+        step=_last_completed_step(body) or silent.step,
+        high_thread_risk=silent.high_thread_risk,
+    )
 
 
 def failure_advice(rp: RunProgress, insight: FailureInsight, session_id: str) -> list[str]:
@@ -258,10 +647,16 @@ def failure_advice(rp: RunProgress, insight: FailureInsight, session_id: str) ->
             f"run_implementation(run_name='{run}', session_id='{session_id}', wait=False)"
         )
         until = "synth_design" if run.startswith("synth") else "route_design"
+        step1 = (
+            "  1. 按上面「高线程 route 堆损坏风险提示」处理（工程内 scripts/ 挂 PRE=1/POST 恢复钩子"
+            "或调低全局 maxThreads；亦排查 ROUTE 后 report_* / 双开 Vivado）。"
+            if insight.high_thread_risk
+            else "  1. 按上面原因排查：ROUTE 后 report_power / report_bus_skew / "
+            "report_timing_summary -report_unconstrained，或同一 .xpr 开了第二份 Vivado。"
+        )
         return [
             "推荐动作（日志显示该步已成功，这不是 RTL/时序 ERROR）：",
-            "  1. 按上面原因排查：ROUTE 后 report_power / report_bus_skew / "
-            "report_timing_summary -report_unconstrained，或同一 .xpr 开了第二份 Vivado。",
+            step1,
             f"  2. {rerun}",
             "     STATUS 含 ERROR 时只 reset_run -prev_step 续跑，保留已完成的 place/phys_opt。",
             f"  3. wait_run(run_name='{run}', until='{until}', session_id='{session_id}') "

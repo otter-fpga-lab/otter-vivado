@@ -17,18 +17,23 @@ from vivado_mcp.analysis.warning_parser import (
     BatStepResult,
     CriticalWarning,
     NonStandardError,
+    SilentExitForensics,
+    VivadoInitThreadSetting,
     WarningGroup,
     WarningReport,
-    format_bat_steps_section,
+    WindowsCrashEvent,
     detect_silent_run_child_exit,
+    format_bat_steps_section,
     format_nonstandard_section,
     format_warning_report,
     group_warnings,
+    is_high_thread_route_heap_risk,
     parse_bat_run_output,
     parse_critical_warnings,
     parse_diag_counts,
     parse_launch_scripts_output,
     parse_pre_bitstream,
+    parse_silent_exit_tcl_output,
     parse_sim_logs_output,
     parse_tail_runme_output,
     scan_nonstandard_errors,
@@ -580,6 +585,108 @@ class TestDetectSilentRunChildExit:
             "INFO: [Common 17-206] Exiting Vivado at Fri Nov  6 11:27:37 2026...\n"
         )
         assert detect_silent_run_child_exit("route_design ERROR", body) == ""
+
+    def test_parse_silent_exit_tcl_output(self):
+        raw = (
+            "VMCP_FORENSICS:max_threads=32\n"
+            "VMCP_FORENSICS:version=2024.2\n"
+            "VMCP_FORENSICS:log_mtime=1763360000\n"
+            "VMCP_FORENSICS_DONE\n"
+        )
+        mt, mt_raw, err, ver, mtime = parse_silent_exit_tcl_output(raw)
+        assert mt == 32
+        assert mt_raw == "32"
+        assert err == ""
+        assert ver == "2024.2"
+        assert mtime == 1763360000
+
+    def test_forensics_2024_high_threads_heap_corruption_advice(self):
+        body = (
+            "route_design completed successfully\n"
+            "INFO: [runtcl-4] Executing : report_power -file demo_power_routed.rpt\n"
+        )
+        forensics = SilentExitForensics(
+            vivado_version="2024.2",
+            effective_max_threads=32,
+            effective_max_threads_raw="32",
+            init_files=[
+                VivadoInitThreadSetting(
+                    path=r"C:\Users\u\AppData\Roaming\Xilinx\Vivado\Vivado_init.tcl",
+                    exists=True,
+                    max_threads="32",
+                    line_number=2,
+                )
+            ],
+            event_log_status="ok",
+            event_log_window="runme.log mtime ±10 分钟",
+            events=[
+                WindowsCrashEvent(
+                    event_id=1000,
+                    time_created="2026-11-17T15:10:02+08:00",
+                    provider="Application Error",
+                    exception_code="0xC0000374",
+                    faulting_module="ntdll.dll",
+                ),
+                WindowsCrashEvent(
+                    event_id=1001,
+                    time_created="2026-11-17T15:09:58+08:00",
+                    provider="Windows Error Reporting",
+                    wer_event_name="RADAR_PRE_LEAK_64",
+                ),
+            ],
+        )
+        assert is_high_thread_route_heap_risk("route_design ERROR", "route_design", forensics)
+        out = detect_silent_run_child_exit("route_design ERROR", body, forensics=forensics)
+        assert "自动取证:" in out
+        assert "Vivado 版本: 2024.2" in out
+        assert "general.maxThreads: 32" in out
+        assert "0xC0000374" in out
+        assert "RADAR_PRE_LEAK_64" in out
+        assert "高线程 route 堆损坏风险" in out
+        assert "本地分析，未经 AMD 确认" in out
+        assert "STEPS.ROUTE_DESIGN.TCL.PRE" in out
+        assert "STEPS.ROUTE_DESIGN.TCL.POST" in out
+        assert "scripts/" in out
+        assert "%TEMP%" in out
+
+    def test_forensics_skips_heap_risk_on_low_threads_or_other_code_or_version(self):
+        base = SilentExitForensics(
+            vivado_version="2024.2",
+            effective_max_threads=8,
+            event_log_status="ok",
+            events=[WindowsCrashEvent(event_id=1000, exception_code="0xC0000374")],
+        )
+        assert not is_high_thread_route_heap_risk("route_design ERROR", "route_design", base)
+
+        other_ver = SilentExitForensics(
+            vivado_version="2018.3",
+            effective_max_threads=32,
+            event_log_status="ok",
+            events=[WindowsCrashEvent(event_id=1000, exception_code="0xC0000374")],
+        )
+        assert not is_high_thread_route_heap_risk("route_design ERROR", "route_design", other_ver)
+
+        other_code = SilentExitForensics(
+            vivado_version="2024.2",
+            effective_max_threads=32,
+            event_log_status="ok",
+            events=[WindowsCrashEvent(event_id=1000, exception_code="0xC0000005")],
+        )
+        assert not is_high_thread_route_heap_risk("route_design ERROR", "route_design", other_code)
+
+        # 未取到异常码时（如超时或仅 RADAR_PRE_LEAK），仍应按版本+线程给出提示
+        no_code = SilentExitForensics(
+            vivado_version="2024.2",
+            effective_max_threads=16,
+            event_log_status="unavailable",
+            event_log_note="超时(>5s)",
+        )
+        assert is_high_thread_route_heap_risk("route_design ERROR", "route_design", no_code)
+        out = detect_silent_run_child_exit(
+            "route_design ERROR", "route_design completed successfully\n", forensics=no_code,
+        )
+        assert "未取得（超时(>5s)）" in out
+        assert "本地分析，未经 AMD 确认" in out
 
 
 # ====================================================================== #

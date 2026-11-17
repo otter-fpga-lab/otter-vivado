@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1493,6 +1495,136 @@ class TestNonStandardFallback:
         assert "子进程静默退出" in result
         assert "未发现 ERROR 或 CRITICAL WARNING" not in result
         assert "reset_run -prev_step" in result
+
+    @pytest.mark.asyncio
+    async def test_silent_child_exit_collects_forensics_and_heap_risk_advice(
+        self, tmp_path, monkeypatch
+    ):
+        """get_critical_warnings 与 get_run_progress 共用路径：取证并给堆损坏建议。"""
+        from vivado_mcp.tools.diagnostic_tools import get_critical_warnings
+
+        appdata = tmp_path / "AppData" / "Roaming"
+        init_tcl = appdata / "Xilinx" / "Vivado" / "Vivado_init.tcl"
+        init_tcl.parent.mkdir(parents=True)
+        init_tcl.write_text("set_param general.maxThreads 32\n", encoding="utf-8")
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv("APPDATA", str(appdata))
+        events_json = json.dumps([
+            {
+                "Id": 1000,
+                "Time": "2026-11-17T15:10:02+08:00",
+                "Provider": "Application Error",
+                "Message": "Faulting application name: vivado.exe\nException code: 0xc0000374",
+            },
+            {
+                "Id": 1001,
+                "Time": "2026-11-17T15:09:58+08:00",
+                "Provider": "Windows Error Reporting",
+                "Message": "Event Name: RADAR_PRE_LEAK_64\nP1: vivado.exe",
+            },
+        ])
+        mock_run = MagicMock(
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=events_json, stderr="",
+            )
+        )
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        tail_output = (
+            "VMCP_TAIL:status=route_design ERROR\n"
+            "VMCP_TAIL:total=1106\n"
+            "VMCP_TAIL_LINE:1104|route_design completed successfully\n"
+            "VMCP_TAIL_LINE:1105|INFO: [runtcl-4] Executing : report_power -file p.rpt\n"
+            "VMCP_TAIL_DONE\n"
+        )
+        forensics_output = (
+            "VMCP_FORENSICS:max_threads=32\n"
+            "VMCP_FORENSICS:version=2024.2\n"
+            "VMCP_FORENSICS:log_mtime=1763363400\n"
+            "VMCP_FORENSICS_DONE\n"
+        )
+        session = AsyncMock()
+        session.vivado_path = str(tmp_path / "Vivado" / "2024.2" / "bin" / "vivado.bat")
+        session.runtime_version = None
+        session.execute = AsyncMock(
+            side_effect=[
+                _make_tcl_result("VMCP_DIAG:errors=0,critical_warnings=0,warnings=70"),
+                _make_tcl_result("VMCP_PROJDIR:NONE"),
+                _make_tcl_result(tail_output),
+                _make_tcl_result(forensics_output),
+            ]
+        )
+        ctx = _mock_context(session)
+
+        with patch(
+            "vivado_mcp.tools.diagnostic_tools._require_session",
+            return_value=session,
+        ):
+            result = await get_critical_warnings(
+                run_name="impl_1", session_id="default", ctx=ctx
+            )
+
+        assert "自动取证:" in result
+        assert "Vivado 版本: 2024.2" in result
+        assert "会话生效 general.maxThreads: 32" in result
+        assert "set_param general.maxThreads 32" in result
+        assert "0xC0000374" in result
+        assert "RADAR_PRE_LEAK_64" in result
+        assert "本地分析，未经 AMD 确认" in result
+        assert "STEPS.ROUTE_DESIGN.TCL.PRE" in result
+        assert "STEPS.ROUTE_DESIGN.TCL.POST" in result
+        assert "scripts/" in result
+        mock_run.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_silent_child_exit_event_log_timeout_marks_unavailable(
+        self, tmp_path, monkeypatch
+    ):
+        """Windows 事件日志超时或失败时标记“未取得”，不报错。"""
+        from vivado_mcp.tools.diagnostic_tools import get_critical_warnings
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv("APPDATA", str(tmp_path / "empty_appdata"))
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            MagicMock(side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=5.0)),
+        )
+
+        tail_output = (
+            "VMCP_TAIL:status=route_design ERROR\n"
+            "VMCP_TAIL_LINE:1104|route_design completed successfully\n"
+            "VMCP_TAIL_DONE\n"
+        )
+        session = AsyncMock()
+        session.vivado_path = ""
+        session.runtime_version = None
+        session.execute = AsyncMock(
+            side_effect=[
+                _make_tcl_result("VMCP_DIAG:errors=0,critical_warnings=0,warnings=10"),
+                _make_tcl_result("VMCP_PROJDIR:NONE"),
+                _make_tcl_result(tail_output),
+                _make_tcl_result(
+                    "VMCP_FORENSICS:max_threads=32\n"
+                    "VMCP_FORENSICS:version=2024.2\n"
+                    "VMCP_FORENSICS_DONE\n"
+                ),
+            ]
+        )
+        ctx = _mock_context(session)
+
+        with patch(
+            "vivado_mcp.tools.diagnostic_tools._require_session",
+            return_value=session,
+        ):
+            result = await get_critical_warnings(
+                run_name="impl_1", session_id="default", ctx=ctx
+            )
+
+        assert "未取得" in result
+        assert "本地分析，未经 AMD 确认" in result
+        assert not result.startswith("[ERROR]")
 
     @pytest.mark.asyncio
     async def test_skips_tail_when_errors_present(self):

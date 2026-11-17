@@ -14,7 +14,6 @@ from vivado_mcp.analysis.verilog_compile_check import compile_check, format_comp
 from vivado_mcp.analysis.warning_parser import (
     BatStepResult,
     WarningReport,
-    detect_silent_run_child_exit,
     format_bat_steps_section,
     format_nonstandard_section,
     format_warning_report,
@@ -42,6 +41,7 @@ from vivado_mcp.analysis.xdc_auto_fixer import (
 )
 from vivado_mcp.analysis.xdc_linter import format_lint_report, lint_xdc_files
 from vivado_mcp.analysis.xdc_parser import XdcConstraint, parse_xdc_file
+from vivado_mcp.run_feedback import diagnose_silent_run_child_exit
 from vivado_mcp.server import _NO_SESSION, _require_session, mcp
 from vivado_mcp.tcl_scripts import (
     COUNT_WARNINGS,
@@ -140,7 +140,10 @@ async def _scan_runme_nonstandard(
     errs = scan_nonstandard_errors(body, start_line=start_line)
     section = format_nonstandard_section(errs)
     if not section:
-        section = detect_silent_run_child_exit(status, body)
+        silent = await diagnose_silent_run_child_exit(
+            session, status, body, run_name=run_name,
+        )
+        section = silent.section
     return status, section
 
 
