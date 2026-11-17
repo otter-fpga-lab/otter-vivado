@@ -39,7 +39,7 @@ async def test_stop_capability_is_scoped_readonly_and_cannot_dispatch(service):
 
 async def test_mcp_exposes_capability_guidance_without_stop_action():
     tools = {t.name: t for t in await mcp.list_tools()}
-    assert len(tools) == 49
+    assert len(tools) == 51
     assert 'stop_ila' not in tools
     actions = tools['debug_action'].input_schema['properties']['action']['enum']
     assert 'stop_ila' not in actions
