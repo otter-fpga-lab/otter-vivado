@@ -187,7 +187,7 @@ wait_run(run_name="synth_1", until="synth_design", timeout_seconds=600, session_
 | `get_next_suggestion` | **0.3.2** 11 档决策表:没项目 → open/create,没顶层 → set_property TOP,综合完成 → run_implementation...每档附可执行命令 |
 | `get_project_info` | **0.3.0** 一次拿齐项目摸底:名称/part/顶层/源文件/XDC/IP/runs 状态 |
 | `get_pre_commit_summary` | **0.3.4** 生成 markdown 工程摘要直接贴 commit body:项目/时序 WNS+WHS/资源/CW/READY-WARN-BLOCK 门禁 |
-| `get_project_layout` | 只读解析工程目录约定（`Debug/`、`Debug/NOTES.md`、`Debug/scripts/`、`Download/`、Vivado 运行目录、最近的 `99_垃圾堆`）与简短规则；`project` 留空取会话当前工程，工程根 `otter-vivado.toml` 的 `[layout]` 可覆盖，不创建目录 |
+| `get_project_layout` | 只读解析工程目录约定（`Debug/`、`Debug/NOTES.md`、`Debug/scripts/`、`Download/`、Vivado 运行目录、最近的 `99_垃圾堆`）与简短规则；`project` 留空取会话当前工程，工程根 `otter-vivado.toml` 的 `[layout]` 可覆盖，不创建目录；同时返回只读 `hygiene` 列表提示残留 `.vmcp`/`.work`、误建 `script/` 与超限 `debug_dir` |
 
 用户对目录的偏好写进 .xpr 旁的 `otter-vivado.toml`，以后各会话直接读取，不必每轮口头重复。所有键都可省略，相对路径相对于工程根；未知键或语法错误会直接报错：
 
@@ -221,7 +221,7 @@ download_dir = "Download"        # 交付固件与说明
 ### 离线摸底（无需 Vivado 会话，纯 Python）
 | 工具 | 说明 |
 |------|------|
-| `parse_xpr` | **0.3.23** 离线解析 .xpr 工程文件——不启 Vivado 秒级拿 part/顶层/源文件(按 fileset 分组,含 .v/.mem/.xci IP)/XDC/runs。对照 `get_project_info` 需先 open_project(中文路径会 TclStackFree 崩) |
+| `parse_xpr` | **0.3.23** 离线解析 .xpr 工程文件——不启 Vivado 秒级拿 part/顶层/源文件(按 fileset 分组,含 .v/.mem/.xci IP)/XDC/runs，并列出各步骤 `PreStepTclHook`/`PostStepTclHook`（标注工程内、工程外/TEMP、不存在）。对照 `get_project_info` 需先 open_project(中文路径会 TclStackFree 崩) |
 | `parse_bit_header` | **0.3.23** 离线解析 .bit 头部——设计名/part(原始 `7k325tffg900` + 规整 `xc7k325tffg900`)/构建日期时间/SHA256。烧前防错板 + 交付对账,Vivado 无 Tcl 命令读离线 .bit |
 | `parse_ltx` | **0.3.23** 离线解析 .ltx ILA 探针清单——probe 名/位宽/映射 net。连板抓波前先拿清单,`get_hw_probes` 需活 hw session |
 
@@ -449,7 +449,7 @@ safe_tcl("set_property PACKAGE_PIN {0} [get_ports {1}]", args=["W5", "clk"])
 | `vivado-mcp serve` | 同上 |
 | `vivado-mcp install [path] [--port 9999]` | 注入 Vivado_init.tcl |
 | `vivado-mcp uninstall [path]` | 从 Vivado_init.tcl 移除 |
-| `vivado-mcp doctor [path] [--port 9999] [--json]` | 只读检查环境与连接 |
+| `vivado-mcp doctor [path] [--port 9999] [--json]` | 只读检查环境与连接，同时检查用户级 `Vivado_init.tcl` 的 `general.maxThreads`（Windows > 8 时告警，不自动修改） |
 | `vivado-mcp doctor --fix [--client all\|claude-code\|codex]` | 备份后修复可安全自动处理的配置 |
 | `vivado-mcp connect --client <目标客户端> [--check]` | 接入所选客户端的源 MCP 与 Skill 链接；`--check` 仅核对。`all` 含四端，Codex 原生插件已启用时不能同时选 Codex |
 | `vivado-mcp debug --port 9999` | 连接已有 GUI，打开 ILA/VIO 调试面板 |

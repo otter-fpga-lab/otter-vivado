@@ -18,9 +18,11 @@ import hashlib
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -40,6 +42,10 @@ _DEFAULTS = {
 }
 _CACHE_ENV = "OTTER_VIVADO_CACHE_DIR"
 _XPR_SEARCH_DEPTH = 4
+DEFAULT_DEBUG_SIZE_LIMIT_BYTES = 1024 * 1024 * 1024  # 1 GiB
+DEFAULT_HYGIENE_MAX_FILES = 10_000
+DEFAULT_HYGIENE_TIMEOUT_SECONDS = 2.0
+_LEFTOVER_HIDDEN_NAMES = (".vmcp", ".work")
 
 
 class LayoutError(ValueError):
@@ -252,6 +258,166 @@ def resolve_layout(project: str | os.PathLike) -> ProjectLayout:
         config_path=config_path if config_path.is_file() else None,
         rules=_rules(root, values),
     )
+
+
+def _norm_key(path: Path) -> str:
+    return os.path.normcase(os.path.normpath(os.path.abspath(path)))
+
+
+def _format_bytes(num_bytes: int) -> str:
+    if num_bytes >= 1024 ** 3:
+        return f"{num_bytes / (1024 ** 3):.2f} GiB"
+    if num_bytes >= 1024 ** 2:
+        return f"{num_bytes / (1024 ** 2):.2f} MiB"
+    if num_bytes >= 1024:
+        return f"{num_bytes / 1024:.2f} KiB"
+    return f"{num_bytes} B"
+
+
+def _trash_suggestion(trash_dir: Path | None, target_desc: str) -> str:
+    if trash_dir is not None:
+        return (
+            f"请核对不再需要后，手动将{target_desc}移入 {trash_dir} 并写清单（清单.md/清单.json），"
+            "不要直接删除；本工具保持只读，不自动移动。"
+        )
+    return (
+        f"请先向用户确认目标回收站目录（未找到 {TRASH_NAME}，不要自动创建），"
+        f"确认后手动将{target_desc}移入 trash_dir 并写清单（清单.md/清单.json）；"
+        "本工具保持只读，不自动移动。"
+    )
+
+
+@dataclass(frozen=True)
+class _DirScanStats:
+    total_bytes: int
+    scanned_files: int
+    truncated: bool
+    timed_out: bool
+
+
+def _scan_dir_size(
+    root: Path,
+    *,
+    max_files: int = DEFAULT_HYGIENE_MAX_FILES,
+    timeout_seconds: float = DEFAULT_HYGIENE_TIMEOUT_SECONDS,
+) -> _DirScanStats:
+    """有界扫描目录总大小（受文件数上限和超时保护，不跟随目录符号链接）。"""
+    if not root.is_dir() or root.is_symlink():
+        return _DirScanStats(0, 0, False, False)
+    if max_files <= 0:
+        return _DirScanStats(0, 0, True, False)
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    stack: list[Path] = [root]
+    total_bytes = 0
+    scanned_files = 0
+    scanned_dirs = 0
+    max_dirs = max(1, max_files)
+    while stack:
+        if time.monotonic() >= deadline:
+            return _DirScanStats(total_bytes, scanned_files, True, True)
+        if scanned_dirs >= max_dirs:
+            return _DirScanStats(total_bytes, scanned_files, True, False)
+        current = stack.pop()
+        scanned_dirs += 1
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    if time.monotonic() >= deadline:
+                        return _DirScanStats(total_bytes, scanned_files, True, True)
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(Path(entry.path))
+                        elif entry.is_file(follow_symlinks=False):
+                            if scanned_files >= max_files:
+                                return _DirScanStats(total_bytes, scanned_files, True, False)
+                            scanned_files += 1
+                            try:
+                                total_bytes += entry.stat(follow_symlinks=False).st_size
+                            except OSError:
+                                pass
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return _DirScanStats(total_bytes, scanned_files, False, False)
+
+
+def inspect_layout_hygiene(
+    layout: ProjectLayout,
+    *,
+    debug_size_limit_bytes: int = DEFAULT_DEBUG_SIZE_LIMIT_BYTES,
+    max_files: int = DEFAULT_HYGIENE_MAX_FILES,
+    timeout_seconds: float = DEFAULT_HYGIENE_TIMEOUT_SECONDS,
+) -> list[dict[str, Any]]:
+    """只读检查工程目录卫生状况：残留隐藏目录、单数 script/ 与超限 debug_dir。"""
+    items: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    search_roots: list[tuple[str, Path]] = [("project_root", layout.project_root)]
+    if _norm_key(layout.debug_dir) != _norm_key(layout.project_root) and layout.debug_dir.is_dir():
+        search_roots.append(("debug_dir", layout.debug_dir))
+
+    for location, base in search_roots:
+        loc_label = "工程根" if location == "project_root" else "Debug 目录"
+        for name in _LEFTOVER_HIDDEN_NAMES:
+            candidate = base / name
+            key = _norm_key(candidate)
+            if key in seen_paths or not os.path.lexists(candidate):
+                continue
+            seen_paths.add(key)
+            items.append({
+                "kind": "leftover_hidden_dir",
+                "name": name,
+                "location": location,
+                "path": str(candidate),
+                "message": (
+                    f"在{loc_label}发现残留 {name}：{candidate}"
+                    "（应改用用户缓存或 Debug/<YYYYMMDD_主题>/）。"
+                ),
+                "suggestion": _trash_suggestion(layout.trash_dir, f"残留的 {name}"),
+            })
+
+    singular_script = layout.project_root / "script"
+    if singular_script.is_dir() and _norm_key(singular_script) != _norm_key(layout.scripts_dir):
+        items.append({
+            "kind": "singular_script_dir",
+            "path": str(singular_script),
+            "expected_scripts_dir": str(layout.scripts_dir),
+            "message": (
+                f"工程根存在误建的单数目录 script/：{singular_script}，"
+                f"而约定的 scripts_dir 为 {layout.scripts_dir}。"
+            ),
+            "suggestion": _trash_suggestion(
+                layout.trash_dir,
+                f"多余的 script/（先确认脚本已迁入 {layout.scripts_dir}）",
+            ),
+        })
+
+    if layout.debug_dir.is_dir():
+        scan = _scan_dir_size(
+            layout.debug_dir,
+            max_files=max_files,
+            timeout_seconds=timeout_seconds,
+        )
+        if scan.total_bytes > debug_size_limit_bytes:
+            prefix = "至少 " if scan.truncated else ""
+            suffix = "（扫描受文件数上限或超时保护提前结束）" if scan.truncated else ""
+            items.append({
+                "kind": "oversized_debug_dir",
+                "path": str(layout.debug_dir),
+                "total_bytes": scan.total_bytes,
+                "threshold_bytes": debug_size_limit_bytes,
+                "scanned_files": scan.scanned_files,
+                "truncated": scan.truncated,
+                "timed_out": scan.timed_out,
+                "message": (
+                    f"debug_dir 总大小已达 {prefix}{_format_bytes(scan.total_bytes)}"
+                    f"（超过阈值 {_format_bytes(debug_size_limit_bytes)}，"
+                    f"已扫 {scan.scanned_files} 个文件）{suffix}：{layout.debug_dir}。"
+                ),
+                "suggestion": _trash_suggestion(layout.trash_dir, "旧 Debug 子目录"),
+            })
+
+    return items
 
 
 def _debug_dir_of(layout: ProjectLayout | dict) -> Path:

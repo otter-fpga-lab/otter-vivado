@@ -11,9 +11,11 @@ import pytest
 
 from vivado_mcp.project_layout import (
     LayoutError,
+    _scan_dir_size,
     default_output_dir,
     default_vivado_cwd,
     find_project_from_path,
+    inspect_layout_hygiene,
     new_debug_subdir,
     project_cache_key,
     query_session_xpr,
@@ -234,11 +236,13 @@ async def test_get_project_layout_tool(tmp_path):
     assert result["source"] == "argument"
     assert result["debug_dir"] == str(root / "Debug")
     assert result["config_path"] is None and result["rules"]
+    assert result["hygiene"] == []
 
     session = _session(f"VMCP_LAYOUT_XPR:{xpr.as_posix()}")
     result = await call("get_project_layout", {"session_id": "board"}, context(session))
     assert result["source"] == "session"
     assert result["xpr"] == str(xpr)
+    assert result["hygiene"] == []
 
     empty = _session("VMCP_LAYOUT_XPR:NONE")
     result = await call("get_project_layout", {"session_id": "board"}, context(empty))
@@ -246,3 +250,120 @@ async def test_get_project_layout_tool(tmp_path):
     result = await call("get_project_layout", {"session_id": "nobody"}, context())
     assert "不存在" in result["error"]
     assert not (root / "Debug").exists()
+
+
+def test_hygiene_detects_leftovers_singular_script_and_oversized_debug(tmp_path):
+    trash = tmp_path / "99_垃圾堆"
+    trash.mkdir()
+    root, _ = _project(tmp_path)
+    (root / ".vmcp").mkdir()
+    (root / ".work").mkdir()
+    debug_dir = root / "Debug"
+    (debug_dir / ".work").mkdir(parents=True)
+    big_sub = debug_dir / "20261117_heap"
+    big_sub.mkdir()
+    (big_sub / "trace.bin").write_bytes(b"x" * 2048)
+    singular = root / "script"
+    singular.mkdir()
+    (singular / "old.tcl").write_text("# old\n", encoding="utf-8")
+
+    layout = resolve_layout(root)
+    hygiene = inspect_layout_hygiene(layout, debug_size_limit_bytes=1024)
+
+    kinds = [item["kind"] for item in hygiene]
+    assert kinds.count("leftover_hidden_dir") == 3
+    assert "singular_script_dir" in kinds
+    assert "oversized_debug_dir" in kinds
+
+    paths = {item["path"] for item in hygiene}
+    assert str(root / ".vmcp") in paths
+    assert str(root / ".work") in paths
+    assert str(debug_dir / ".work") in paths
+    assert str(singular) in paths
+    assert str(debug_dir) in paths
+
+    for item in hygiene:
+        assert str(trash) in item["suggestion"]
+        assert "清单" in item["suggestion"]
+        assert "不自动移动" in item["suggestion"]
+
+    oversized = next(item for item in hygiene if item["kind"] == "oversized_debug_dir")
+    assert oversized["total_bytes"] == 2048
+    assert oversized["threshold_bytes"] == 1024
+    assert oversized["truncated"] is False
+
+    # 只读：不得移动或删除任何残留目录
+    assert (root / ".vmcp").is_dir()
+    assert (root / ".work").is_dir()
+    assert (debug_dir / ".work").is_dir()
+    assert singular.is_dir()
+    assert list(trash.iterdir()) == []
+
+
+def test_hygiene_respects_configured_script_dir_and_no_trash(tmp_path):
+    root, _ = _project(tmp_path)
+    (root / "otter-vivado.toml").write_text(
+        '[layout]\nscripts_dir = "script"\ndebug_dir = "."\n',
+        encoding="utf-8",
+    )
+    (root / "script").mkdir()
+    (root / ".vmcp").mkdir()
+
+    layout = resolve_layout(root)
+    hygiene = inspect_layout_hygiene(layout)
+
+    assert len(hygiene) == 1
+    assert hygiene[0]["kind"] == "leftover_hidden_dir"
+    assert "未找到 99_垃圾堆" in hygiene[0]["suggestion"]
+    assert "清单" in hygiene[0]["suggestion"]
+
+
+def test_hygiene_scan_bounds_max_files_and_timeout(monkeypatch, tmp_path):
+    root, _ = _project(tmp_path)
+    debug_dir = root / "Debug"
+    debug_dir.mkdir()
+    for i in range(6):
+        (debug_dir / f"f{i}.bin").write_bytes(b"a" * 300)
+
+    exact = _scan_dir_size(debug_dir, max_files=6, timeout_seconds=5.0)
+    assert exact.scanned_files == 6
+    assert exact.total_bytes == 1800
+    assert exact.truncated is False
+
+    capped = _scan_dir_size(debug_dir, max_files=4, timeout_seconds=5.0)
+    assert capped.scanned_files == 4
+    assert capped.total_bytes == 1200
+    assert capped.truncated is True
+    assert capped.timed_out is False
+
+    layout = resolve_layout(root)
+    hygiene = inspect_layout_hygiene(
+        layout, debug_size_limit_bytes=1000, max_files=4, timeout_seconds=5.0,
+    )
+    assert len(hygiene) == 1
+    assert hygiene[0]["kind"] == "oversized_debug_dir"
+    assert hygiene[0]["truncated"] is True
+    assert hygiene[0]["scanned_files"] == 4
+
+    ticks = iter([100.0, 100.0, 105.0])
+    monkeypatch.setattr("vivado_mcp.project_layout.time.monotonic", lambda: next(ticks, 105.0))
+    timed_out = _scan_dir_size(debug_dir, max_files=100, timeout_seconds=1.0)
+    assert timed_out.truncated is True
+    assert timed_out.timed_out is True
+
+
+async def test_get_project_layout_tool_includes_hygiene(tmp_path):
+    from tests.test_debug_design_tools import call, context
+
+    trash = tmp_path / "99_垃圾堆"
+    trash.mkdir()
+    root, xpr = _project(tmp_path)
+    (root / "script").mkdir()
+    (root / ".vmcp").mkdir()
+
+    result = await call("get_project_layout", {"project": str(xpr)}, context())
+    kinds = [item["kind"] for item in result["hygiene"]]
+    assert kinds == ["leftover_hidden_dir", "singular_script_dir"]
+    assert all("清单" in item["suggestion"] for item in result["hygiene"])
+    assert (root / "script").is_dir()
+    assert (root / ".vmcp").is_dir()
