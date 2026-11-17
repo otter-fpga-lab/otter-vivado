@@ -13,7 +13,6 @@ from mcp.server.mcpserver import Context
 from vivado_mcp.analysis.io_parser import parse_report_io
 from vivado_mcp.analysis.ip_status_parser import format_ip_status_report, parse_ip_status
 from vivado_mcp.analysis.project_parser import format_project_info, parse_project_info
-from vivado_mcp.analysis.run_progress_parser import format_run_progress, parse_run_progress
 from vivado_mcp.analysis.suggestion_engine import format_suggestion, suggest_next
 from vivado_mcp.analysis.timing_parser import (
     format_timing_report,
@@ -22,12 +21,12 @@ from vivado_mcp.analysis.timing_parser import (
 )
 from vivado_mcp.analysis.util_parser import format_utilization_report, parse_utilization
 from vivado_mcp.analysis.warning_parser import parse_diag_counts, parse_pre_bitstream
+from vivado_mcp.run_feedback import build_run_progress_report
 from vivado_mcp.server import _NO_SESSION, _require_session, mcp
 from vivado_mcp.tcl_scripts import (
     CHECK_PRE_BITSTREAM,
     COUNT_WARNINGS,
     QUERY_PROJECT_INFO,
-    QUERY_RUN_PROGRESS,
     REPORT_VIOLATING_PATHS,
 )
 from vivado_mcp.vivado.tcl_utils import validate_identifier
@@ -385,6 +384,12 @@ async def get_run_progress(
     - runme.log 里最近若干条 Phase 行(Phase 1 → Phase 2.1 → Phase 3 ...)
     - 日志尾部 N 行(含最新 WARNING / CRITICAL WARNING 原文)
     - 日志最后更新时间(判断 Vivado 是否还在活跃)
+    - STATUS 失败但 runme.log 无 ERROR 行时,自动识别「某步 completed successfully
+      后子进程静默退出」或非标错误,标题写明真实情况并内联续跑建议
+    - run 的 STEPS.*.TCL.PRE/POST 指向工程外、%TEMP% 或不存在文件时给出告警与
+      清除建议(只建议,不修改工程)
+
+    需要等到某阶段完成时用 ``wait_run``,不要 sleep 后反复调用本工具。
 
     Args:
         run_name: run 名称(如 "synth_1" / "impl_1"),默认 "impl_1"。
@@ -403,20 +408,8 @@ async def get_run_progress(
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
-    try:
-        result = await session.execute(
-            QUERY_RUN_PROGRESS.format(run_name=run_name, tail_n=tail_lines),
-            timeout=30.0,
-        )
-        if result.is_error:
-            return (
-                f"[ERROR] 查询 run 进度失败（rc={result.return_code}）：\n"
-                f"{result.output}"
-            )
-        rp = parse_run_progress(result.output, run_name=run_name)
-        return format_run_progress(rp)
-    except Exception as e:
-        return f"[ERROR] 查询 run 进度失败: {e}"
+    _, text = await build_run_progress_report(session, run_name, tail_lines)
+    return text
 
 
 @mcp.tool()

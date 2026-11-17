@@ -11,7 +11,7 @@ async def test_registered_offline_preview_and_guarded_hardware_write():
     spec.update(target=TARGET, device=DEVICE)
     spec['controls'][0].update(core='hw_vio_1')
     tools = {t.name: t for t in await mcp.list_tools()}
-    assert len(tools) == 51
+    assert len(tools) == 52
     assert set(tools['write_debug_control'].input_schema['required']) == {
         'spec', 'control_id', 'value', 'expected_profile_sha256', 'expected_revision',
     }

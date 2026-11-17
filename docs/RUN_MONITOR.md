@@ -38,7 +38,12 @@ run_implementation(run_name="impl_1", session_id="default", wait=False)
 open_run_monitor(run_name="impl_1", target_step="route_design", session_id="default")
 ```
 
-已有 `get_run_progress` 仍可单次查询。面板与 `get_run_snapshot` 共用同一观察器；
+已有 `get_run_progress` 仍可单次查询；需要等到某阶段时用
+`wait_run(run_name="impl_1", until="route_design", timeout_seconds=600, session_id="default")`
+在服务端轮询（`timeout_seconds` ≤ 1800，应小于客户端单次调用超时，超时不取消 run），
+比特流可 `generate_bitstream(wait=False)` 后 `wait_run(until="write_bitstream")`。
+两者在 STATUS 失败而日志显示该步已成功时标明子进程静默退出，并检查 run 的
+`STEPS.*.TCL.PRE/POST` 钩子。面板与 `get_run_snapshot` 共用同一观察器；
 默认 JSON 省略报告原文（面板可展开），需要时指定 `include_report_text=True`。
 面板也显示实际发现的原生 `.xpr` 路径，按
 [GUI 工程交接指南](HUMAN_GUI_WORKFLOW.md) 可由人继续操作；文件存在不代表源依赖完整

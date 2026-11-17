@@ -768,12 +768,15 @@ _RE_CHECKPOINT_WRITTEN = re.compile(
 )
 
 
-def detect_silent_run_child_exit(status: str, body: str) -> str:
+def detect_silent_run_child_exit(
+    status: str, body: str, *, counts_note: str = "messageDb 0 ERROR / 0 CW",
+) -> str:
     """STATUS 含 ERROR、日志却显示某步已成功、且子进程没有正常退出时的说明。
 
     现场：``route_design completed successfully`` 之后跑 ``report_*`` /
     ``write_checkpoint``，子 Vivado 被杀，``runme.log`` 无 ``ERROR:`` 前缀，
     ``.vivado.error.rst`` 常为空。关键词扫描抓不到 TclStackFree/segfault。
+    ``counts_note`` 由调用方按实际核对的计数来源填写。
     """
     if "ERROR" not in (status or "").upper():
         return ""
@@ -789,7 +792,7 @@ def detect_silent_run_child_exit(status: str, body: str) -> str:
     step = match.group(1)
     lines = [
         "=== 子进程静默退出 ===",
-        f"Vivado STATUS=`{status}`，messageDb 0 ERROR / 0 CW，但 run 失败。",
+        f"Vivado STATUS=`{status}`，{counts_note}，但 run 失败。",
         f"日志末尾有 `{step} completed successfully`，没有 `Exiting Vivado`。",
     ]
     if _RE_CHECKPOINT_WRITTEN.search(body):

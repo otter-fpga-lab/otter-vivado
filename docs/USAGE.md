@@ -22,10 +22,10 @@ BD、仿真、硬件调试和 IP 配置可通过 `run_tcl`/`safe_tcl` 使用当�
 ## 特性
 
 - **三种会话模式**：GUI 可视化、Tcl 无头运行，以及只连接现有 GUI 的 attach
-- **51 个 MCP 工具** — 覆盖 Vivado 执行、运行观察、诊断、离线解析和外部检查工具联动
+- **52 个 MCP 工具** — 覆盖 Vivado 执行、运行观察、诊断、离线解析和外部检查工具联动
 - **8 个证据驱动工作流** — 每个流程都要求新鲜基线、最小安全修改、复测门禁与明确停止条件
 - **一条命令自检** — `doctor` 只读定位环境问题，`doctor --fix` 才执行受限、可备份的修复
-- **可靠的长任务协议** — 综合/实现支持 `wait=False` 立即返回 job id，再由 `get_run_progress` 查询
+- **可靠的长任务协议** — 综合/实现/比特流支持 `wait=False` 立即返回 job id，再由 `get_run_progress` 查询或 `wait_run` 在服务端等待
 - **超时响应不串台** — 每个 session 保留在途响应所有权；旧响应完成前拒绝下一命令，不会把 FIRST 的结果交给 SECOND
 - **智能诊断** — 综合/实现后自动提取 CRITICAL WARNING / ERROR 分类 + 中文修复建议（含 18+ 种已知 ID）
 - **IO 验证** — XDC 约束（**支持 -dict 和传统两种语法**）对比实际引脚分配，GT 端口不匹配标记为 CRITICAL
@@ -88,9 +88,12 @@ run_synthesis(run_name="synth_1", session_id="default", wait=False)
 
 get_run_progress(run_name="synth_1", session_id="default")
 → STATUS / PROGRESS / 当前 phase / log tail / 最后更新时间
+
+wait_run(run_name="synth_1", until="synth_design", timeout_seconds=600, session_id="default")
+→ 服务端轮询到完成/失败/超时后返回同一份进度报告
 ```
 
-`job_id` 是由 `session_id:run_name` 组成的任务回执；查询时将两部分分别传给 `get_run_progress`。默认 `wait=True` 保持原有“等待完成并自动诊断”的兼容行为。每个 session 的命令严格串行，不同 session 可并行。
+`job_id` 是由 `session_id:run_name` 组成的任务回执；查询时将两部分分别传给 `get_run_progress`。默认 `wait=True` 保持原有“等待完成并自动诊断”的兼容行为。`generate_bitstream(wait=False)` 同样立即返回。需要等待时调用 `wait_run`，不要 sleep 后反复查询；轮询间隔不占用 session，其他工具可穿插执行。每个 session 的命令严格串行，不同 session 可并行。
 
 ### Resources
 
@@ -123,8 +126,9 @@ get_run_progress(run_name="synth_1", session_id="default")
 |------|------|
 | `run_synthesis` | 运行综合，Python 轮询不阻塞，完成后自动 open_run + 诊断 |
 | `run_implementation` | 运行实现（布局布线）。STATUS 含 ERROR 时 `reset_run -prev_step` 续跑，不清掉已完成的 place/physopt |
-| `get_run_progress` | 查询指定 run 的原生状态、百分比、最近观测阶段与日志尾部；日志更新时间不能单独证明运行卡住 |
-| `generate_bitstream` | 生成比特流（默认前置 CRITICAL WARNING 安全检查） |
+| `get_run_progress` | 查询指定 run 的原生状态、百分比、最近观测阶段与日志尾部；日志更新时间不能单独证明运行卡住。STATUS 失败但日志显示某步 `completed successfully` 时标明“子进程静默退出”并内联续跑建议；`STEPS.*.TCL.PRE/POST` 指向工程外、`%TEMP%` 或缺失文件时告警（只建议清除，不改工程） |
+| `wait_run` | 服务端轮询直到 run 完成、失败、到达 `until` 阶段（如 `route_design` / `write_bitstream`）或超时，返回与 `get_run_progress` 相同的报告；`timeout_seconds` ≤ 1800，需小于客户端单次调用超时，超时后可再次调用 |
+| `generate_bitstream` | 生成比特流（默认前置 CRITICAL WARNING 安全检查）；`wait=False` 时检查并 launch 后立即返回，再用 `wait_run(until="write_bitstream")` 等待 |
 | `program_device` | 编程 FPGA 设备（封装 open_hw_manager → connect → program） |
 
 ### 人机共用运行观察

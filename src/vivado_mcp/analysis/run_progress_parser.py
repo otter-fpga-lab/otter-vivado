@@ -205,8 +205,19 @@ def _fmt_age(seconds: int) -> str:
     return f"{seconds // 3600} 小时 {(seconds % 3600) // 60} 分前"
 
 
-def format_run_progress(rp: RunProgress, phase_window: int = 5) -> str:
-    """人类可读报告。phase_window = 显示最近几条 Phase 行。"""
+def format_run_progress(
+    rp: RunProgress,
+    phase_window: int = 5,
+    *,
+    state_note: str = "",
+    advice: list[str] | None = None,
+    extra_sections: list[str] | None = None,
+) -> str:
+    """人类可读报告。phase_window = 显示最近几条 Phase 行。
+
+    ``state_note`` 补充在标题状态后（如子进程静默退出的真实情况）；``advice`` 非空时
+    替换默认建议；``extra_sections`` 追加在日志之后、建议之前（诊断、钩子告警等）。
+    """
     if rp.error:
         return f"[ERROR] {rp.error}"
     if not rp.found:
@@ -222,6 +233,8 @@ def format_run_progress(rp: RunProgress, phase_window: int = 5) -> str:
         "idle": "未启动",
         "unknown": "未知",
     }[rp.state()]
+    if state_note:
+        label = f"{label}（{state_note}）"
 
     out: list[str] = [f"=== {rp.run_name} 运行进度: {label} ==="]
     out.append(f"状态:   {rp.status or '(无)'}")
@@ -231,6 +244,8 @@ def format_run_progress(rp: RunProgress, phase_window: int = 5) -> str:
     if not rp.log_exists:
         out.append("")
         out.append("日志:   runme.log 不存在(run 可能未启动)")
+        for section in extra_sections or []:
+            out.extend(["", section])
         return "\n".join(out)
 
     age = rp.elapsed_since_last_update()
@@ -260,9 +275,14 @@ def format_run_progress(rp: RunProgress, phase_window: int = 5) -> str:
         for t in rp.tail:
             out.append(f"  {t.text}")
 
+    for section in extra_sections or []:
+        out.extend(["", section])
+
     # 建议
     out.append("")
-    if rp.is_error():
+    if advice:
+        out.extend(advice)
+    elif rp.is_error():
         out.append(f"建议: 运行 get_critical_warnings(run_name='{rp.run_name}') 查看 ERROR 详情。")
     elif rp.is_running():
         out.append(f"建议: run 仍在进行,稍后再查。运行 get_run_progress('{rp.run_name}') 刷新。")

@@ -253,7 +253,7 @@ async def test_real_mcp_export_contract(inputs):
     from vivado_mcp.server import mcp
 
     tools = {tool.name: tool for tool in await mcp.list_tools()}
-    assert len(tools) == 51
+    assert len(tools) == 52
     assert set(tools["export_debug_bundle"].input_schema["required"]) == {
         "checkpoint_path", "expected_part",
     }

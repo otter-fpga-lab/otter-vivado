@@ -1,6 +1,6 @@
 """设计流程工具。
 
-run_synthesis / run_implementation / generate_bitstream / program_device。
+run_synthesis / run_implementation / generate_bitstream / wait_run / program_device。
 封装 Vivado 长时间运行的操作，提供超时管理和进度反馈。
 综合/实现完成后自动执行警告诊断，bitstream 生成前自动安全检查。
 
@@ -17,6 +17,11 @@ from mcp.server.mcpserver import Context
 
 from vivado_mcp.analysis.run_progress_parser import progress_percent, run_state
 from vivado_mcp.analysis.warning_parser import parse_diag_counts, parse_pre_bitstream
+from vivado_mcp.run_feedback import (
+    WAIT_UNTIL_CHOICES,
+    build_run_progress_report,
+    evaluate_wait,
+)
 from vivado_mcp.server import _NO_SESSION, _require_session, _safe_execute, mcp
 from vivado_mcp.tcl_scripts import (
     CHECK_PRE_BITSTREAM,
@@ -224,6 +229,7 @@ async def _launch_and_wait(
         return f"[ERROR] 启动 {label} 失败: 未知启动状态 {launch_state!r}"
 
     if not wait:
+        wait_target = target_step or "complete"
         result_parts = [
             f"{label}已异步启动。",
             f"job_id: {session.session_id}:{run_name}",
@@ -231,6 +237,10 @@ async def _launch_and_wait(
             (
                 f"查询: get_run_progress(run_name='{run_name}', "
                 f"session_id='{session.session_id}')"
+            ),
+            (
+                f"等待: wait_run(run_name='{run_name}', until='{wait_target}', "
+                f"session_id='{session.session_id}')（服务端轮询，不要 sleep 后反复查询）"
             ),
         ]
         result_parts.extend(override_lines)
@@ -429,18 +439,24 @@ async def generate_bitstream(
     force: bool = False,
     session_id: str = "default",
     ctx: Context = None,
+    wait: bool = True,
 ) -> str:
     """生成比特流文件。在实现完成后执行。
 
     默认启用前置安全检查：检测 CRITICAL WARNING 后阻止生成，
     需确认无风险后使用 force=True 跳过检查。
 
+    比特流常需 10 分钟以上。``wait=False`` 时完成前置检查并 launch 后立即返回 run 名，
+    再用 ``wait_run(run_name=impl_run, until="write_bitstream")`` 在服务端等待，
+    或 ``get_run_progress`` 单次查看；不要 sleep 轮询。
+
     Args:
         impl_run: 实现 run 名称，默认 "impl_1"。
         jobs: 并行任务数，默认 4。
-        timeout_minutes: 超时分钟数，默认 30。
+        timeout_minutes: 超时分钟数，默认 30（仅 wait=True 时使用）。
         force: 跳过 CRITICAL WARNING 安全检查，默认 False。
         session_id: 目标会话 ID。
+        wait: True 等待完成并返回比特流目录；False 启动后立即返回 job_id。
     """
     try:
         impl_run = validate_identifier(impl_run, "impl_run")
@@ -519,6 +535,23 @@ async def generate_bitstream(
     except Exception as e:
         return f"[ERROR] 启动比特流生成失败: {e}"
 
+    if not wait:
+        lines = [
+            "比特流生成已异步启动。",
+            f"job_id: {session.session_id}:{impl_run}",
+            (
+                f"等待: wait_run(run_name='{impl_run}', until='write_bitstream', "
+                f"session_id='{session.session_id}')（服务端轮询，不要 sleep 后反复查询）"
+            ),
+            (
+                f"查询: get_run_progress(run_name='{impl_run}', "
+                f"session_id='{session.session_id}')"
+            ),
+        ]
+        if precheck_warn:
+            lines.append(precheck_warn)
+        return "\n".join(lines)
+
     # 轮询(与 _launch_and_wait 共用 _poll_run_until_done,单一来源)
     try:
         outcome, final_status, final_progress, final_elapsed = (
@@ -569,6 +602,161 @@ async def generate_bitstream(
         # 安全门检查失败时的显式降级标记:不拦截,但必须让 AI/用户看见
         result_text += f"\n{precheck_warn}"
     return result_text
+
+
+_WAIT_MAX_TIMEOUT_SEC = 1800
+# 已停在完成/未启动态时再确认一次的间隔：区分"真的停了"和"步骤之间的瞬时状态"。
+_WAIT_CONFIRM_SEC = 5.0
+_WAIT_OUTCOME_LABEL = {
+    "reached": "已到达目标",
+    "completed": "已完成",
+    "failed": "失败",
+    "cancelled": "已取消",
+    "stopped": "已停止，未到达目标",
+    "idle": "未在运行",
+    "unknown": "状态无法识别",
+    "timeout": "等待超时（run 未取消）",
+}
+
+
+@mcp.tool()
+async def wait_run(
+    run_name: str = "impl_1",
+    until: str = "complete",
+    timeout_seconds: int = 600,
+    poll_seconds: int = 15,
+    session_id: str = "default",
+    ctx: Context = None,
+) -> str:
+    """在服务端等待 run 完成、失败、到达指定阶段或超时，再返回一次完整进度。
+
+    用来替代"sleep 45 秒 → get_run_progress"的循环。只读轮询 STATUS，不启动、
+    重置或取消 run；每次查询之间不占用 session 锁，其他工具可以穿插执行。
+    结束时返回与 ``get_run_progress`` 相同的进度报告（含静默退出诊断与钩子告警）。
+
+    **客户端超时风险**：很多 MCP 客户端对单次工具调用有自己的超时（常见 1~10 分钟），
+    超过后客户端会放弃等待而本工具仍在服务端轮询。``timeout_seconds`` 请设得比
+    客户端上限小；返回"等待超时"时 run 仍在运行，可直接再次调用 ``wait_run``。
+    有实际百分比时通过 MCP progress 通知上报，但不能保证每个客户端都据此延长超时。
+
+    Args:
+        run_name: run 名称，默认 "impl_1"。
+        until: ``"complete"``（run 走到流程终点或停止）或某个步骤名：
+            synth_design / opt_design / power_opt_design / place_design /
+            post_place_power_opt_design / phys_opt_design / route_design /
+            post_route_phys_opt_design / write_bitstream。已越过该步骤也算到达。
+        timeout_seconds: 最长等待秒数，1~1800，默认 600。
+        poll_seconds: 查询间隔秒数，2~300，默认 15。
+        session_id: 目标会话 ID。
+    """
+    try:
+        run_name = validate_identifier(run_name, "run_name")
+    except ValueError as e:
+        return f"[ERROR] {e}"
+    until = (until or "").strip().lower()
+    if until not in WAIT_UNTIL_CHOICES:
+        return f"[ERROR] until 必须是 {', '.join(WAIT_UNTIL_CHOICES)} 之一（收到 {until!r}）。"
+    if not 1 <= timeout_seconds <= _WAIT_MAX_TIMEOUT_SEC:
+        return (
+            f"[ERROR] timeout_seconds 必须在 1~{_WAIT_MAX_TIMEOUT_SEC} 之间"
+            f"（收到 {timeout_seconds}）；更长的构建请分次调用 wait_run。"
+        )
+    if not 2 <= poll_seconds <= 300:
+        return f"[ERROR] poll_seconds 必须在 2~300 之间（收到 {poll_seconds}）。"
+
+    session = await _require_session(ctx, session_id)
+    if not session:
+        return _NO_SESSION.format(sid=session_id)
+
+    started = time.monotonic()
+    deadline = started + timeout_seconds
+    polls = 0
+    status = "UNKNOWN"
+    outcome = "timeout"
+    pending_settle: str | None = None
+    last_percent = None
+
+    while True:
+        if _session_is_busy(session):
+            verdict = "busy"
+        else:
+            try:
+                poll = await session.execute(
+                    POLL_RUN_STATUS.format(run_name=run_name), timeout=15.0
+                )
+            except RuntimeError as e:
+                # 状态检查与拿锁之间被其他命令抢先：只重试仍活跃的忙会话。
+                if not _session_is_busy(session):
+                    return f"[ERROR] 查询 run 状态失败: {e}。run 未取消，可稍后再次 wait_run。"
+                verdict = "busy"
+            except Exception as e:
+                return f"[ERROR] 查询 run 状态失败: {e}。run 未取消，可稍后再次 wait_run。"
+            else:
+                if poll.is_error:
+                    return (
+                        f"[ERROR] Vivado 状态查询失败: {poll.output[:500]}\n"
+                        "请确认工程已打开且 run 名正确（run_tcl 'get_runs' 可列出）。"
+                    )
+                line = next(
+                    (ln for ln in poll.output.splitlines() if ln.startswith("VMCP_POLL|")),
+                    None,
+                )
+                parts = line[len("VMCP_POLL|"):].split("|") if line else []
+                if len(parts) < 2 or not parts[0].strip():
+                    return (
+                        "[ERROR] Vivado 未返回完整的 VMCP_POLL 状态标记；"
+                        "run 未取消，可继续查询。"
+                    )
+                polls += 1
+                status = parts[0].strip()
+                percent = progress_percent(parts[1].strip())
+                if ctx is not None and percent is not None and percent != last_percent:
+                    await ctx.report_progress(progress=percent, total=100)
+                    last_percent = percent
+                verdict = evaluate_wait(status, until)
+
+        if verdict in {"reached", "failed", "cancelled"}:
+            outcome = verdict
+            break
+        if verdict in {"settled", "idle", "unknown"}:
+            if pending_settle == status:
+                if verdict == "settled":
+                    reached_end = until == "complete" and run_state(status) == "completed"
+                    outcome = "completed" if reached_end else "stopped"
+                else:
+                    outcome = verdict
+                break
+            pending_settle = status
+        elif verdict != "busy":
+            pending_settle = None
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            outcome = "timeout"
+            break
+        interval = _WAIT_CONFIRM_SEC if pending_settle is not None else poll_seconds
+        await asyncio.sleep(min(interval, remaining))
+
+    waited = int(time.monotonic() - started)
+    label = _WAIT_OUTCOME_LABEL[outcome]
+    if outcome == "reached" and until != "complete":
+        label = f"已到达 {until}"
+    header = [
+        f"=== wait_run: {run_name} until={until} → {label} ===",
+        f"等待 {waited} 秒，查询 {polls} 次（间隔 {poll_seconds} 秒）；最后状态: {status}",
+    ]
+    if outcome == "timeout":
+        header.append(
+            f"run 仍在执行且未被取消。可再次 wait_run(run_name='{run_name}', until='{until}', "
+            f"session_id='{session.session_id}')；不要 sleep 后反复查询。"
+        )
+    elif outcome == "stopped":
+        header.append(
+            f"run 已不在运行，但停在 {status}，未到达 {until}；"
+            "确认是否用 -to_step 提前结束，或需要继续 launch。"
+        )
+    _, report = await build_run_progress_report(session, run_name)
+    return "\n".join(header) + "\n\n" + report
 
 
 @mcp.tool()
