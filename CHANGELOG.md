@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.3.27] — 2026-11-17
+
+- **工程目录约定与只读巡检**：新增 `get_project_layout`（共 52 个 MCP 工具），只读解析
+  `Debug/`、`Debug/NOTES.md`、`Debug/scripts/`、`Download/`、Vivado 运行目录与最近
+  `99_垃圾堆`，支持 `.xpr` 旁 `otter-vivado.toml` `[layout]` 覆盖；`hygiene` 字段按
+  文件数/耗时上限只读提示工程或 `Debug/` 残留 `.vmcp`/`.work`/`.otter`、误建单数
+  `script/` 及超大 `Debug/`（需移入 `99_垃圾堆` 并写清单）。
+- **不再在工程目录建 `.vmcp` 且导出默认落 `Debug/`**：`get_critical_warnings` 快照改存
+  用户缓存（`%LOCALAPPDATA%\otter-vivado\cw_snapshots` / XDG cache），旧 `<project>/.vmcp`
+  仅只读兼容；`export_ila`、`create_debug_experiment`、`export_debug_bundle`（含
+  `debug-export` CLI）的 `output_dir` 可省略，并在前置校验通过后再按需创建
+  `Debug/YYYYMMDD_HHMMSS_<ila|experiment|bundle>`。
+- **会话工作目录与低打扰启动核对**：`start_session` 新增 `cwd`（默认在与开始菜单
+  快捷方式一致的 `%APPDATA%\Xilinx\Vivado` / `~/.Xilinx/Vivado` 启动）；仅对本插件
+  自建 spawn 会话执行 `version -short` + `pwd` 核对，attach、`external@` 接管和复用
+  已有会话不再主动查询（避免阻塞可能正在跑长命令的外部 GUI），沿用已知版本或写明
+  未核对 / `pwd` 未查询。
+- **长任务等待与异步比特流**：新增 `wait_run(run_name, until, timeout_seconds<=1800,
+  poll_seconds, session_id)` 服务端轮询，间隔不占 session 锁；`generate_bitstream`
+  新增 `wait=False` 异步发起模式。
+- **静默退出自动取证、钩子告警与 `parse_xpr` 展示**：`get_run_progress`/`wait_run`/
+  `get_critical_warnings` 在静默退出时共用取证路径，自动采集会话生效
+  `general.maxThreads`、只读扫描用户/安装级 `Vivado_init.tcl`（共用 `vivado_init`
+  helper）与 Windows Application 崩溃事件日志，对 Windows 2024.x 高线程
+  `route_design` 堆损坏风险（本地分析，未经 AMD 确认）给出工程内 PRE=1/POST 恢复
+  或降线程建议，并对指向工程外/`%TEMP%`/缺失的 `STEPS.*.TCL.PRE/POST` 告警；
+  `doctor`/`install` 新增 `user_vivado_init_tcl` 只读告警；`parse_xpr` 解析并多标签
+  标注步骤 pre/post 钩子（展开宏路径）；同步更新 `PITFALLS.md` C3 与 Skill 指引。
+- **跨版本文件指纹修复与 Windows 测试兼容**：抽取共用 `file_identity`
+  （`stat_identity` / `same_stat_identity`），改用 `st_size`、`st_mtime_ns` 及可用时的
+  `st_dev`/`st_ino`（不再比较 `st_ctime_ns`），修复 Python 3.13 Windows 下
+  `os.fstat`/`os.stat` 误判“读取期间文件变化”导致的 `parse_bit_header`/`parse_ltx`/
+  `check_debug_artifacts`/`read_ila_waveform`/`export_debug_bundle` 失败；测试补齐
+  `docs/USAGE.md` Hook 路径、集合包含校验工具注册及 Windows 环境下 symlink/junction/
+  `tclsh`/超长参数 id 兼容，全量单测在 Windows Python 3.13 实测可运行通过。
+
 ## [Unreleased] — 2026-11-06 impl 子进程静默退出诊断与 -prev_step 续跑
 
 - `get_critical_warnings`：STATUS 含 ERROR、messageDb 0 ERROR/CW、关键词也没有时，

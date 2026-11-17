@@ -1,9 +1,20 @@
 # Otter Vivado：远程构建合入与既有能力维护
 
-Status: OPEN（2026-11-06 impl 子进程静默退出诊断与 ERROR 时 -prev_step 续跑）
+Status: CLOSED_WAITING_FOR_REAL_USE（0.3.27：工程目录约定、会话 cwd/spawn 探测、wait_run、静默退出取证与 Windows/Py3.13 修复已收口）
 Target: otter-fpga-lab/otter-vivado
-Basis: 采集板 impl_1 route 成功后 write_checkpoint 前子进程被杀；messageDb 干净导致「未发现 ERROR」；`run_implementation` 全量 reset_runs 丢掉 physopt
-Next: 重启 MCP 后现场用失败的 impl 再调 get_critical_warnings / run_implementation 验证；已有 GUI 会话不必为加载本改动而停掉当前板上调试
+Basis: 针对现场 2024.2 工程踩坑（高线程 route 静默崩溃、.vmcp/.work/单数 script 残留、spawn 污染业务仓根、attach 被长命令阻塞、Python 3.13 ctime 误报）完成工具能力、诊断取证、Skill/PITFALLS 文档与测试兼容性闭环
+Next: 重启各客户端的 MCP 以加载新代码，现场用真实工程验证 get_project_layout、start_session 的 cwd、wait_run、静默退出取证；业务工程中残留的 .vmcp/.work 由用户授权后移入 99_垃圾堆
+
+## 本轮维护收口（2026-11-17，0.3.27）
+
+在 `c3c1fa1..HEAD` 上完成目录规范、会话隔离、异步等待、静默退出取证、配置/工程体检及跨版本测试修复并升版 `0.3.27`（仅本地提交，未推送）：
+
+- **目录与产物约定**：新增 `get_project_layout`（`otter-vivado.toml` `[layout]` 覆盖与只读 `hygiene` 检查，提示残留 `.vmcp`/`.work`/`.otter`、误建 `script/` 与超大 `Debug/`）；CW 快照改存用户缓存；`export_ila`、`create_debug_experiment`、`export_debug_bundle` 省略 `output_dir` 时在校验通过后再按需建 `Debug/<时间>_<主题>`。
+- **会话与构建反馈**：`start_session` 新增 `cwd`（默认 `%APPDATA%\Xilinx\Vivado` / `~/.Xilinx/Vivado`），仅对自 spawn 进程执行 `version -short` + `pwd` 核对；新增 `wait_run` 与 `generate_bitstream(wait=False)`；静默退出诊断共用取证采集 `general.maxThreads`、只读用户/安装级 `Vivado_init.tcl`（`vivado_init` 共用 helper）与 Windows Application 崩溃事件，`doctor`/`install` 增加 `user_vivado_init_tcl` 告警，`parse_xpr` 解析并多标签标注 step pre/post 钩子；同步 Skill、USAGE 与 `PITFALLS.md` C3。
+- **兼容性与测试**：抽取 `file_identity`（去掉 `st_ctime_ns` 比较）修复 Python 3.13 Windows 文件变更误报；MCP 工具注册测试改按集合包含校验；修正 `test_readme_hooks.py` 源路径/解释器、Skill 文档参数顺序与 Windows `WinError 1314/123/5`/junction/超长参数 id 兼容。
+- **验证状态**：
+  - **PASS（离线/模拟全量）**：仓根运行 `.venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider`，**1756 passed, 179 skipped, 11 subtests passed**（0 failed, 0 errors；环境为 Windows + Python 3.13，skipped 来自无 `tclsh`、Windows symlink 权限 `WinError 1314`/目录换行 `WinError 123`/句柄替换 `WinError 5`）；另在 `0.3.27` 升版后复跑版本/插件/指南测试与 `ruff check`。
+  - **NOT_RUN**：各宿主客户端重启后的真实 MCP 重载、真实 Vivado GUI/Tcl 与硬件板卡验证（未启动 Vivado 或触碰业务工程）。
 
 * **子进程静默退出 + prev_step（2026-11-06）**：`detect_silent_run_child_exit` 认
   `completed successfully` 且无 `Exiting Vivado`。`LAUNCH_RUN_IF_IDLE` 对 ERROR
