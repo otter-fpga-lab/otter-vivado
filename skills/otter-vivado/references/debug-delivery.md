@@ -12,7 +12,8 @@
 4. 使用相同实际 Vivado 安装建立专用空会话（独立 GUI 用 `port=0`，或独立 Tcl
    session），保留原 GUI。不要把原工程的 session 传给导出以图自动关闭工程。
 5. 调用 `export_debug_bundle(checkpoint_path, output_dir, expected_part, ...)`。
-   `output_dir` 必须是父目录已存在的新目录，`expected_part` 是完整 part。
+   `output_dir` 可省略，省略时自动落到 `debug_dir/<时间>_bundle`；显式传入时必须是父目录已存在的新目录。
+   需要交付的包再复制到 `download_dir`。`expected_part` 是完整 part。
    `source_revision` 是调用方声明，不是工具已验证的源码证明。
 6. `exported` 之后，用 `check_debug_artifacts(..., expected, manifest_path)` 核对
    消费者独立指定的核/探针要求和全包指纹；审阅导出的时序、资源和 DRC 报告。

@@ -12,7 +12,8 @@
 2. 复用已有 DebugService，核对目标、核 UUID、探针、control、触发配置和 ILA IDLE。
    计划第一步 ready；根据任务安排 countdown、cue、有限 debug 动作和 wait_capture。
    立即采集可能在倒计时结束前完成，按真实事件设置触发，不为套用模板随意 arm。
-3. 在消费者目录保存计划，`create_debug_experiment` 指定新目录和最新调试 revision。
+3. 计划保存到 `debug_dir` 下本次主题目录。调用 `create_debug_experiment` 时传入最新调试 revision；
+   不传 output_dir 会在 debug_dir 下自动新建目录。
    创建尚未执行。每次改计划新建实验；redo 仅重复已固定计划，不覆盖旧轮数据。
 
 ## 让本地交互实际接入

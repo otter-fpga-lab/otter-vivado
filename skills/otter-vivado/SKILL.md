@@ -11,6 +11,16 @@ description: 操作 AMD Vivado 工程、本地或远程综合与实现、查看�
 
 **会话与编译（智能体易漏）**：`run_synthesis` / `run_implementation` 在**已有 session 的那一个 Vivado 进程**里 `launch_runs`，GUI 开着就是综合宿主，不是另占一份“编译名额”。不要为了编译再 `start_session(mode="tcl")` 开第二份。默认 `gui` 端口 9999：已有窗口则 attach 复用，换 `session_id` 也不会自动多开；要第二个独立 GUI 才用 `port=0`。同一 session 的 Tcl 串行，不同 session 才可并行。许可 seat 是 Xilinx 按 `vivado.exe` 进程计，插件不另设名额。
 
+**目录与产物（每个工程先做一次，智能体易漏）**：开工先 `get_project_layout(project=<.xpr>)` 取约定；用户口头给过的目录偏好写进 .xpr 旁的 `otter-vivado.toml`，以后不再每轮重问。
+
+- 过程文件（日志、串口记录、抓图、VCD、导出包）放 `debug_dir/YYYYMMDD_主题/`，自写 Tcl/Python 放 `scripts_dir`，关键结论只追加到 `notes_file`。`export_ila`、`create_debug_experiment`、`export_debug_bundle` 不传 `output_dir` 时自动落在这里。
+- 构建按 Vivado 原生 `.runs/.gen` 编译覆盖，不建工作树、工程副本或 `%TEMP%` 备份。需要保留的多版本固件放 `download_dir`，并附说明。
+- 不创建 `.work`、`.vmcp`、`.otter` 等隐藏目录，已有的也不当草稿箱。不给 run 挂指向 TEMP 或工程外的 `TCL.PRE/POST`；临时参数用完即还原。
+- 过程目录用完移入 `trash_dir`（最近的 `99_垃圾堆`）并附清单；为 null 时留在 Debug，不擅自删除。
+- Vivado 自身的 `.Xil/.jou/.log` 落在会话 cwd，默认与 GUI 相同的 `%APPDATA%\Xilinx\Vivado`，无须再 `cd` 到仓根或 TEMP。
+
+**会话选择**：9999 上的 GUI 已打开同一工程 → 复用。它属于别的工程或别的线程 → 不要 attach 后切换它的工程；用 `start_session(port=0)` 开独立实例，或用 CLI `vivado-mcp local-batch` / `build --target local` 跑隔离批处理（见仓库 `docs/USAGE.md`）。等待构建用 `wait=False` 发起，再用 `wait_run(until=...)` 或 run monitor 快照；不要 sleep 循环调用 `get_run_progress`。
+
 可视化职责：本插件提供接口、状态数据与生成方法，智能体为具体消费者工程生成页面和
 交互。页面、布局、主题、业务控件语义保存在消费者工程；已有内置网页仅为可选参考实现，
 不作为使用工具的前提。不要为了一个工程的风格需求改库内 `web/`。

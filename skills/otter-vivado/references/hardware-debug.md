@@ -1,7 +1,9 @@
 # ILA/VIO 与工程调试面板
 
-板上调试只操作已有 Hardware Manager 打开的明确 target/device，不会打开 JTAG target
-或烧录。工程准备另有结构化入口。使用实际 MCP schema；完整用法与 JSON 样例在源码根
+`get_debug_snapshot`/`debug_action` 只操作已有 Hardware Manager 中打开的明确 target/device，
+本身不打开 JTAG target，也不烧录。下载 .bit 用 `program_device`（会 open_hw_manager、
+连接 hw_server 并 program，需明确授权）；PS 初始化归 Vitis。工程准备另有结构化入口。
+过程文件与导出位置按 SKILL 的目录约定（`get_project_layout`）。使用实际 MCP schema；完整用法与 JSON 样例在源码根
 `docs/HARDWARE_DEBUG.md`、`docs/DEBUG_DESIGN.md`、`examples/debug/`。
 
 1. 复用现有 Vivado 会话，通过 `get_debug_snapshot`/`debug_action` 使用共享服务。

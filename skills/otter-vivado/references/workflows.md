@@ -4,8 +4,8 @@
 
 ## 工程与构建
 
-1. 读用户工程已有说明；用 `list_sessions` 查看现有会话。已有 `.xpr` 可先用 `parse_xpr` 离线确认器件、顶层、文件集和 run 名称。
-2. 需要执行时复用正确的会话。没有会话时选择 `start_session` 的 `gui`、`tcl` 或 `attach` 模式，记录实际 `vivado_path`。`gui` 默认端口 9999：已有 vmcp GUI 则 attach，**不**再开窗口；换 `session_id` 也不会自动多开。独立实例必须 `port=0`（或显式不同端口）。`attach` 需要目标 GUI 已有本仓 TCP 协议。
+1. 读用户工程已有说明；用 `list_sessions` 查看现有会话，用 `get_project_layout` 取目录约定（见 SKILL 开头）。已有 `.xpr` 可先用 `parse_xpr` 离线确认器件、顶层、文件集和 run 名称。
+2. 需要执行时复用正确的会话。没有会话时选择 `start_session` 的 `gui`、`tcl` 或 `attach` 模式，记录实际 `vivado_path`；`cwd` 默认与 GUI 一致，一般不必传。`gui` 默认端口 9999：已有 vmcp GUI 则 attach，**不**再开窗口；换 `session_id` 也不会自动多开。若该 GUI 打开的是别的工程或正被别的线程使用，不要切走它的工程，改用 `port=0` 独立实例或 CLI 隔离批处理。`attach` 需要目标 GUI 已有本仓 TCP 协议。
 3. 用 `get_project_info` 与 `run_tcl(command="version -short")` 核对工程和版本。仅在尚未打开目标工程且会话可用时打开工程；含特殊字符的路径用 `safe_tcl` 参数模板。不要为了看进度切走用户当前工程。
 4. 明确本次目标：综合、布局布线或生成 bitstream。读取当前 run 状态，沿用实际 run 名称和**同一个** session ID 在该 Vivado 里 `launch_runs`。GUI 开着即可综合，不要另开 `tcl` 会话占第二进程。运行中直接转观察路径。
 5. 发起已授权综合或实现时使用异步入口，避免让模型一直等待：
@@ -24,7 +24,7 @@
 
    上面名称仅为示例；替换为第 1–4 步核对的对象。返回 job ID 表示已提交，成功结论来自后续状态与产物。
 
-6. 使用下一节核对终态。生成 bitstream 是单独的构建目标，使用当前 `generate_bitstream` schema；生成文件与 `program_device` 写入硬件是不同操作，设备操作需明确授权。
+6. 使用下一节核对终态。生成 bitstream 是单独的构建目标，长时间生成用 `generate_bitstream(wait=False)` 后接 `wait_run(until="write_bitstream")`；生成文件与 `program_device` 写入硬件是不同操作，设备操作需明确授权。需要保留的版本复制到 `download_dir` 并写说明，Vivado 原生输出继续覆盖。
 
 同一 Vivado Tcl 会话顺序执行命令。长任务期间让已有运行继续，观察超时后保留 session/run，继续读状态；无需为取得结果重新 launch。
 
@@ -49,7 +49,7 @@ GUI 使用已有 `start_session` 的 `gui`/`attach` 模式和 Vivado 工程命�
 3. 区分目标完成、失败、取消与仅中间阶段完成：place 完成不代表 route 完成，route 完成不代表 bitstream 完成。
 4. 查看报告来源与陈旧、设计不匹配等标记。面板中的文件只是该 run 目录中的候选报告，不能仅凭时间较新确认它属于本轮。
 
-`get_run_progress` 适合单次状态查询。重复刷新优先使用快照，避免用户界面和模型各自密集查询 Tcl。面板扫描文件数量、大小、日志窗口都有边界；完整规则见仓库 `docs/RUN_MONITOR.md`，摘要里的 0 条错误不代表完整日志无错误。
+`get_run_progress` 适合单次状态查询；要等到某阶段或结束，用 `wait_run(run_name, until, timeout_seconds)` 在服务端等待，不要 sleep 后反复查询。它报告子进程静默退出时，按其返回的推荐动作续跑，不要手工翻 ISEWrap/系统事件日志。重复刷新优先使用快照，避免用户界面和模型各自密集查询 Tcl。面板扫描文件数量、大小、日志窗口都有边界；完整规则见仓库 `docs/RUN_MONITOR.md`，摘要里的 0 条错误不代表完整日志无错误。
 
 运行状态与报告各自采样；`reports_status` 为 loading/error/stale 时可能显示旧报告，应同时核对 `reports_observed_at` 和 `reports_source`。慢报告不会阻塞 STATUS 更新。不再需要面板时用 `close_run_monitor` 释放指定 session/run/目标的观察器；它不停止 Vivado 或 run。只关浏览器标签会保留观察器以便再看。
 
@@ -61,7 +61,7 @@ GUI 使用已有 `start_session` 的 `gui`/`attach` 模式和 Vivado 工程命�
 
 | 当前证据/目标 | 工具与后续动作 |
 |---|---|
-| 综合/实现失败或关键告警 | 先保留快照中的首个相关错误与日志路径，再用 `get_critical_warnings` 查询明确的 run；它会写诊断快照，支持下次对比。读对应真实源码/XDC 后提出修复，再重跑受影响阶段验证。 |
+| 综合/实现失败或关键告警 | 先保留快照中的首个相关错误与日志路径，再用 `get_critical_warnings` 查询明确的 run；它会把诊断快照写到用户缓存（不在工程里建 `.vmcp`），支持下次对比。读对应真实源码/XDC 后提出修复，再重跑受影响阶段验证。 |
 | 正在运行或只允许观察 | 使用快照/已有日志。`get_critical_warnings` 的 `sim_*` 模式在特定失败下可能回退执行仿真批处理，不作为纯只读轮询。 |
 | XDC 引脚、IOSTANDARD、时钟问题 | `xdc_lint(xdc_paths=[...])` 可离线检查。`xdc_auto_fix(dry_run=True)` 可生成候选补丁；依据实际板卡、电压和时钟核对后再按已授权修改范围应用，默认值不是板卡事实。 |
 | IP 参数差异或修改未生效 | 活会话用 `inspect_ip_params` 读回实际配置；两个文件用 `compare_xci` 离线对照。写入成功还需核对读回值与目标行为，必要时在已授权范围生成/验证 IP。 |
