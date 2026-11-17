@@ -31,6 +31,8 @@ import json
 import os
 from dataclasses import dataclass
 
+from vivado_mcp.analysis.file_identity import same_stat_identity
+
 # 文件大小上限（10MB）
 _MAX_FILE_SIZE = 10 * 1024 * 1024
 
@@ -261,11 +263,7 @@ def parse_ltx(file_path: str) -> LtxConfig:
         after = os.fstat(f.fileno())
     if len(raw) > _MAX_FILE_SIZE:
         raise ValueError("LTX 文件过大")
-
-    def identity(stat):
-        return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
-
-    if identity(before) != identity(after) or identity(after) != identity(os.stat(file_path)):
+    if not same_stat_identity(before, after, os.stat(file_path)):
         raise ValueError("LTX 文件在读取期间发生变化，请等待构建完成后重试")
     try:
         text = raw.decode("utf-8-sig")

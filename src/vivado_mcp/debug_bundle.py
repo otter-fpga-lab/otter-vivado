@@ -12,16 +12,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from vivado_mcp.analysis.debug_artifacts import check_debug_artifacts
+from vivado_mcp.analysis.file_identity import same_stat_identity
 from vivado_mcp.tcl_scripts import DEBUG_BUNDLE_EXPORT
 
 _FILES = {
     "checkpoint": "source.dcp", "bit": "design.bit", "ltx": "design.ltx",
     "timing": "timing.rpt", "utilization": "utilization.rpt", "drc": "drc.rpt",
 }
-
-
-def _identity(stat):
-    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
 
 def fingerprint(path: Path) -> dict:
@@ -36,7 +33,7 @@ def fingerprint(path: Path) -> dict:
             digest.update(chunk)
             size += len(chunk)
         after = os.fstat(source.fileno())
-    if _identity(before) != _identity(after) or _identity(after) != _identity(path.stat()):
+    if not same_stat_identity(before, after, path.stat()):
         raise ValueError(f"读取期间文件改变：{path}")
     if not size:
         raise ValueError(f"产物为空：{path}")
@@ -57,9 +54,7 @@ def _snapshot(source: Path, destination: Path) -> dict:
             digest.update(chunk)
             size += len(chunk)
         after = os.fstat(reader.fileno())
-    if (not size or _identity(before_path) != _identity(before)
-            or _identity(before) != _identity(after)
-            or _identity(after) != _identity(source.stat())):
+    if not size or not same_stat_identity(before_path, before, after, source.stat()):
         raise ValueError("检查点为空或复制期间发生改变，请等待构建完成")
     result = fingerprint(destination)
     if result["size"] != size or result["sha256"] != digest.hexdigest():

@@ -7,13 +7,11 @@ import os
 import re
 from pathlib import Path
 
+from vivado_mcp.analysis.file_identity import same_stat_identity
+
 _MAX_BYTES = 32 * 1024 * 1024
 _MAX_SIGNALS = 4096
 _MAX_WIDTH = 4096
-
-
-def _identity(stat):
-    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
 
 def _scan_ila_waveform(
@@ -54,9 +52,7 @@ def _scan_ila_waveform(
             raise ValueError("VCD 超过 32 MiB 离线读取上限")
         raw = stream.read(_MAX_BYTES + 1)
         after = os.fstat(stream.fileno())
-    if len(raw) > _MAX_BYTES or _identity(before) != _identity(after) or (
-        _identity(after) != _identity(path.stat())
-    ):
+    if len(raw) > _MAX_BYTES or not same_stat_identity(before, after, path.stat()):
         raise ValueError("VCD 超限或读取期间发生变化")
     digest = hashlib.sha256(raw).hexdigest()
     if expected_sha256 is not None and digest != expected_sha256:

@@ -25,6 +25,8 @@ import hashlib
 import os
 from dataclasses import dataclass
 
+from vivado_mcp.analysis.file_identity import same_stat_identity
+
 # 四个 uint16 长度的文本字段；载荷按块散列，不整体加载。
 _MAX_HEADER_SIZE = 4 * (65535 + 2) + 32
 _HASH_CHUNK_SIZE = 1024 * 1024
@@ -142,11 +144,7 @@ def parse_bit(file_path: str) -> BitHeader:
             digest.update(chunk)
         after = os.fstat(f.fileno())
     current = os.stat(file_path)
-
-    def identity(s):
-        return s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns
-
-    if identity(before) != identity(after) or identity(after) != identity(current):
+    if not same_stat_identity(before, after, current):
         raise ValueError(".bit 文件在读取期间发生变化，请等待构建完成后重试")
     file_size = total
     sha256 = digest.hexdigest()

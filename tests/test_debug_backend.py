@@ -100,6 +100,8 @@ class TclMockSession:
         self.properties = {}
 
     async def execute(self, command: str, timeout: float = 30.0) -> TclResult:
+        if TCLSH is None:
+            pytest.skip("需要 tclsh 执行真实 Tcl 语法")
         self.command = command
         trailer = r"""
 dict for {__object __properties} $__props {

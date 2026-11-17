@@ -8,6 +8,7 @@ from collections import Counter
 from pathlib import Path
 
 from vivado_mcp.analysis.bit_header_parser import parse_bit
+from vivado_mcp.analysis.file_identity import same_stat_identity
 from vivado_mcp.analysis.ltx_parser import parse_ltx
 
 
@@ -76,11 +77,6 @@ def _expectations(expected):
     return expected
 
 
-def _identity(path):
-    stat = os.stat(path)
-    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
-
-
 def check_debug_artifacts(
     bit_path: str, ltx_path: str, expected: dict | None = None,
     manifest_path: str | None = None,
@@ -111,7 +107,7 @@ def check_debug_artifacts(
     identities = {}
     for kind, path in paths.items():
         try:
-            identities[kind] = _identity(path)
+            identities[kind] = os.stat(path)
         except OSError as exc:
             add(f"{kind}.read", "blocked", str(exc))
     bit = ltx = None
@@ -204,7 +200,7 @@ def check_debug_artifacts(
                         f"{core.name}/{probe['name']}: {value}，预期 {probe[field]}")
     for kind, identity in identities.items():
         try:
-            if _identity(paths[kind]) != identity:
+            if not same_stat_identity(identity, os.stat(paths[kind])):
                 raise ValueError("文件在核对期间改变，请在构建结束后重新核对")
         except (OSError, ValueError) as exc:
             add(f"{kind}.changed", "blocked", str(exc))
