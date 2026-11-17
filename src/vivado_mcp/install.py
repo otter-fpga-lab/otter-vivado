@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
+import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from vivado_mcp.config import find_vivado
 from vivado_mcp.vivado.gui_session import _locate_server_script
@@ -26,6 +29,10 @@ _BEGIN_MARK = "## ===== vivado-mcp injection begin ====="
 _END_MARK = "## ===== vivado-mcp injection end ====="
 
 _BACKUP_SUFFIX = ".vmcp_backup"
+
+_MAX_THREADS_RE = re.compile(
+    r"""(?:^|[\s{])set_param\s+general\.maxThreads\s+("[^"]*"|\{[^}]*\}|\[[^\]]*\]|[^\s;}\]]+)"""
+)
 
 
 def _read_optional_bytes(path: Path) -> bytes | None:
@@ -82,10 +89,12 @@ def _atomic_write_text(
 
 
 def _resolve_init_tcl(vivado_path: str | None) -> Path:
-    """定位 Vivado_init.tcl 文件路径。
+    """定位 Vivado 安装级 Vivado_init.tcl 文件路径。
 
     Vivado 安装路径为 ``.../Vivado/<ver>/bin/vivado.bat``，
     ``init.tcl`` 在 ``.../Vivado/<ver>/scripts/Vivado_init.tcl``。
+    注意：该路径不覆盖用户级 ``%APPDATA%\\Xilinx\\Vivado\\Vivado_init.tcl``
+    （Linux 为 ``~/.Xilinx/Vivado/Vivado_init.tcl``）。
     """
     exe = Path(find_vivado(vivado_path)).resolve()
     # exe 形如 D:/Xilinx/Vivado/2019.1/bin/vivado.bat
@@ -93,6 +102,81 @@ def _resolve_init_tcl(vivado_path: str | None) -> Path:
     vivado_root = exe.parent.parent
     init_tcl = vivado_root / "scripts" / "Vivado_init.tcl"
     return init_tcl
+
+
+def _resolve_user_init_tcl(home: Path | None = None) -> Path:
+    """定位用户级 ``Vivado_init.tcl``（不创建目录）。
+
+    Windows 为 ``%APPDATA%\\Xilinx\\Vivado\\Vivado_init.tcl``，
+    Linux/其他平台为 ``~/.Xilinx/Vivado/Vivado_init.tcl``。
+    """
+    if sys.platform == "win32":
+        if home is not None:
+            base = home / "AppData" / "Roaming"
+        else:
+            appdata = os.environ.get("APPDATA")
+            base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+        return base / "Xilinx" / "Vivado" / "Vivado_init.tcl"
+    user_home = home if home is not None else Path.home()
+    return user_home / ".Xilinx" / "Vivado" / "Vivado_init.tcl"
+
+
+def parse_general_max_threads(content: str) -> list[dict[str, Any]]:
+    """提取 Tcl 文本中非注释的 ``set_param general.maxThreads <val>`` 设置。"""
+    matches: list[dict[str, Any]] = []
+    for lineno, raw_line in enumerate(content.splitlines(), start=1):
+        stripped = raw_line.lstrip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        for segment in raw_line.split(";"):
+            seg_stripped = segment.lstrip()
+            if not seg_stripped or seg_stripped.startswith("#"):
+                continue
+            for found in _MAX_THREADS_RE.finditer(segment):
+                val_text = found.group(1).strip()
+                if len(val_text) >= 2 and (
+                    (val_text[0] == '"' and val_text[-1] == '"')
+                    or (val_text[0] == "{" and val_text[-1] == "}")
+                ):
+                    val_text = val_text[1:-1].strip()
+                value = int(val_text) if re.fullmatch(r"[+-]?\d+", val_text) else None
+                matches.append({"line": lineno, "raw": val_text, "value": value})
+    return matches
+
+
+def inspect_user_init_tcl(home: Path | None = None) -> dict[str, Any]:
+    """只读检查用户级 ``Vivado_init.tcl`` 及其中 ``general.maxThreads`` 设置。"""
+    path = _resolve_user_init_tcl(home=home)
+    if not path.is_file():
+        return {
+            "path": path,
+            "exists": False,
+            "matches": [],
+            "max_threads": None,
+            "raw_value": None,
+            "error": None,
+        }
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return {
+            "path": path,
+            "exists": True,
+            "matches": [],
+            "max_threads": None,
+            "raw_value": None,
+            "error": str(exc),
+        }
+    matches = parse_general_max_threads(content)
+    last = matches[-1] if matches else None
+    return {
+        "path": path,
+        "exists": True,
+        "matches": matches,
+        "max_threads": last["value"] if last is not None else None,
+        "raw_value": last["raw"] if last is not None else None,
+        "error": None,
+    }
 
 
 def _build_injection_block(server_script: Path, port: int) -> str:
@@ -191,6 +275,21 @@ def install(vivado_path: str | None = None, port: int = 9999) -> None:
     print(f"✓ vivado-mcp 已成功注入 {init_tcl}")
     print("  下次启动 Vivado GUI 时会自动开启 TCP server。")
     print(f"  或在 MCP 里调用 start_session(mode='attach', port={port}) 连接。")
+
+    user_init = inspect_user_init_tcl()
+    if (
+        sys.platform == "win32"
+        and user_init["error"] is None
+        and user_init["max_threads"] is not None
+        and user_init["max_threads"] > 8
+    ):
+        print(
+            f"⚠ 警告：检测到用户级 {user_init['path']} 设置了 "
+            f"general.maxThreads {user_init['max_threads']}（> 8）。\n"
+            "  Windows 上会放大 Vivado 2024.x route 静默崩溃风险（本地分析，未经 AMD 确认）。\n"
+            "  install 不会自动修改用户级 Vivado_init.tcl；建议删掉或改小该设置（<= 8），"
+            "或改用工程内 route 钩子。"
+        )
 
 
 def _remove_injection(content: str) -> str:

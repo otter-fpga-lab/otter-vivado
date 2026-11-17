@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -29,10 +30,24 @@ def _patch_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, probe: bo
     script.write_text("# server", encoding="utf-8")
     monkeypatch.setattr(doctor, "_locate_server_script", lambda: script)
     monkeypatch.setattr(install_module, "_locate_server_script", lambda: script)
+    monkeypatch.setattr(install_module, "inspect_user_init_tcl", lambda home=None: {
+        "path": tmp_path / "unused_user_init.tcl",
+        "exists": False,
+        "matches": [],
+        "max_threads": None,
+        "raw_value": None,
+        "error": None,
+    })
     monkeypatch.setattr(doctor, "probe_vmcp_server", lambda host, port: probe)
     monkeypatch.setattr(doctor, "_is_tcp_open", lambda host, port: False)
     monkeypatch.setattr(doctor, "__version__", "0.3.24")
     return script
+
+
+def _user_init_path(home: Path) -> Path:
+    if sys.platform == "win32":
+        return home / "AppData" / "Roaming" / "Xilinx" / "Vivado" / "Vivado_init.tcl"
+    return home / ".Xilinx" / "Vivado" / "Vivado_init.tcl"
 
 
 def _write_valid_clients(home: Path, vivado_path: Path) -> None:
@@ -76,6 +91,7 @@ def test_all_checks_success_and_stable_json(monkeypatch, tmp_path):
         "vivado_executable",
         "vivado_init_tcl",
         "third_party_injection",
+        "user_vivado_init_tcl",
         "vivado_tcp_server",
         "mcp_claude_code",
         "mcp_codex",
@@ -500,3 +516,124 @@ def test_install_uses_same_directory_fsync_replace_and_backup(monkeypatch, tmp_p
     assert _BEGIN_MARK in init_tcl.read_text(encoding="utf-8")
     assert init_tcl.with_suffix(".tcl.vmcp_backup").read_text(encoding="utf-8") == original
     assert not list(init_tcl.parent.glob(f".{init_tcl.name}.*.tmp"))
+
+
+@pytest.mark.parametrize(
+    ("content", "expected_status", "expected_max"),
+    [
+        ("set_param general.maxThreads 32", "warn", 32),
+        ("set_param general.maxThreads 8\n", "ok", 8),
+        ("# set_param general.maxThreads 32\n", "ok", None),
+        ("set_param general.maxThreads 8\nset_param general.maxThreads 16\n", "warn", 16),
+        ("set_param general.maxThreads 32\nset_param general.maxThreads 4\n", "ok", 4),
+    ],
+)
+def test_user_vivado_init_max_threads_windows(
+    monkeypatch, tmp_path, content, expected_status, expected_max,
+):
+    import vivado_mcp.install as install_module
+
+    exe, init_tcl = _fake_vivado(tmp_path)
+    script = _patch_runtime(monkeypatch, tmp_path, probe=True)
+    init_tcl.write_text(_build_injection_block(script, 9999), encoding="utf-8")
+    monkeypatch.setattr(doctor.sys, "platform", "win32")
+    monkeypatch.setattr(install_module.sys, "platform", "win32")
+
+    home = tmp_path / "home"
+    _write_valid_clients(home, exe)
+    user_init = home / "AppData" / "Roaming" / "Xilinx" / "Vivado" / "Vivado_init.tcl"
+    user_init.parent.mkdir(parents=True)
+    user_init.write_text(content, encoding="utf-8")
+
+    report = doctor.run_doctor(str(exe), fix=True, home=home)
+    check = next(item for item in report.checks if item.id == "user_vivado_init_tcl")
+
+    assert check.status == expected_status
+    assert check.fixable is False
+    assert check.evidence["max_threads"] == expected_max
+    assert check.evidence["path"] == str(user_init)
+    # 只报告，不自动修改用户级 Vivado_init.tcl
+    assert user_init.read_text(encoding="utf-8") == content
+    assert not user_init.with_suffix(".tcl.vmcp_backup").exists()
+    assert not any(item.id == "user_vivado_init_tcl" for item in report.fixes)
+
+    rendered = doctor.format_report(report)
+    if expected_status == "warn":
+        assert "[WARN] user_vivado_init_tcl: " in rendered
+        assert "2024.x route" in check.message
+        assert "本地分析，未经 AMD 确认" in check.message
+        assert check.proposed_action is not None
+        assert "删除" in check.proposed_action
+        assert "route_design" in check.proposed_action
+        assert report.exit_code == 1
+    else:
+        assert "[OK] user_vivado_init_tcl:" in rendered
+
+
+def test_user_vivado_init_linux_does_not_warn_over_8(monkeypatch, tmp_path):
+    import vivado_mcp.install as install_module
+
+    exe, init_tcl = _fake_vivado(tmp_path)
+    script = _patch_runtime(monkeypatch, tmp_path, probe=True)
+    init_tcl.write_text(_build_injection_block(script, 9999), encoding="utf-8")
+    monkeypatch.setattr(doctor.sys, "platform", "linux")
+    monkeypatch.setattr(install_module.sys, "platform", "linux")
+
+    home = tmp_path / "home"
+    _write_valid_clients(home, exe)
+    user_init = home / ".Xilinx" / "Vivado" / "Vivado_init.tcl"
+    user_init.parent.mkdir(parents=True)
+    user_init.write_text("set_param general.maxThreads 32\n", encoding="utf-8")
+
+    report = doctor.run_doctor(str(exe), home=home)
+    check = next(item for item in report.checks if item.id == "user_vivado_init_tcl")
+
+    assert check.status == "ok"
+    assert check.evidence["max_threads"] == 32
+    assert "32" in check.message
+    assert report.exit_code == 0
+
+
+def test_user_vivado_init_uses_appdata_when_home_is_none(monkeypatch, tmp_path):
+    import vivado_mcp.install as install_module
+
+    monkeypatch.setattr(doctor.sys, "platform", "win32")
+    monkeypatch.setattr(install_module.sys, "platform", "win32")
+    roaming = tmp_path / "Roaming"
+    monkeypatch.setenv("APPDATA", str(roaming))
+    user_init = roaming / "Xilinx" / "Vivado" / "Vivado_init.tcl"
+    user_init.parent.mkdir(parents=True)
+    user_init.write_text("set_param general.maxThreads 32\n", encoding="utf-8")
+
+    check = doctor._check_user_vivado_init_tcl(None)
+    assert check.status == "warn"
+    assert check.evidence["path"] == str(user_init)
+    assert check.evidence["max_threads"] == 32
+
+
+def test_user_vivado_init_non_numeric_and_read_error(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    user_init = _user_init_path(home)
+    user_init.parent.mkdir(parents=True)
+    user_init.write_text("set_param general.maxThreads $::env(THREADS)\n", encoding="utf-8")
+
+    check = doctor._check_user_vivado_init_tcl(home)
+    assert check.status == "ok"
+    assert check.evidence["max_threads"] is None
+    assert check.evidence["raw_value"] == "$::env(THREADS)"
+
+    monkeypatch.setattr(
+        doctor,
+        "inspect_user_init_tcl",
+        lambda home=None: {
+            "path": user_init,
+            "exists": True,
+            "matches": [],
+            "max_threads": None,
+            "raw_value": None,
+            "error": "permission denied",
+        },
+    )
+    err_check = doctor._check_user_vivado_init_tcl(home)
+    assert err_check.status == "critical"
+    assert "permission denied" in err_check.message

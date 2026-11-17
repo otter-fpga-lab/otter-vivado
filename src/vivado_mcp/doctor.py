@@ -27,6 +27,7 @@ from vivado_mcp.install import (
     _atomic_write_text,
     _has_other_vendor_injection,
     _resolve_init_tcl,
+    inspect_user_init_tcl,
     install,
 )
 from vivado_mcp.vivado.gui_session import _locate_server_script, probe_vmcp_server
@@ -413,9 +414,85 @@ def _fix_codex_config(path: Path, vivado_path: str | None) -> None:
     _atomic_write_with_backup(path, text, expected_bytes=original_bytes)
 
 
+def _check_user_vivado_init_tcl(home: Path | None) -> DoctorCheck:
+    """只读检查用户级 Vivado_init.tcl 中的 general.maxThreads 设置。"""
+    check_id = "user_vivado_init_tcl"
+    info = inspect_user_init_tcl(home=home)
+    user_init = info["path"]
+    if info["error"] is not None:
+        return _check(
+            check_id,
+            "critical",
+            f"无法读取用户级 Vivado_init.tcl：{info['error']}",
+            path=str(user_init),
+        )
+    if not info["exists"]:
+        return _check(
+            check_id,
+            "ok",
+            "未发现用户级 Vivado_init.tcl，无 general.maxThreads 全局设置。",
+            path=str(user_init),
+            exists=False,
+            max_threads=None,
+            matches=[],
+        )
+    matches = info["matches"]
+    if not matches:
+        return _check(
+            check_id,
+            "ok",
+            "已检查用户级 Vivado_init.tcl，未设置 general.maxThreads。",
+            path=str(user_init),
+            exists=True,
+            max_threads=None,
+            matches=[],
+        )
+    max_threads = info["max_threads"]
+    raw_value = info["raw_value"]
+    if max_threads is None:
+        return _check(
+            check_id,
+            "ok",
+            f"用户级 Vivado_init.tcl 设置了 general.maxThreads {raw_value}"
+            "（非字面整数，无法静态比较阈值）。",
+            path=str(user_init),
+            exists=True,
+            max_threads=None,
+            raw_value=raw_value,
+            matches=matches,
+        )
+    if sys.platform == "win32" and max_threads > 8:
+        return _check(
+            check_id,
+            "warn",
+            f"用户级 Vivado_init.tcl 设置了 general.maxThreads {max_threads}（> 8），"
+            "Windows 上会放大 Vivado 2024.x route 静默崩溃风险（本地分析，未经 AMD 确认）；"
+            "doctor 不会自动修改。",
+            fixable=False,
+            proposed_action=(
+                f"从 {user_init} 删除 general.maxThreads 或改小（<= 8），"
+                "或改用工程内 route_design PRE/POST 钩子"
+            ),
+            path=str(user_init),
+            exists=True,
+            max_threads=max_threads,
+            matches=matches,
+        )
+    return _check(
+        check_id,
+        "ok",
+        f"用户级 Vivado_init.tcl 设置了 general.maxThreads {max_threads}。",
+        path=str(user_init),
+        exists=True,
+        max_threads=max_threads,
+        matches=matches,
+    )
+
+
 def _collect_checks(
-    vivado_path: str | None, port: int, home: Path
+    vivado_path: str | None, port: int, home: Path | None
 ) -> tuple[list[DoctorCheck], str | None]:
+    user_home = home if home is not None else Path.home()
     checks = [
         _check(
             "package_version",
@@ -526,6 +603,8 @@ def _collect_checks(
                 )
             )
 
+    checks.append(_check_user_vivado_init_tcl(home))
+
     if probe_vmcp_server("127.0.0.1", port):
         checks.append(
             _check(
@@ -562,8 +641,8 @@ def _collect_checks(
             )
         )
 
-    checks.append(_check_claude_config(home / ".claude.json"))
-    checks.append(_check_codex_config(home / ".codex" / "config.toml"))
+    checks.append(_check_claude_config(user_home / ".claude.json"))
+    checks.append(_check_codex_config(user_home / ".codex" / "config.toml"))
     return checks, resolved_vivado
 
 
@@ -590,7 +669,7 @@ def run_doctor(
     if client not in {"all", "claude-code", "codex"}:
         raise ValueError("client 必须是 all、claude-code 或 codex")
     user_home = home if home is not None else Path.home()
-    checks, resolved_vivado = _collect_checks(vivado_path, port, user_home)
+    checks, resolved_vivado = _collect_checks(vivado_path, port, home)
     fixes: list[FixResult] = []
     if fix:
         by_id = {item.id: item for item in checks}
@@ -630,7 +709,7 @@ def run_doctor(
             ) as exc:
                 fixes.append(FixResult(check_id, "failed", f"{client_name} 配置修复失败：{exc}"))
 
-        checks, _ = _collect_checks(vivado_path, port, user_home)
+        checks, _ = _collect_checks(vivado_path, port, home)
 
     overall_status, exit_code = _overall(checks)
     if any(item.status == "failed" for item in fixes):
