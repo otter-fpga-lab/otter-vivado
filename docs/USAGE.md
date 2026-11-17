@@ -189,6 +189,18 @@ wait_run(run_name="synth_1", until="synth_design", timeout_seconds=600, session_
 | `get_pre_commit_summary` | **0.3.4** 生成 markdown 工程摘要直接贴 commit body:项目/时序 WNS+WHS/资源/CW/READY-WARN-BLOCK 门禁 |
 | `get_project_layout` | 只读解析工程目录约定（`Debug/`、`Debug/NOTES.md`、`Debug/scripts/`、`Download/`、Vivado 运行目录、最近的 `99_垃圾堆`）与简短规则；`project` 留空取会话当前工程，工程根 `otter-vivado.toml` 的 `[layout]` 可覆盖，不创建目录 |
 
+用户对目录的偏好写进 .xpr 旁的 `otter-vivado.toml`，以后各会话直接读取，不必每轮口头重复。所有键都可省略，相对路径相对于工程根；未知键或语法错误会直接报错：
+
+```toml
+[layout]
+debug_dir   = "Debug"            # 过程文件，按 YYYYMMDD_主题/ 分子目录
+notes_file  = "Debug/NOTES.md"   # 唯一的关键点记录
+scripts_dir = "Debug/scripts"    # 智能体生成的 Tcl/Python
+download_dir = "Download"        # 交付固件与说明
+# vivado_cwd = "..."             # 默认与 GUI 相同：%APPDATA%\Xilinx\Vivado
+# trash_dir  = "../../99_垃圾堆" # 默认向上查找最近的 99_垃圾堆
+```
+
 ### 诊断
 | 工具 | 说明 |
 |------|------|
