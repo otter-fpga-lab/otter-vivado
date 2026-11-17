@@ -109,15 +109,15 @@ def _check_win_curdir_policy() -> str:
 
 
 
-def _check_ascii_paths(vivado_path: str | None) -> str:
-    """检测 Vivado 路径 / 当前工作目录是否含非 ASCII 字符。
+def _check_ascii_paths(vivado_path: str | None, cwd: str | None = None) -> str:
+    """检测 Vivado 路径 / Vivado 工作目录是否含非 ASCII 字符。
 
     Vivado 2019.x 在中文路径下已知会触发 ``TclStackFree: incorrect freePtr``
     内部异常(0.3.13 实战发现)。本检测只 warn,不 block —— 因为不是所有 2019.x
     都必崩,且用户可能在某些场景下能用(源文件中文 OK,只有 .runs/ .sim/ 输出目录
     必须 ASCII)。检测对象:
     - vivado_path (可执行文件路径)
-    - 当前工作目录(create_project / open_project 多半在这里)
+    - Vivado 实际工作目录(``cwd``;未给时回退为 MCP 进程当前目录)
 
     Returns:
         警告文本(若需要),否则空串。
@@ -126,7 +126,7 @@ def _check_ascii_paths(vivado_path: str | None) -> str:
     if vivado_path and not vivado_path.isascii():
         non_ascii_paths.append(f"vivado_path: {vivado_path}")
     try:
-        cwd = os.getcwd()
+        cwd = cwd or os.getcwd()
         if not cwd.isascii():
             non_ascii_paths.append(f"工作目录: {cwd}")
     except OSError:
@@ -153,6 +153,36 @@ def _check_ascii_paths(vivado_path: str | None) -> str:
     )
 
 
+def _same_dir(a: str, b: str) -> bool:
+    """Vivado ``pwd`` 用正斜杠；按规范化后的大小写不敏感路径比较。"""
+    def norm(p: str) -> str:
+        return os.path.normcase(os.path.normpath(p.replace("/", os.sep)))
+    return norm(a) == norm(b)
+
+
+def _cwd_line(status: dict, requested_cwd: str, reused: bool) -> str:
+    """回显 Vivado 实际工作目录；attach / 复用会话明确说明未改变。"""
+    pwd = status.get("runtime_pwd")
+    spawn_cwd = status.get("cwd")
+    pwd_text = f"实际 pwd: {pwd}" if pwd else "实际 pwd 未能读取"
+    ignored = f"；未应用传入的 cwd={requested_cwd!r}" if requested_cwd else ""
+    if status.get("mode") == "attach":
+        return f"工作目录: 未改变（attach 已有 Vivado，{pwd_text}{ignored}）"
+    if reused:
+        shown = spawn_cwd or pwd or "未知"
+        return f"工作目录: {shown}（复用已有会话，不改变工作目录；{pwd_text}{ignored}）"
+    if not spawn_cwd:
+        return f"工作目录: 继承宿主（{pwd_text}）"
+    if not pwd:
+        return f"工作目录: {spawn_cwd}（Vivado pwd 未核对）"
+    if _same_dir(spawn_cwd, pwd):
+        return f"工作目录: {spawn_cwd}（Vivado pwd 已核对）"
+    return (
+        f"工作目录: {spawn_cwd}（注意：Vivado 实际 pwd 为 {pwd}，"
+        "可能被 Vivado_init.tcl 等启动脚本改变）"
+    )
+
+
 @mcp.tool()
 async def start_session(
     session_id: str = "default",
@@ -161,6 +191,7 @@ async def start_session(
     vivado_path: str = "",
     timeout: int = 120,
     ctx: Context = None,
+    cwd: str = "",
 ) -> str:
     """启动一个新的 Vivado 会话。
 
@@ -191,29 +222,54 @@ async def start_session(
             改用 port=0 新开所选版本，或明确 mode='attach' 接受端口当前实例。
             自定义路径无法推断版本时，查询成功后可复用并显示实际版本。留空沿用默认发现。
         timeout: 启动超时秒数，GUI 模式建议 120+。默认 120。
+        cwd: 新 spawn 的 Vivado 工作目录（``.Xil/`` 等运行文件落点）。留空使用与开始菜单
+            GUI 快捷方式一致的 Vivado 标准目录（Windows ``%APPDATA%\\Xilinx\\Vivado``，
+            不存在时创建）；显式值必须是已存在的目录。不要用业务仓根，也不要事后
+            ``run_tcl cd`` 到临时目录。attach、external@ 和复用已有会话不改变工作目录，
+            只回显实际 pwd。
     """
     manager = _get_manager(ctx)
 
     path = vivado_path if vivado_path else None
     try:
+        try:
+            reused = manager.get(session_id) is not None
+        except ValueError:
+            reused = False  # 非法 id 交给 start_session 给出原错误
         session, banner = await manager.start_session(
             session_id=session_id,
             vivado_path=path,
             timeout=float(timeout),
             mode=mode,
             port=int(port),
+            cwd=cwd or None,
         )
         status = session.status_dict()
-        ascii_warn = _check_ascii_paths(status.get("vivado_path") or vivado_path)
-        curdir_warn = _check_win_curdir_policy()
+        runtime_version = status.get("runtime_version") or "unknown"
+        ascii_warn = _check_ascii_paths(
+            status.get("vivado_path") or vivado_path,
+            status.get("runtime_pwd") or status.get("cwd"),
+        )
+        # 该策略告警针对 2019.x 的 compile.bat spawn；其他已知版本不显示。
+        curdir_warn = (
+            _check_win_curdir_policy()
+            if runtime_version == "unknown" or runtime_version.startswith("2019.")
+            else ""
+        )
         path_label = (
             "启动候选路径（不代表已连接 GUI 的实际版本）"
             if status.get("vivado_path_is_launch_candidate") else "Vivado"
         )
+        version_line = (
+            f"已核对运行版本: {runtime_version}"
+            if runtime_version != "unknown"
+            else "运行版本: 未核对（version -short 未返回可识别版本）"
+        )
         return (
             f"会话 '{session_id}' 已就绪（mode={status['mode']}）。\n"
             f"{path_label}: {status['vivado_path']}\n"
-            f"已核对运行版本: {status.get('runtime_version', 'unknown')}\n"
+            f"{version_line}\n"
+            f"{_cwd_line(status, cwd, reused)}\n"
             f"状态: {status['state']}\n\n"
             f"--- 启动信息 ---\n{banner}"
             f"{ascii_warn}"

@@ -13,6 +13,7 @@ import re
 from typing import Literal
 
 from vivado_mcp.config import find_vivado, get_vivado_version, normalize_path
+from vivado_mcp.project_layout import default_vivado_cwd
 from vivado_mcp.vivado.base_session import BaseSession
 from vivado_mcp.vivado.gui_session import (
     _PENDING_SPAWN_PORTS,
@@ -67,6 +68,43 @@ def parse_external_session_id(session_id: str) -> int | None:
     return port if 1 <= port <= 65535 else None
 
 
+def resolve_spawn_cwd(cwd: str | None) -> str:
+    """确定新 spawn 的 Vivado 工作目录。
+
+    - 显式传入：必须是已存在的目录，不替用户创建任意路径。
+    - 留空：使用与开始菜单 GUI 快捷方式一致的 Vivado 标准运行目录，缺失时创建
+      （这是 Vivado 自己的每用户目录，不是工程或业务仓）。
+    """
+    if cwd and cwd.strip():
+        path = os.path.abspath(os.path.expanduser(cwd.strip()))
+        if not os.path.isdir(path):
+            raise ValueError(
+                f"cwd 必须是已存在的目录：{cwd!r} 不存在或不是目录。"
+                "不会自动创建显式工作目录；请先创建，或留空使用默认 Vivado 运行目录 "
+                f"{default_vivado_cwd()}。"
+            )
+        return path
+    default = default_vivado_cwd()
+    try:
+        default.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ValueError(
+            f"无法创建默认 Vivado 运行目录 {default}：{exc}。请显式传入已存在的 cwd。"
+        ) from exc
+    return str(default)
+
+
+async def _probe_runtime(session: BaseSession) -> None:
+    """启动/接管后低成本核对实际版本与 pwd；测试替身或失败时静默跳过。"""
+    probe = getattr(session, "probe_runtime_info", None)
+    if probe is None:
+        return
+    try:
+        await probe()
+    except Exception as exc:  # 核对失败不影响已就绪的会话
+        logger.warning("会话运行信息核对异常: %s", exc)
+
+
 class SessionManager:
     """管理多个 Vivado 会话实例。"""
 
@@ -108,6 +146,7 @@ class SessionManager:
         timeout: float = 120.0,
         mode: str = "gui",
         port: int = 0,
+        cwd: str | None = None,
     ) -> tuple[BaseSession, str]:
         """启动新会话或返回已有会话。
 
@@ -122,6 +161,8 @@ class SessionManager:
                   否则 spawn 并绑该确切端口。
                 - attach 模式 port 是要连的显式端口(attach 本就需知道连哪;
                   传 0 会去连 0 端口失败,attach 调用方应显式给端口)。
+            cwd: 新 spawn 的 Vivado 工作目录。留空用 :func:`default_vivado_cwd`；
+                显式值必须已存在。attach / 外部会话 / 复用已有会话不改变工作目录。
 
         Returns:
             (会话实例, 启动横幅/状态消息) 元组。
@@ -165,16 +206,19 @@ class SessionManager:
             if selected_path and mode != "attach"
             else selected_path or self._default_vivado_path
         )
+        # 只对会 spawn 的模式确定工作目录；attach 连接已有进程，不改其 cwd。
+        spawn_cwd = resolve_spawn_cwd(cwd) if mode != "attach" else None
 
         session: BaseSession
         if mode == "tcl":
-            session = SubprocessSession(vivado_path=path, session_id=session_id)
+            session = SubprocessSession(vivado_path=path, session_id=session_id, cwd=spawn_cwd)
         elif mode == "gui":
             session = GuiSession(
                 vivado_path=path,
                 session_id=session_id,
                 port=port,
                 attach_only=False,
+                cwd=spawn_cwd,
                 **({"expected_version": get_vivado_version(path)} if selected_path else {}),
             )
         else:  # attach
@@ -209,6 +253,7 @@ class SessionManager:
             getattr(session, "connected_port", None),
             getattr(session, "pid", None),
         )
+        await _probe_runtime(session)
 
         return session, banner
 
@@ -268,6 +313,8 @@ class SessionManager:
             getattr(session, "connected_port", None),
             getattr(session, "pid", None),
         )
+        # 不改外部 GUI 的工作目录，只读核对版本与 pwd 供回显。
+        await _probe_runtime(session)
         logger.info("已接管外部 GUI 会话 '%s'（端口 %d）", canonical, port)
         return session
 

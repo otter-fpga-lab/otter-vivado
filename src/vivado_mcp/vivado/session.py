@@ -12,6 +12,7 @@ subprocess 实现（两种会话模式之一）。负责：
 import asyncio
 import collections
 import logging
+import re
 import sys
 import time
 
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 # stderr 缓冲区保留的最近行数（避免内存无限增长）
 _STDERR_RING_SIZE = 200
+_BANNER_VERSION_RE = re.compile(r"\bVivado v(20\d{2}\.\d+(?:\.\d+)?)\b")
 
 
 class SubprocessSession(BaseSession):
@@ -39,8 +41,10 @@ class SubprocessSession(BaseSession):
     使用 catch + UUID sentinel 协议实现可靠的命令执行与输出采集。
     """
 
-    def __init__(self, vivado_path: str, session_id: str = "default"):
-        super().__init__(vivado_path=vivado_path, session_id=session_id)
+    def __init__(
+        self, vivado_path: str, session_id: str = "default", cwd: str | None = None,
+    ):
+        super().__init__(vivado_path=vivado_path, session_id=session_id, cwd=cwd)
         self._process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
         self._closing = False
@@ -92,6 +96,8 @@ class SubprocessSession(BaseSession):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=sanitize_vivado_child_env(),
+                # 显式 cwd：.Xil/ 等运行文件不落到 MCP 宿主的业务仓根。
+                cwd=self.cwd,
             )
         except (OSError, FileNotFoundError) as e:
             self._state = SessionState.ERROR
@@ -101,6 +107,10 @@ class SubprocessSession(BaseSession):
         self._stderr_task = asyncio.create_task(self._drain_stderr())
         # 等待 Vivado 启动完成（读取初始横幅）
         banner = await self._read_startup_banner(timeout)
+        # 横幅是该进程自己打印的版本（如 "Vivado v2024.2 (64-bit)"），可作运行版本证据。
+        banner_version = _BANNER_VERSION_RE.search(banner)
+        if banner_version:
+            self._runtime_version = banner_version.group(1)
         self._state = SessionState.READY
         self._start_time = time.time()
 

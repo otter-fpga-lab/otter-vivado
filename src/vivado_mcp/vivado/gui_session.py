@@ -248,8 +248,9 @@ class GuiSession(BaseSession):
         port: int = 0,
         attach_only: bool = False,
         expected_version: str | None = None,
+        cwd: str | None = None,
     ):
-        super().__init__(vivado_path=vivado_path, session_id=session_id)
+        super().__init__(vivado_path=vivado_path, session_id=session_id, cwd=cwd)
         # 端口意图哨兵(B 方案):
         #   port == 0 = 未指定 → auto-alloc 一个空闲端口 spawn 全新独立实例,**跳过 probe**
         #               (多开正解:连开两次 = 两个独立 GUI,不会被 probe 抢成 attach)
@@ -259,7 +260,6 @@ class GuiSession(BaseSession):
         self._attach_only = attach_only
         # 仅显式指定安装路径时约束隐式 attach；显式 attach 由用户选择端口。
         self._expected_version = expected_version
-        self._runtime_version: str | None = None
         # probe-then-attach 命中外部 GUI(用户手动启动 + init.tcl 已注入)时为 True
         # 与 _attach_only 区别:_attach_only 是用户显式请求,_attached_external
         # 是 mode="gui" 时的隐式 attach。两者对 mode/stop 行为意义相同。
@@ -312,7 +312,6 @@ class GuiSession(BaseSession):
         d = super().status_dict()
         if self._pid is not None:
             d["pid"] = self._pid
-        d["runtime_version"] = self._runtime_version or "unknown"
         d["vivado_path_is_launch_candidate"] = self._attach_only or self._attached_external
         return d
 
@@ -384,6 +383,8 @@ class GuiSession(BaseSession):
         self._writer = writer
         self._connected_port = port
         self._attached_external = True
+        # 接管的是已有进程：请求的 spawn cwd 没有生效，不在状态里冒充实际目录。
+        self.cwd = None
         if self._expected_version is not None:
             try:
                 result = await asyncio.wait_for(
@@ -509,6 +510,8 @@ class GuiSession(BaseSession):
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
                     env=sanitize_vivado_child_env(),
+                    # 显式 cwd：.Xil/ 与 vivado_pid*.str 不落到 MCP 宿主的业务仓根。
+                    cwd=self.cwd,
                 )
                 # 记下 pid:stop() 在 self._proc 引用因故丢失时仍能按 pid 精杀
                 self._pid = self._proc.pid
@@ -909,8 +912,13 @@ class GuiSession(BaseSession):
             self._proc = None
 
         # attach 仅断开连接，不拥有用户工作目录中的 PID 文件。
+        # Vivado 把 pid 文件写在自己的工作目录：显式 cwd 时在那里清理。
+        pid_pattern = (
+            os.path.join(glob_mod.escape(self.cwd), "vivado_pid*.str")
+            if self.cwd else "vivado_pid*.str"
+        )
         pid_files = (
-            glob_mod.glob("vivado_pid*.str")
+            glob_mod.glob(pid_pattern)
             if not self._attach_only and not self._attached_external else []
         )
         for pid_file in pid_files:

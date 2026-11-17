@@ -74,6 +74,12 @@ AI: [调用 list_sessions]   → 看到 external@9999(你手动开的)
 AI: [调用 start_session(mode="tcl")] → 无 GUI,跑得更快
 ```
 
+新 spawn 的 GUI/Tcl 进程默认在与开始菜单快捷方式一致的 `%APPDATA%\Xilinx\Vivado` 运行
+（Linux 为 `~/.Xilinx/Vivado`，缺失时创建），`.Xil/` 不再落到 MCP 宿主所在的业务仓根；
+需要其他位置时传已存在的 `cwd`。attach、`external@` 和复用已有会话不改变工作目录，
+返回中回显实际 `pwd` 与 `version -short`。不要用 `run_tcl cd` 切到临时目录，也不要把
+临时 Tcl 挂到 run 的 `STEPS.*.TCL.PRE/POST`。
+
 长时间综合/实现可以启动后立即返回，不占住一次 MCP 调用：
 
 ```text
@@ -102,7 +108,7 @@ get_run_progress(run_name="synth_1", session_id="default")
 ### 会话管理
 | 工具 | 说明 |
 |------|------|
-| `start_session` | 启动 Vivado 会话（gui/tcl/attach 三种模式） |
+| `start_session` | 启动 Vivado 会话（gui/tcl/attach 三种模式）；`cwd` 留空时新进程在 Vivado 标准运行目录启动，返回实际版本与工作目录 |
 | `stop_session` | 结束指定会话；会清理其拥有的 Vivado 子进程，先完成该会话的活动运行 |
 | `list_sessions` | 列出所有活跃会话 |
 

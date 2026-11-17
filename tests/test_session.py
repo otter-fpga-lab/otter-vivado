@@ -271,7 +271,7 @@ class TestSessionManager:
             connected_port = None
             pid = None
 
-            def __init__(self, *, vivado_path, session_id, port, attach_only):
+            def __init__(self, *, vivado_path, session_id, port, attach_only, cwd=None):
                 captured["port"] = port
                 captured["attach_only"] = attach_only
 
@@ -302,7 +302,7 @@ class TestSessionManager:
             connected_port = 54321
             pid = 9090
 
-            def __init__(self, *, vivado_path, session_id, port, attach_only):
+            def __init__(self, *, vivado_path, session_id, port, attach_only, cwd=None):
                 pass
 
             async def start(self, timeout):
@@ -697,7 +697,7 @@ class TestStartSessionFailureCleanup:
             connected_port = None
             pid = None
 
-            def __init__(self, *, vivado_path, session_id, port, attach_only):
+            def __init__(self, *, vivado_path, session_id, port, attach_only, cwd=None):
                 pass
 
             async def start(self, timeout):
@@ -728,7 +728,7 @@ class TestStartSessionFailureCleanup:
         class _DoubleFailSession:
             mode = "gui"
 
-            def __init__(self, *, vivado_path, session_id, port, attach_only):
+            def __init__(self, *, vivado_path, session_id, port, attach_only, cwd=None):
                 pass
 
             async def start(self, timeout):

@@ -6,8 +6,15 @@ from vivado_mcp.vivado.session_manager import SessionManager
 
 
 @pytest.fixture
-def session_manager() -> SessionManager:
-    """创建一个不连接实际 Vivado 的 SessionManager 实例。"""
+def session_manager(tmp_path, monkeypatch) -> SessionManager:
+    """创建一个不连接实际 Vivado 的 SessionManager 实例。
+
+    默认 Vivado 运行目录指向临时目录，避免测试在真实 %APPDATA% 下创建目录。
+    """
+    monkeypatch.setattr(
+        "vivado_mcp.vivado.session_manager.default_vivado_cwd",
+        lambda: tmp_path / "vivado-default-cwd",
+    )
     return SessionManager(vivado_path="/fake/vivado")
 
 
