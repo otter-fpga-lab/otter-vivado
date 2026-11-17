@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import posixpath
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 
@@ -64,6 +65,18 @@ class XprFile:
 
 
 @dataclass(frozen=True)
+class XprStepHook:
+    """Run 下某步骤挂载的 Tcl 钩子（PreStepTclHook / PostStepTclHook）。"""
+
+    step_id: str        # 如 "route_design"
+    hook_type: str      # "pre" / "post"
+    path_raw: str       # .xpr 属性原值
+    path_resolved: str  # 展开 $PPRDIR / 相对路径后的规整路径
+    category: str       # "工程内" / "工程外/TEMP" / "不存在"
+    exists: bool        # 目标脚本文件是否存在
+
+
+@dataclass(frozen=True)
 class XprRun:
     """单个 Run（synth_1 / impl_1 等）。"""
 
@@ -76,6 +89,7 @@ class XprRun:
     synth_run: str = ""  # impl run 关联的综合 run（SynthRun 属性）
     constrs_set: str = ""  # ConstrsSet
     src_set: str = ""      # SrcSet
+    step_hooks: tuple[XprStepHook, ...] = ()  # 各 Step 的 pre/post Tcl 钩子
 
 
 @dataclass
@@ -245,11 +259,86 @@ def _parse_fileset(fs: ET.Element, macros: dict[str, str]) -> tuple[list[XprFile
     return files, top
 
 
-def _parse_run(run_el: ET.Element) -> XprRun:
+def _norm_fs(path: str) -> str:
+    return os.path.normcase(os.path.normpath(os.path.abspath(path.replace("/", os.sep))))
+
+
+def _is_under(path: str, root: str) -> bool:
+    p, r = _norm_fs(path), _norm_fs(root)
+    if p == r:
+        return True
+    return p.startswith(r if r.endswith(os.sep) else r + os.sep)
+
+
+def _resolve_hook_path(
+    raw: str, project_dir: str, macros: dict[str, str],
+) -> tuple[str, str | None]:
+    """解析步骤钩子路径，返回 (展示/解析路径, 用于存在性检查的本地路径或 None)。"""
+    text = raw.strip()
+    path = text.replace("\\", "/")
+    if path.startswith("$PPRDIR"):
+        resolved = _resolve_path(text, macros)
+        return resolved, resolved.replace("/", os.sep)
+    for macro, expanded in macros.items():
+        if macro != "$PPRDIR" and (path == macro or path.startswith(macro + "/")):
+            candidate = posixpath.normpath(expanded + path[len(macro):]).replace("\\", "/")
+            return path, candidate.replace("/", os.sep)
+    if path.startswith(("$", "%")):
+        return path, None
+    if posixpath.isabs(path) or re.match(r"^[A-Za-z]:/", path) or path.startswith("//"):
+        resolved = posixpath.normpath(path).replace("\\", "/")
+        return resolved, resolved.replace("/", os.sep)
+    if project_dir:
+        resolved = posixpath.normpath(posixpath.join(project_dir, path)).replace("\\", "/")
+        return resolved, resolved.replace("/", os.sep)
+    return path, None
+
+
+def _classify_hook(
+    raw: str, project_dir: str, macros: dict[str, str],
+) -> tuple[str, str, bool]:
+    """将步骤钩子路径分类为「工程内」「工程外/TEMP」「不存在」。"""
+    resolved, fs_path = _resolve_hook_path(raw, project_dir, macros)
+    if fs_path is None or not os.path.isfile(fs_path):
+        return resolved, "不存在", False
+    if project_dir and _is_under(fs_path, project_dir):
+        return resolved, "工程内", True
+    return resolved, "工程外/TEMP", True
+
+
+def _parse_run(
+    run_el: ET.Element,
+    project_dir: str = "",
+    macros: dict[str, str] | None = None,
+) -> XprRun:
     """解析单个 <Run> 元素。"""
     strat = run_el.find("./Strategy/StratHandle")
     strategy = strat.get("Name", "") if strat is not None else ""
     flow = strat.get("Flow", "") if strat is not None else ""
+
+    steps = run_el.findall("./Strategy/Step") or run_el.findall("./Step")
+    step_hooks: list[XprStepHook] = []
+    macro_map = macros or {}
+    for step_el in steps:
+        step_id = step_el.get("Id", "").strip()
+        for attr_name, hook_type in (
+            ("PreStepTclHook", "pre"),
+            ("PostStepTclHook", "post"),
+        ):
+            raw = step_el.get(attr_name, "").strip()
+            if not raw:
+                continue
+            resolved, category, exists = _classify_hook(raw, project_dir, macro_map)
+            step_hooks.append(
+                XprStepHook(
+                    step_id=step_id,
+                    hook_type=hook_type,
+                    path_raw=raw,
+                    path_resolved=resolved,
+                    category=category,
+                    exists=exists,
+                )
+            )
 
     return XprRun(
         run_id=run_el.get("Id", ""),
@@ -261,6 +350,7 @@ def _parse_run(run_el: ET.Element) -> XprRun:
         synth_run=run_el.get("SynthRun", ""),
         constrs_set=run_el.get("ConstrsSet", ""),
         src_set=run_el.get("SrcSet", ""),
+        step_hooks=tuple(step_hooks),
     )
 
 
@@ -340,7 +430,7 @@ def parse_xpr(file_path: str) -> XprConfig:
 
     # Runs
     for run_el in root.findall("./Runs/Run"):
-        cfg.runs.append(_parse_run(run_el))
+        cfg.runs.append(_parse_run(run_el, project_dir=project_dir, macros=macros))
 
     return cfg
 
@@ -418,6 +508,13 @@ def format_xpr(cfg: XprConfig) -> str:
         )
         if r.strategy:
             lines.append(f"      策略: {r.strategy}  ({r.flow})")
+        if r.step_hooks:
+            lines.append(f"      步骤钩子({len(r.step_hooks)} 个):")
+            for hook in r.step_hooks:
+                lines.append(
+                    f"        {hook.step_id} [{hook.hook_type.upper()}] "
+                    f"[{hook.category}] {hook.path_raw}"
+                )
 
     lines.append("")
     lines.append("路径宏展开（$PPRDIR 已确定展开，其余按 Vivado 默认布局推断）:")

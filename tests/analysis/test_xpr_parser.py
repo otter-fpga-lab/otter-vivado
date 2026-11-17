@@ -13,6 +13,7 @@ import pytest
 
 from vivado_mcp.analysis.xpr_parser import (
     XprConfig,
+    XprStepHook,
     format_xpr,
     parse_xpr,
 )
@@ -299,3 +300,116 @@ def test_empty_config_to_dict():
     assert d["part"] == ""
     assert d["files"] == []
     assert d["runs"] == []
+
+
+class TestStepHooks:
+    """Run 下 Step 的 PreStepTclHook / PostStepTclHook 解析与三类路径标注。"""
+
+    def test_sample_project_has_empty_step_hooks(self):
+        cfg = parse_xpr(_SAMPLE)
+        assert all(r.step_hooks == () for r in cfg.runs)
+        assert "步骤钩子" not in format_xpr(cfg)
+
+    def test_step_hooks_classified_and_formatted(self, tmp_path):
+        proj = tmp_path / "proj"
+        scripts = proj / "scripts"
+        scripts.mkdir(parents=True)
+        in_pre = scripts / "vivado_route_pre.tcl"
+        in_pre.write_text("set_param general.maxThreads 1\n", encoding="utf-8")
+        rel_post = scripts / "rel_post.tcl"
+        rel_post.write_text("set_param general.maxThreads 8\n", encoding="utf-8")
+        utils_pre = proj / "demo.srcs" / "utils_1" / "synth_pre.tcl"
+        utils_pre.parent.mkdir(parents=True)
+        utils_pre.write_text("# utils\n", encoding="utf-8")
+
+        outside = tmp_path / "temp_like" / "ext_hook.tcl"
+        outside.parent.mkdir(parents=True)
+        outside.write_text("# external or temp\n", encoding="utf-8")
+
+        xpr = proj / "demo.xpr"
+        xpr.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<Project Version="7" Minor="40">\n'
+            '  <Configuration><Option Name="Part" Val="xczu7ev-ffvc1156-2-e"/></Configuration>\n'
+            '  <Runs>\n'
+            '    <Run Id="synth_1" Type="Ft3:Synth" Part="xczu7ev-ffvc1156-2-e" State="current">\n'
+            '      <Strategy Version="1" Minor="2">\n'
+            '        <StratHandle Name="Vivado Synthesis Defaults" Flow="Vivado Synthesis 2024"/>\n'
+            '        <Step Id="synth_design" PreStepTclHook="$PSRCDIR/utils_1/synth_pre.tcl" '
+            'PostStepTclHook=""/>\n'
+            '      </Strategy>\n'
+            '    </Run>\n'
+            '    <Run Id="impl_1" Type="Ft2:EntireDesign" SynthRun="synth_1" State="current">\n'
+            '      <Strategy Version="1" Minor="2">\n'
+            '        <StratHandle Name="Vivado Implementation Defaults" '
+            'Flow="Vivado Implementation 2024"/>\n'
+            '        <Step Id="place_design" PostStepTclHook="scripts/rel_post.tcl"/>\n'
+            f'        <Step Id="route_design" '
+            f'PreStepTclHook="$PPRDIR/scripts/vivado_route_pre.tcl" '
+            f'PostStepTclHook="{outside.as_posix()}"/>\n'
+            '        <Step Id="write_bitstream" '
+            'PreStepTclHook="$PPRDIR/scripts/missing.tcl" '
+            'PostStepTclHook="$PPRDIR/../temp_like/ext_hook.tcl"/>\n'
+            '      </Strategy>\n'
+            '    </Run>\n'
+            '  </Runs>\n'
+            '</Project>\n',
+            encoding="utf-8",
+        )
+
+        cfg = parse_xpr(str(xpr))
+        by_id = {r.run_id: r for r in cfg.runs}
+
+        synth_hooks = by_id["synth_1"].step_hooks
+        assert synth_hooks == (
+            XprStepHook(
+                step_id="synth_design",
+                hook_type="pre",
+                path_raw="$PSRCDIR/utils_1/synth_pre.tcl",
+                path_resolved="$PSRCDIR/utils_1/synth_pre.tcl",
+                category="工程内",
+                exists=True,
+            ),
+        )
+
+        impl_hooks = by_id["impl_1"].step_hooks
+        assert len(impl_hooks) == 5
+        assert [(h.step_id, h.hook_type, h.category, h.exists) for h in impl_hooks] == [
+            ("place_design", "post", "工程内", True),
+            ("route_design", "pre", "工程内", True),
+            ("route_design", "post", "工程外/TEMP", True),
+            ("write_bitstream", "pre", "不存在", False),
+            ("write_bitstream", "post", "工程外/TEMP", True),
+        ]
+
+        d = cfg.to_dict()
+        impl_dict = next(r for r in d["runs"] if r["run_id"] == "impl_1")
+        assert len(impl_dict["step_hooks"]) == 5
+        assert impl_dict["step_hooks"][1]["category"] == "工程内"
+
+        text = format_xpr(cfg)
+        assert "步骤钩子(1 个):" in text
+        assert "步骤钩子(5 个):" in text
+        assert "route_design [PRE] [工程内] $PPRDIR/scripts/vivado_route_pre.tcl" in text
+        assert f"route_design [POST] [工程外/TEMP] {outside.as_posix()}" in text
+        assert "write_bitstream [PRE] [不存在] $PPRDIR/scripts/missing.tcl" in text
+
+    async def test_parse_xpr_mcp_tool_renders_hooks(self, tmp_path):
+        from vivado_mcp.tools.introspect_tools import parse_xpr as parse_xpr_tool
+
+        proj = tmp_path / "mcp_proj"
+        scripts = proj / "scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "pre.tcl").write_text("# pre\n", encoding="utf-8")
+        xpr = proj / "mcp_proj.xpr"
+        xpr.write_text(
+            '<Project Version="7" Minor="40"><Runs>'
+            '<Run Id="impl_1" Type="Ft2:EntireDesign"><Strategy>'
+            '<Step Id="route_design" PreStepTclHook="$PPRDIR/scripts/pre.tcl" '
+            'PostStepTclHook="C:/no_such_dir/post.tcl"/>'
+            '</Strategy></Run></Runs></Project>',
+            encoding="utf-8",
+        )
+        out = await parse_xpr_tool(str(xpr))
+        assert "route_design [PRE] [工程内] $PPRDIR/scripts/pre.tcl" in out
+        assert "route_design [POST] [不存在] C:/no_such_dir/post.tcl" in out
