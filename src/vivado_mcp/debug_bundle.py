@@ -122,7 +122,7 @@ async def export_debug_bundle(
         raise ValueError("checkpoint_path 必须是实际存在的 .dcp 文件")
     auto_output = output_dir is None
     if auto_output:
-        from vivado_mcp.project_layout import default_output_dir
+        from vivado_mcp.project_layout import default_output_dir, discard_reserved_debug_subdir
 
         if (
             session is None
@@ -136,6 +136,8 @@ async def export_debug_bundle(
     elif not isinstance(output_dir, str) or not output_dir or "\x00" in output_dir:
         raise ValueError("output_dir 必须是父目录已存在的新目录路径")
     destination = Path(output_dir).expanduser().absolute()
+    if auto_output:
+        discard_reserved_debug_subdir(destination)
     # mkdir 的排他语义拒绝已有目录/文件/链接；即使上次失败也使用新目录。
     destination.mkdir(parents=auto_output, exist_ok=False)
     destination = destination.resolve()

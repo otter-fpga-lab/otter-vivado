@@ -18,6 +18,7 @@ import hashlib
 import os
 import re
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -46,6 +47,9 @@ DEFAULT_DEBUG_SIZE_LIMIT_BYTES = 1024 * 1024 * 1024  # 1 GiB
 DEFAULT_HYGIENE_MAX_FILES = 10_000
 DEFAULT_HYGIENE_TIMEOUT_SECONDS = 2.0
 _LEFTOVER_HIDDEN_NAMES = (".vmcp", ".work", ".otter")
+_MAX_RESERVED_AUTO_DIRS = 1024
+_RESERVED_LOCK = threading.Lock()
+_RESERVED_AUTO_DIRS: dict[str, bool] = {}
 
 
 class LayoutError(ValueError):
@@ -463,6 +467,18 @@ def _candidate_names(topic: str, now: datetime | None):
         yield f"{base}_{index}"
 
 
+def consume_reserved_debug_subdir(path: str | os.PathLike) -> bool:
+    """若 ``path`` 为 ``create_parent=False`` 预留的自动输出目录，则消费并返回 True。"""
+    key = _norm_key(Path(path).expanduser())
+    with _RESERVED_LOCK:
+        return bool(_RESERVED_AUTO_DIRS.pop(key, False))
+
+
+def discard_reserved_debug_subdir(path: str | os.PathLike) -> None:
+    """在提交/校验失败时移除未使用的自动目录预留标记。"""
+    consume_reserved_debug_subdir(path)
+
+
 def reserve_debug_subdir(
     layout: ProjectLayout | dict,
     topic: str,
@@ -474,14 +490,23 @@ def reserve_debug_subdir(
 
     ``create_parent=True``（默认）时确保父目录 ``debug_dir`` 存在，供要求
     “父目录存在的新目录”的严格导出入口使用；传 ``create_parent=False`` 时
-    保持只读，留待调用方在校验通过后创建。
+    保持只读并登记自动预留标记，留待写盘阶段按需创建父目录。
     """
     debug_dir = _debug_dir_of(layout)
     if create_parent:
         debug_dir.mkdir(parents=True, exist_ok=True)
     for name in _candidate_names(topic, now):
         candidate = debug_dir / name
-        if not os.path.lexists(candidate):
+        if os.path.lexists(candidate):
+            continue
+        key = _norm_key(candidate)
+        with _RESERVED_LOCK:
+            if key in _RESERVED_AUTO_DIRS:
+                continue
+            if not create_parent:
+                _RESERVED_AUTO_DIRS[key] = True
+                while len(_RESERVED_AUTO_DIRS) > _MAX_RESERVED_AUTO_DIRS:
+                    _RESERVED_AUTO_DIRS.pop(next(iter(_RESERVED_AUTO_DIRS)))
             return candidate
     raise LayoutError(f"{debug_dir} 下同名调试目录过多，请清理或显式指定 output_dir。")
 

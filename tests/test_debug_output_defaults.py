@@ -170,6 +170,7 @@ async def test_export_ila_default_and_explicit_output_dir(tmp_path):
     output = Path(result["output_dir"])
     assert output.parent == root / "Debug" and output.name.endswith("_ila")
     assert not output.exists()  # 由导出执行时以排他语义创建
+    assert not (root / "Debug").exists()  # 校验与真正写盘前也不提前创建 Debug/
     assert service.requests[0]["params"] == {"core": "hw_ila_1", "output_dir": str(output)}
 
     explicit = tmp_path / "explicit"
@@ -188,9 +189,12 @@ async def test_export_ila_without_project_reports_chinese_error(tmp_path):
 class FakeExperiment:
     created: list[str] = []
 
-    def __init__(self, service, spec, output_dir, expected_revision, *, owner):
+    def __init__(
+        self, service, spec, output_dir, expected_revision, *,
+        owner, create_parents=False,
+    ):
         self.root = Path(output_dir)
-        self.root.mkdir(exist_ok=False)
+        self.root.mkdir(parents=create_parents, exist_ok=False)
         FakeExperiment.created.append(output_dir)
 
     def snapshot(self):
@@ -309,6 +313,18 @@ async def test_rejected_export_ila_and_experiment_do_not_create_debug_dir(tmp_pa
             ))
             assert "IDLE" in not_idle["error"]
         assert not (root / "Debug").exists()
+
+        # 3b. export_ila 在后台 _execute 找不到核时，也不创建 Debug/
+        with patch.object(debug_tools, "_service", AsyncMock(return_value=service2)):
+            bad_core = json.loads(await debug_tools.debug_action(
+                action="export_ila", params={"core": "missing_ila"},
+                expected_revision=rev2, session_id="board",
+            ))
+            assert bad_core["status"] == "running"
+            await service2.wait_idle()
+        op = service2.snapshot()["operations"][-1]
+        assert op["status"] == "failed" and "调试核" in op["error"]
+        assert not (root / "Debug").exists()
     finally:
         await service2.close()
 
@@ -318,3 +334,76 @@ async def test_rejected_export_ila_and_experiment_do_not_create_debug_dir(tmp_pa
     with pytest.raises(RuntimeError, match="会话不可用"):
         await export_debug_bundle(dead_session, str(dcp), None, PART)
     assert not (root / "Debug").exists()
+
+
+async def test_export_ila_and_experiment_create_debug_only_when_writing(tmp_path):
+    from tests.analysis.test_ila_waveform import VCD
+    from vivado_mcp.debug_backend import HardwareDebugBackend
+    from vivado_mcp.debug_service import DebugService
+    from vivado_mcp.tools import debug_tools
+
+    root, xpr, _ = _project(tmp_path)
+    session = LayoutSession(xpr)
+    backend = HardwareDebugBackend(session)
+    hw = {
+        "target": "t0", "device": "xc7k325t", "part": PART,
+        "ilas": [{"name": "hw_ila_1", "uuid": "u-1", "status": "IDLE", "probes": []}],
+        "vios": [],
+    }
+    backend.inspect = AsyncMock(return_value=hw)
+
+    async def fake_mutate(operation, body, target, device, core, expected_uuid, **values):
+        Path(values["capture_path"]).write_text(VCD, encoding="utf-8")
+        return ["hw_ila_1", "hw_ila_data_1", "u-1", "2", "0", "2024.2"]
+
+    backend._mutate = AsyncMock(side_effect=fake_mutate)
+    service = DebugService(session, backend=backend, poll_interval=60.0)
+    service._state["control"] = "ai"
+    service._state["connection"] = "connected"
+    service._state["selection"] = {"target": "t0", "device": "xc7k325t"}
+    service._state["hardware"] = hw
+    try:
+        # 显式传入不存在父目录时仍保持严格拒绝（不自动建父目录）
+        rev = service.snapshot()["revision"]
+        explicit_bad = tmp_path / "no_such_parent" / "out"
+        with patch.object(debug_tools, "_service", AsyncMock(return_value=service)):
+            res = json.loads(await debug_tools.debug_action(
+                action="export_ila",
+                params={"core": "hw_ila_1", "output_dir": str(explicit_bad)},
+                expected_revision=rev, session_id="board",
+            ))
+            assert res["status"] == "running"
+            await service.wait_idle()
+        assert not explicit_bad.parent.exists()
+        assert not (root / "Debug").exists()
+
+        # 刷新后省略 output_dir：仅在真实写盘阶段按需创建 Debug/ 与导出目录
+        service._state["connection"] = "connected"
+        service._state["hardware"] = hw
+        rev = service.snapshot()["revision"]
+        with patch.object(debug_tools, "_service", AsyncMock(return_value=service)):
+            ok = json.loads(await debug_tools.debug_action(
+                action="export_ila", params={"core": "hw_ila_1"},
+                expected_revision=rev, session_id="board",
+            ))
+            assert ok["status"] == "running"
+            await service.wait_idle()
+        out_dir = Path(ok["output_dir"])
+        assert out_dir.parent == root / "Debug"
+        assert (out_dir / "manifest.json").is_file()
+
+        # 真实 DebugExperiment 在校验通过后才创建 Debug/ 下的实验目录
+        rev = service.snapshot()["revision"]
+        valid_spec = {
+            "title": "real exp",
+            "steps": [{"id": "r", "kind": "ready", "label": "ready"}],
+        }
+        with patch.object(debug_tools, "_service", AsyncMock(return_value=service)):
+            exp_res = json.loads(await debug_tools.create_debug_experiment(
+                spec=valid_spec, expected_revision=rev, session_id="board",
+            ))
+        exp_dir = Path(exp_res["experiment_dir"])
+        assert exp_dir.parent == root / "Debug"
+        assert (exp_dir / "experiment.json").is_file()
+    finally:
+        await service.close()

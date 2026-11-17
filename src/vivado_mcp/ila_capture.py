@@ -6,15 +6,19 @@ from pathlib import Path
 
 from vivado_mcp import tcl_scripts as scripts
 from vivado_mcp.debug_bundle import _receipt, _save_new, fingerprint
+from vivado_mcp.project_layout import consume_reserved_debug_subdir
 
 
-async def export_capture(backend, target, device, core, output_dir, expected_uuid=None):
+async def export_capture(
+    backend, target, device, core, output_dir, expected_uuid=None, *, create_parents: bool = False,
+):
     """共享服务持有操作锁时调用；写入新目录，记录本次返回的数据对象。"""
     backend._selection(target, device, core, expected_uuid)
     if not isinstance(output_dir, str) or not output_dir or "\x00" in output_dir:
         raise ValueError("output_dir 必须是消费者工程内的新目录路径")
     directory = Path(output_dir).expanduser().absolute()
-    directory.mkdir(exist_ok=False)
+    auto_parents = bool(create_parents) or consume_reserved_debug_subdir(directory)
+    directory.mkdir(parents=auto_parents, exist_ok=False)
     directory = directory.resolve()
     record = {
         "schema": "otter.ila-capture.v1", "source": "live",

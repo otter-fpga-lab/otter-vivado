@@ -14,6 +14,7 @@ from pathlib import Path
 
 from vivado_mcp.debug_bundle import _save_new
 from vivado_mcp.debug_service import _PARAMETERS, _topology
+from vivado_mcp.project_layout import consume_reserved_debug_subdir
 
 _TERMINAL = {'completed', 'aborted', 'failed', 'unknown'}
 _ACTIONS = {'configure_ila', 'write_vio', 'arm_ila', 'export_ila'}
@@ -88,7 +89,10 @@ class _Aborted(Exception):
 class DebugExperiment:
     """单个共享服务上的本地状态机；消费者适配器须在同一事件循环调用。"""
 
-    def __init__(self, service, spec, output_dir, expected_revision, *, owner='ai'):
+    def __init__(
+        self, service, spec, output_dir, expected_revision, *,
+        owner='ai', create_parents=False,
+    ):
         if asyncio.get_running_loop() is not service._loop:
             raise RuntimeError('实验必须在共享服务所属事件循环创建')
         self._spec, self.spec_sha = validate_experiment(spec)
@@ -112,7 +116,8 @@ class DebugExperiment:
         if not isinstance(output_dir, str) or not output_dir or '\x00' in output_dir:
             raise ValueError('output_dir 必须为消费者工程内新目录')
         self.root = Path(output_dir).expanduser().absolute()
-        self.root.mkdir(exist_ok=False)
+        auto_parents = bool(create_parents) or consume_reserved_debug_subdir(self.root)
+        self.root.mkdir(parents=auto_parents, exist_ok=False)
         self.root = self.root.resolve()
         self.id = uuid.uuid4().hex
         self.revision = 0

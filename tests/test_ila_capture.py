@@ -67,3 +67,35 @@ async def test_registered_read_contract_and_blocked_output(tmp_path):
     assert not result['events'] and len(result['signals']) == 3
     result = await call('read_ila_waveform', {'file_path': str(path), 'signal_ids': ['missing']})
     assert result['status'] == 'blocked'
+
+
+async def test_export_capture_strict_explicit_vs_auto_parents(tmp_path):
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from vivado_mcp.ila_capture import export_capture
+
+    api, _ = backend()
+    with patch.object(api, '_selection', side_effect=ValueError('bad target')):
+        with pytest.raises(ValueError, match='bad target'):
+            await export_capture(
+                api, TARGET, DEVICE, 'hw_ila_1',
+                str(tmp_path / 'auto_bad' / 'cap'), create_parents=True,
+            )
+    assert not (tmp_path / 'auto_bad').exists()
+
+    with pytest.raises(FileNotFoundError):
+        await export_capture(api, TARGET, DEVICE, 'hw_ila_1', str(tmp_path / 'missing' / 'cap'))
+    assert not (tmp_path / 'missing').exists()
+
+    async def write_vcd(operation, body, target, device, core, expected_uuid, **values):
+        Path(values['capture_path']).write_text(VCD, encoding='utf-8')
+        return ['hw_ila_1', 'hw_ila_data_1', 'u-1', '2', '0', '2024.2']
+
+    api._mutate = AsyncMock(side_effect=write_vcd)
+    auto_dir = tmp_path / 'Debug' / '20261117_000000_ila'
+    record = await export_capture(
+        api, TARGET, DEVICE, 'hw_ila_1', str(auto_dir), create_parents=True,
+    )
+    assert record['status'] == 'succeeded'
+    assert (auto_dir / 'manifest.json').is_file()

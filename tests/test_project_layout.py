@@ -12,8 +12,10 @@ import pytest
 from vivado_mcp.project_layout import (
     LayoutError,
     _scan_dir_size,
+    consume_reserved_debug_subdir,
     default_output_dir,
     default_vivado_cwd,
+    discard_reserved_debug_subdir,
     find_project_from_path,
     inspect_layout_hygiene,
     new_debug_subdir,
@@ -387,9 +389,15 @@ def test_hygiene_scan_bounds_max_files_and_timeout(monkeypatch, tmp_path):
 def test_reserve_debug_subdir_can_skip_creating_parent(tmp_path):
     root, _ = _project(tmp_path)
     layout = resolve_layout(root)
-    path = reserve_debug_subdir(layout, "bundle", now=NOW, create_parent=False)
-    assert path == root / "Debug" / "20261117_093005_bundle"
+    path1 = reserve_debug_subdir(layout, "bundle", now=NOW, create_parent=False)
+    path2 = reserve_debug_subdir(layout, "bundle", now=NOW, create_parent=False)
+    assert path1 == root / "Debug" / "20261117_093005_bundle"
+    assert path2 == root / "Debug" / "20261117_093005_bundle_2"
     assert not (root / "Debug").exists()
+    assert consume_reserved_debug_subdir(path1) is True
+    assert consume_reserved_debug_subdir(path1) is False
+    discard_reserved_debug_subdir(path2)
+    assert consume_reserved_debug_subdir(path2) is False
 
 
 async def test_get_project_layout_tool_includes_hygiene(tmp_path):

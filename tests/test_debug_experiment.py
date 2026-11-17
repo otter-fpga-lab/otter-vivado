@@ -369,3 +369,33 @@ async def test_wall_clock_jump_cannot_bypass_post_run_refresh(service, tmp_path,
     await action(service, 'refresh')
     command(exp, 'redo', {'expected_debug_revision': service.snapshot()['revision']})
     assert exp.status == 'created' and exp.attempt == 2
+
+
+async def test_experiment_strict_explicit_vs_create_parents(service, tmp_path):
+    from vivado_mcp.debug_experiment import DebugExperiment
+
+    await select(service)
+    with pytest.raises(ValueError, match='title/steps'):
+        DebugExperiment(
+            service, {}, str(tmp_path / 'never_created' / 'exp'),
+            service.snapshot()['revision'], owner='manual', create_parents=True,
+        )
+    assert not (tmp_path / 'never_created').exists()
+
+    with pytest.raises(FileNotFoundError):
+        DebugExperiment(
+            service, {'title': 'strict', 'steps': [READY]},
+            str(tmp_path / 'missing_parent' / 'exp'), service.snapshot()['revision'],
+            owner='manual',
+        )
+    assert not (tmp_path / 'missing_parent').exists()
+
+    auto_root = tmp_path / 'Debug' / '20261117_000000_experiment'
+    exp = DebugExperiment(
+        service, {'title': 'auto parent', 'steps': [READY]},
+        str(auto_root), service.snapshot()['revision'], owner='manual', create_parents=True,
+    )
+    try:
+        assert (auto_root / 'experiment.json').is_file()
+    finally:
+        await exp.close()
