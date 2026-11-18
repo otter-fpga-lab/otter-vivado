@@ -666,6 +666,7 @@ async def xdc_lint(
     - DUPLICATE_PORT:同 port 被多次约束不同引脚(后者覆盖)
     - CLOCK_NO_PERIOD:create_clock 缺 -period
     - PIN_CONFLICT_CROSS_FILE:多个 XDC 文件间的引脚冲突
+    - TCL_CONTROL_FLOW:XDC 中禁止使用 if/for/foreach/while/proc/switch 等 Tcl 控制流或过程(UG903)
 
     Args:
         xdc_paths: 要检查的 XDC 文件路径列表。若不传,则从当前 session 的项目里

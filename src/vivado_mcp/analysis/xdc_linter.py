@@ -9,6 +9,7 @@ NSTD-1/UCIO-1 之类的问题。检查维度:
 4. create_clock 缺少 -period
 5. set_property 语法明显错误(空引脚名等)
 6. 编码降级提示:文件既非 UTF-8 也非 GBK 时按替换符降级解码,检查结果可能不完整
+7. Tcl 控制流与过程:XDC 中禁止使用 if/for/foreach/while/proc/switch(依据 UG903)
 
 所有检查基于原始 XDC 文件文本,不依赖 Vivado Tcl 解析器。
 """
@@ -74,6 +75,327 @@ _TRAD_IOSTD_RE = re.compile(
 # create_clock 检测(含 -period 则合法)
 _CREATE_CLOCK_RE = re.compile(r"create_clock\b(.*)", re.IGNORECASE)
 
+_MAX_TCL_DEPTH = 32
+_TCL_CONTROL_FLOW_KEYWORDS = frozenset(
+    {"if", "for", "foreach", "while", "proc", "switch"}
+)
+
+
+def _is_line_continuation(text: str, i: int) -> int:
+    """若 ``text[i:]`` 为 Tcl 反斜杠续行，返回跳过的字符数（2 或 3），否则 0。"""
+    if text[i] != "\\":
+        return 0
+    if i + 1 < len(text) and text[i + 1] == "\n":
+        return 2
+    if i + 2 < len(text) and text[i + 1 : i + 3] == "\r\n":
+        return 3
+    return 0
+
+
+def _skip_tcl_comment(text: str, i: int, line: int) -> tuple[int, int]:
+    """跳过从 ``#`` 开始的 Tcl 注释（奇数个行尾反斜杠延续到下一行）。"""
+    n = len(text)
+    while i < n:
+        cont = _is_line_continuation(text, i)
+        if cont:
+            i += cont
+            line += 1
+            continue
+        if text[i] == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if text[i] == "\n":
+            return i + 1, line + 1
+        i += 1
+    return n, line
+
+
+def _read_tcl_braced(text: str, i: int, line: int) -> tuple[str, int, int]:
+    """读取 ``{...}``，返回 ``(inner, next_i, next_line)``；``text[i]`` 须为 ``{``。"""
+    n = len(text)
+    i += 1
+    start = i
+    depth = 1
+    while i < n and depth > 0:
+        cont = _is_line_continuation(text, i)
+        if cont:
+            line += 1
+            i += cont
+            continue
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == "\n":
+            line += 1
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i], i + 1, line
+        i += 1
+    return text[start:n], n, line
+
+
+def _read_tcl_quoted(
+    text: str,
+    i: int,
+    line: int,
+    *,
+    depth: int,
+    out: list[tuple[int, str]],
+) -> tuple[str, bool, int, int]:
+    """读取 ``"..."``，扫描其中的 ``[...]`` 命令替换而不把字面文本当成命令。"""
+    n = len(text)
+    i += 1
+    start = i
+    has_subst = False
+    while i < n:
+        cont = _is_line_continuation(text, i)
+        if cont:
+            has_subst = True
+            line += 1
+            i += cont
+            continue
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            has_subst = True
+            i += 2
+            continue
+        if ch == "[":
+            has_subst = True
+            i, line = _scan_tcl_script(
+                text,
+                i + 1,
+                line,
+                stop_at_bracket=True,
+                depth=depth + 1,
+                out=out,
+            )
+            continue
+        if ch == "\n":
+            line += 1
+        elif ch == '"':
+            return text[start:i], has_subst, i + 1, line
+        i += 1
+    return text[start:n], has_subst, n, line
+
+
+def _read_tcl_bare(
+    text: str,
+    i: int,
+    line: int,
+    *,
+    stop_at_bracket: bool,
+    depth: int,
+    out: list[tuple[int, str]],
+) -> tuple[str, bool, int, int]:
+    """读取裸词，扫描其中嵌入的 ``[...]`` 命令替换。"""
+    n = len(text)
+    start = i
+    has_subst = False
+    while i < n:
+        ch = text[i]
+        if ch in (" ", "\t", "\r", "\n", ";"):
+            break
+        if stop_at_bracket and ch == "]":
+            break
+        if _is_line_continuation(text, i):
+            break
+        if ch == "\\" and i + 1 < n:
+            has_subst = True
+            i += 2
+            continue
+        if ch == "[":
+            has_subst = True
+            i, line = _scan_tcl_script(
+                text,
+                i + 1,
+                line,
+                stop_at_bracket=True,
+                depth=depth + 1,
+                out=out,
+            )
+            continue
+        i += 1
+    return text[start:i], has_subst, i, line
+
+
+def _iter_nested_script_blocks(
+    cmd_name: str,
+    words: list[tuple[str, str, int]],
+) -> list[tuple[str, int]]:
+    """提取明显作为 Tcl 脚本体传递的 ``{...}`` 参数块（不扫描数据花括号）。"""
+    blocks: list[tuple[str, int]] = []
+    if cmd_name == "proc":
+        if len(words) >= 4 and words[3][0] == "brace":
+            blocks.append((words[3][1], words[3][2]))
+    elif cmd_name == "while":
+        if len(words) >= 3 and words[2][0] == "brace":
+            blocks.append((words[2][1], words[2][2]))
+    elif cmd_name == "for":
+        for idx in (1, 3, 4):
+            if idx < len(words) and words[idx][0] == "brace":
+                blocks.append((words[idx][1], words[idx][2]))
+    elif cmd_name == "foreach":
+        if len(words) >= 4 and words[-1][0] == "brace":
+            blocks.append((words[-1][1], words[-1][2]))
+    elif cmd_name == "if":
+        idx = 1
+        while idx < len(words):
+            idx += 1  # 跳过条件表达式
+            if idx < len(words) and words[idx][1] == "then":
+                idx += 1
+            if idx < len(words):
+                if words[idx][0] == "brace":
+                    blocks.append((words[idx][1], words[idx][2]))
+                idx += 1
+            if idx >= len(words):
+                break
+            tag = words[idx][1]
+            if tag == "elseif":
+                idx += 1
+                continue
+            if tag == "else":
+                idx += 1
+            if idx < len(words) and words[idx][0] == "brace":
+                blocks.append((words[idx][1], words[idx][2]))
+            break
+    elif cmd_name == "catch":
+        for kind, val, wline in words[1:]:
+            if kind == "bare" and val.startswith("-"):
+                continue
+            if kind == "brace":
+                blocks.append((val, wline))
+            break
+    elif cmd_name == "eval":
+        if len(words) == 2 and words[1][0] == "brace":
+            blocks.append((words[1][1], words[1][2]))
+    elif cmd_name == "uplevel":
+        if len(words) == 2 and words[1][0] == "brace":
+            blocks.append((words[1][1], words[1][2]))
+        elif len(words) == 3 and words[2][0] == "brace":
+            blocks.append((words[2][1], words[2][2]))
+    elif cmd_name == "try":
+        if len(words) >= 2 and words[1][0] == "brace":
+            blocks.append((words[1][1], words[1][2]))
+    elif cmd_name == "namespace":
+        if len(words) >= 4 and words[1][1] == "eval" and words[3][0] == "brace":
+            blocks.append((words[3][1], words[3][2]))
+    return blocks
+
+
+def _scan_tcl_script(
+    text: str,
+    i: int,
+    line: int,
+    *,
+    stop_at_bracket: bool,
+    depth: int,
+    out: list[tuple[int, str]],
+) -> tuple[int, int]:
+    """按 Tcl 词法拆分命令，在命令首词位置检测控制流与 ``proc``。"""
+    n = len(text)
+    if depth > _MAX_TCL_DEPTH:
+        return n, line
+
+    while i < n:
+        # 跳过命令间的空白、空分号与续行
+        while i < n:
+            cont = _is_line_continuation(text, i)
+            if cont:
+                i += cont
+                line += 1
+            elif text[i] in (" ", "\t", "\r", "\n", ";"):
+                if text[i] == "\n":
+                    line += 1
+                i += 1
+            else:
+                break
+        if i >= n:
+            break
+        if stop_at_bracket and text[i] == "]":
+            return i + 1, line
+        if text[i] == "#":
+            i, line = _skip_tcl_comment(text, i, line)
+            continue
+
+        cmd_line = line
+        words: list[tuple[str, str, int]] = []
+        closed_bracket = False
+
+        while i < n:
+            while i < n:
+                cont = _is_line_continuation(text, i)
+                if cont:
+                    i += cont
+                    line += 1
+                elif text[i] in (" ", "\t", "\r"):
+                    i += 1
+                else:
+                    break
+            if i >= n:
+                break
+            ch = text[i]
+            if stop_at_bracket and ch == "]":
+                closed_bracket = True
+                break
+            if ch == ";":
+                i += 1
+                break
+            if ch == "\n":
+                line += 1
+                i += 1
+                break
+
+            word_line = line
+            if ch == "{":
+                inner, i, line = _read_tcl_braced(text, i, line)
+                words.append(("brace", inner, word_line))
+            elif ch == '"':
+                inner, has_subst, i, line = _read_tcl_quoted(
+                    text, i, line, depth=depth, out=out
+                )
+                words.append(("quote", "" if has_subst else inner, word_line))
+            else:
+                bare, has_subst, i, line = _read_tcl_bare(
+                    text,
+                    i,
+                    line,
+                    stop_at_bracket=stop_at_bracket,
+                    depth=depth,
+                    out=out,
+                )
+                words.append(("bare", "" if has_subst else bare, word_line))
+
+        if words:
+            cmd_raw = words[0][1]
+            cmd_name = cmd_raw[2:] if cmd_raw.startswith("::") else cmd_raw
+            if cmd_name in _TCL_CONTROL_FLOW_KEYWORDS:
+                out.append((cmd_line, cmd_name))
+            for block_text, block_line in _iter_nested_script_blocks(cmd_name, words):
+                _scan_tcl_script(
+                    block_text,
+                    0,
+                    block_line,
+                    stop_at_bracket=False,
+                    depth=depth + 1,
+                    out=out,
+                )
+
+        if closed_bracket:
+            return i + 1, line
+
+    return n, line
+
+
+def _find_tcl_control_flow(text: str) -> list[tuple[int, str]]:
+    """扫描 XDC 文本中处于命令位置的 Tcl 控制流与 ``proc``，返回 ``[(line, keyword)]``。"""
+    hits: list[tuple[int, str]] = []
+    _scan_tcl_script(text, 0, 1, stop_at_bracket=False, depth=0, out=hits)
+    return hits
+
 
 def _split_ports(port: str) -> list[str]:
     """把 get_ports 的多端口列表(如 "a b c")拆成单个端口名。"""
@@ -93,20 +415,12 @@ def _glob_match(pattern: str, name: str) -> bool:
     return re.fullmatch(regex, name) is not None
 
 
-def _parse_constraints_with_iostd(path: Path) -> tuple[
+def _parse_constraints_from_text(text: str) -> tuple[
     list[tuple[int, str, str, str | None]],   # (line, port, pin, iostandard|None)  -dict 和传统
     list[tuple[int, str, str]],                # (line, port, iostandard) 独立 IOSTANDARD 语句
     list[tuple[int, str]],                     # (line, raw) create_clock 行
-    str | None,                                # 探测到的编码,None = 降级解码(替换符)
 ]:
-    """扫描 XDC 文件,返回三类结构化结果 + 编码探测结果。
-
-    - 每个 PACKAGE_PIN 约束(含 -dict 内联的 IOSTANDARD)
-    - 独立的 set_property IOSTANDARD 语句
-    - create_clock 语句
-    - 编码名(None 表示走了替换符降级解码,文本可能不完整)
-    """
-    text, encoding = _read_xdc_text(path)
+    """从已解码的 XDC 文本扫描三类约束结果。"""
     pin_constraints: list[tuple[int, str, str, str | None]] = []
     iostd_constraints: list[tuple[int, str, str]] = []
     create_clock_lines: list[tuple[int, str]] = []
@@ -157,6 +471,24 @@ def _parse_constraints_with_iostd(path: Path) -> tuple[
         if m_clk:
             create_clock_lines.append((lineno, line.strip()))
 
+    return pin_constraints, iostd_constraints, create_clock_lines
+
+
+def _parse_constraints_with_iostd(path: Path) -> tuple[
+    list[tuple[int, str, str, str | None]],   # (line, port, pin, iostandard|None)  -dict 和传统
+    list[tuple[int, str, str]],                # (line, port, iostandard) 独立 IOSTANDARD 语句
+    list[tuple[int, str]],                     # (line, raw) create_clock 行
+    str | None,                                # 探测到的编码,None = 降级解码(替换符)
+]:
+    """扫描 XDC 文件,返回三类结构化结果 + 编码探测结果。
+
+    - 每个 PACKAGE_PIN 约束(含 -dict 内联的 IOSTANDARD)
+    - 独立的 set_property IOSTANDARD 语句
+    - create_clock 语句
+    - 编码名(None 表示走了替换符降级解码,文本可能不完整)
+    """
+    text, encoding = _read_xdc_text(path)
+    pin_constraints, iostd_constraints, create_clock_lines = _parse_constraints_from_text(text)
     return pin_constraints, iostd_constraints, create_clock_lines, encoding
 
 
@@ -185,7 +517,8 @@ def lint_xdc_file(
     issues: list[LintIssue] = []
     source_file = str(path_obj)
 
-    pin_cs, iostd_cs, create_clock_lines, encoding = _parse_constraints_with_iostd(path_obj)
+    text, encoding = _read_xdc_text(path_obj)
+    pin_cs, iostd_cs, create_clock_lines = _parse_constraints_from_text(text)
 
     # 规则 0: 编码降级要在用户可见报告里露出(不只进日志)——
     # 替换符可能已破坏部分约束文本,下游检查结果可能不完整,fixer 也会拒写该文件
@@ -271,6 +604,24 @@ def lint_xdc_file(
                 file=source_file,
                 line=lineno,
             ))
+
+    # 规则 5: XDC 中出现 Tcl 控制流或过程 (if/for/foreach/while/proc/switch)
+    for lineno, kw in _find_tcl_control_flow(text):
+        issues.append(LintIssue(
+            severity="error",
+            rule="TCL_CONTROL_FLOW",
+            message=(
+                f"XDC 中不允许使用 Tcl 控制流/过程 `{kw}`"
+                "（依据 AMD Vivado UG903 Using Constraints: 标准 XDC 仅支持约束命令及"
+                "有限内置 Tcl 命令 set/list/expr，不支持控制流与 proc，可能导致引脚等约束不生效）。"
+                "修复建议: 拆成独立 XDC 文件，或改用 USED_IN 属性"
+                "（USED_IN_SYNTHESIS / USED_IN_IMPLEMENTATION）/ 按 run 选择约束集（CONSTRSET）；"
+                "若必须使用 Tcl 控制流，请迁入 unmanaged Tcl 约束文件"
+                "（read_xdc -unmanaged 或在约束集中将 file_type 设为 Tcl）。"
+            ),
+            file=source_file,
+            line=lineno,
+        ))
 
     return issues
 
