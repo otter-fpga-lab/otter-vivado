@@ -3,7 +3,7 @@
 Status: CLOSED_WAITING_FOR_REAL_USE（0.3.27：工程目录约定、会话 cwd/spawn 探测、wait_run、静默退出取证与 Windows/Py3.13 修复已收口）
 Target: otter-fpga-lab/otter-vivado
 Basis: 针对现场 2024.2 工程踩坑（高线程 route 静默崩溃、.vmcp/.work/单数 script 残留、spawn 污染业务仓根、attach 被长命令阻塞、Python 3.13 ctime 误报）完成工具能力、诊断取证、Skill/PITFALLS 文档与测试兼容性闭环
-Next: 重启各客户端的 MCP 以加载新代码，现场用真实工程验证 get_project_layout、start_session 的 cwd、wait_run、静默退出取证；业务工程中残留的 .vmcp/.work 由用户授权后移入 99_垃圾堆
+Next: 重启各客户端的 MCP 以加载新代码，现场用真实工程验证 get_project_layout、start_session 的 cwd、wait_run、静默退出取证。2026-11-18 经用户授权，业务工程残留的 .vmcp/.work/.Xil 已按批次移入各自的 99_垃圾堆（附清单）；PRJ_DEBUG_XCZU7EV\.work 正被 hw_server 占用，暂未移动。用户级 Vivado_init.tcl 的全局线程数已从 32 降到 8，原文件归档在 User_Library 99_垃圾堆 的同一批次中
 
 ## 本轮维护收口（2026-11-17，0.3.27）
 
