@@ -229,17 +229,36 @@ def _scan_tcl_commands(
     line = start_line
 
     while i < n:
-        # 跳过命令之间的空白与空分隔符
-        while i < n and text[i] in (" ", "\t", "\r", "\n", ";"):
-            if text[i] == "\n":
+        # 跳过命令之间的空白、空分隔符与续行
+        while i < n:
+            cont = _is_line_continuation(text, i)
+            if cont:
+                i += cont
                 line += 1
-            i += 1
+            elif text[i] in (" ", "\t", "\r", "\n", ";"):
+                if text[i] == "\n":
+                    line += 1
+                i += 1
+            else:
+                break
         if i >= n:
             break
 
-        # Tcl 注释仅在命令起始处有效
+        # Tcl 注释仅在命令起始处有效；行尾奇数个反斜杠会延续注释到下一物理行
         if text[i] == "#":
-            while i < n and text[i] != "\n":
+            while i < n:
+                cont = _is_line_continuation(text, i)
+                if cont:
+                    i += cont
+                    line += 1
+                    continue
+                if text[i] == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if text[i] == "\n":
+                    i += 1
+                    line += 1
+                    break
                 i += 1
             continue
 
@@ -301,7 +320,7 @@ def parse_general_max_threads(content: str) -> list[dict[str, Any]]:
     - 位置参数与 ``-name ... -value ...``（含乱序、``-quiet``）
     - 花括号/引号写法（如 ``{general.maxThreads}``、``"general.maxThreads"``、``{ 32 }``）
     - 分号分隔多命令、``catch { ... }`` / ``if { ... } { ... }`` 嵌套块
-    - 忽略整行 ``#`` 与 ``;#`` 注释
+    - 忽略整行 ``#`` 与 ``;#`` 注释（含行尾 ``\\`` 续行注释）
     """
     matches: list[dict[str, Any]] = []
     _scan_tcl_commands(content or "", 1, depth=0, out=matches)
