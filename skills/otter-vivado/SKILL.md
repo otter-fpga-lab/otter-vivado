@@ -15,7 +15,7 @@ description: 操作 AMD Vivado 工程、本地或远程综合与实现、查看�
 
 - 过程文件（日志、串口记录、抓图、VCD、导出包）放 `debug_dir/YYYYMMDD_主题/`，自写 Tcl/Python 放 `scripts_dir`，关键结论只追加到 `notes_file`。`export_ila`、`create_debug_experiment`、`export_debug_bundle` 不传 `output_dir` 时自动落在这里。
 - 构建按 Vivado 原生 `.runs/.gen` 编译覆盖，不建工作树、工程副本或 `%TEMP%` 备份。需要保留的多版本固件放 `download_dir`，并附说明。
-- 不创建 `.work`、`.vmcp`、`.otter` 等隐藏目录，已有的也不当草稿箱。不给 run 挂指向 TEMP 或工程外的 `TCL.PRE/POST`；临时参数用完即还原。
+- 不创建 `.work`、`.vmcp`、`.otter` 等隐藏目录，已有的也不当草稿箱（工程根已被 `.gitignore` 且有仓库脚本约定的 `.work/` 在 `get_project_layout` 中降级为 `info` 提示）。不给 run 挂指向 TEMP 或工程外的 `TCL.PRE/POST`；临时参数用完即还原。
 - 过程目录用完移入 `trash_dir`（最近的 `99_垃圾堆`）并附清单；为 null 时留在 Debug，不擅自删除。
 - Vivado 自身的 `.Xil/.jou/.log` 落在会话 cwd，默认与 GUI 相同的 `%APPDATA%\Xilinx\Vivado`，无须再 `cd` 到仓根或 TEMP。
 

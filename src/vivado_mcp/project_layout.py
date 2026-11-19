@@ -20,6 +20,8 @@ import re
 import sys
 import threading
 import time
+from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -47,6 +49,18 @@ DEFAULT_DEBUG_SIZE_LIMIT_BYTES = 1024 * 1024 * 1024  # 1 GiB
 DEFAULT_HYGIENE_MAX_FILES = 10_000
 DEFAULT_HYGIENE_TIMEOUT_SECONDS = 2.0
 _LEFTOVER_HIDDEN_NAMES = (".vmcp", ".work", ".otter")
+_CONVENTION_SCRIPT_EXTS = frozenset({".ps1", ".py", ".sh", ".tcl", ".bat", ".cmd", ".mjs"})
+_CONVENTION_SCRIPT_NAMES = frozenset({"makefile", "gnumakefile"})
+_CONVENTION_SCRIPT_DIRS = ("tools", "scripts")
+_CONVENTION_SKIP_DIRS = frozenset({
+    ".git", ".work", ".venv", "venv", "__pycache__", "node_modules", ".pytest_cache",
+})
+_CONVENTION_SCRIPT_MAX_DEPTH = 3
+_CONVENTION_SCRIPT_MAX_FILES = 200
+_CONVENTION_SCRIPT_MAX_BYTES = 256 * 1024
+_GITIGNORE_MAX_BYTES = 512 * 1024
+_WORK_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_.-])\.work(?![A-Za-z0-9_.-])")
+_IS_JUNCTION = getattr(os.path, "isjunction", None)
 _MAX_RESERVED_AUTO_DIRS = 1024
 _RESERVED_LOCK = threading.Lock()
 _RESERVED_AUTO_DIRS: dict[str, bool] = {}
@@ -347,6 +361,332 @@ def _scan_dir_size(
     return _DirScanStats(total_bytes, scanned_files, False, False)
 
 
+def _is_link_or_junction(path: Path | os.DirEntry) -> bool:
+    """检查路径是否为符号链接或 Windows 目录联接（junction）。"""
+    if path.is_symlink():
+        return True
+    if _IS_JUNCTION is not None:
+        try:
+            return bool(_IS_JUNCTION(path))
+        except OSError:
+            return False
+    return False
+
+
+def _find_git_chain(directory: Path) -> tuple[Path | None, list[Path]]:
+    """向上查找 .git 仓根，返回 (git_root, 从仓根到 directory 的目录链)。"""
+    chain: list[Path] = []
+    for current in (directory, *directory.parents):
+        chain.append(current)
+        if os.path.lexists(current / ".git"):
+            return current, list(reversed(chain))
+    return None, [directory]
+
+
+def _compile_gitignore_glob(pattern: str) -> re.Pattern[str]:
+    """将单条 .gitignore 模式转换为完整匹配正则。"""
+    parts: list[str] = ["^"]
+    i = 0
+    length = len(pattern)
+    while i < length:
+        ch = pattern[i]
+        if ch == "*" and i + 1 < length and pattern[i + 1] == "*":
+            if i + 2 < length and pattern[i + 2] == "/":
+                parts.append("(?:.+/)?")
+                i += 3
+                continue
+            if i + 2 == length:
+                parts.append(".*")
+                i += 2
+                continue
+        if ch == "*":
+            parts.append("[^/]*")
+            i += 1
+        elif ch == "?":
+            parts.append("[^/]")
+            i += 1
+        elif ch == "[":
+            end = i + 1
+            if end < length and pattern[end] in ("!", "^"):
+                end += 1
+            if end < length and pattern[end] == "]":
+                end += 1
+            while end < length and pattern[end] != "]":
+                end += 1
+            if end < length and "/" not in pattern[i:end + 1]:
+                inner = pattern[i + 1:end]
+                if inner.startswith("!"):
+                    inner = "^" + inner[1:]
+                parts.append(f"[{inner}]")
+                i = end + 1
+            else:
+                parts.append(r"\[")
+                i += 1
+        elif ch == "\\" and i + 1 < length:
+            parts.append(re.escape(pattern[i + 1]))
+            i += 2
+        else:
+            parts.append(re.escape(ch))
+            i += 1
+    parts.append("$")
+    flags = re.IGNORECASE if os.name == "nt" else 0
+    return re.compile("".join(parts), flags)
+
+
+def _parse_gitignore_rule(raw_line: str) -> tuple[bool, bool, bool, re.Pattern[str]] | None:
+    """解析单行 .gitignore 规则，返回 (negated, dir_only, anchored, regex)。"""
+    line = re.sub(r"(?<!\\) +$", "", raw_line.rstrip("\r\n"))
+    if not line or line.startswith("#"):
+        return None
+    negated = False
+    if line.startswith("!"):
+        negated = True
+        line = line[1:]
+    if not line:
+        return None
+    dir_only = line.endswith("/")
+    pattern = line.rstrip("/")
+    if not pattern:
+        return None
+    anchored = pattern.startswith("/") or "/" in pattern
+    pattern = pattern.lstrip("/")
+    if not pattern:
+        return None
+    return negated, dir_only, anchored, _compile_gitignore_glob(pattern)
+
+
+def _read_bounded_text(path: Path, max_bytes: int) -> str | None:
+    """只读并受字节上限保护地读取 UTF-8 文本，跳过符号链接。"""
+    if _is_link_or_junction(path) or not path.is_file():
+        return None
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(max_bytes)
+    except OSError:
+        return None
+    return raw.decode("utf-8-sig", errors="replace")
+
+
+def _eval_gitignore_target(
+    target_path: Path,
+    *,
+    is_dir: bool,
+    parsed_chain: list[tuple[Path, list[tuple[bool, bool, bool, re.Pattern[str]]]]],
+) -> bool:
+    ignored = False
+    for base_dir, rules in parsed_chain:
+        if not rules:
+            continue
+        rel_posix = target_path.relative_to(base_dir).as_posix()
+        for negated, dir_only, anchored, regex in rules:
+            if dir_only and not is_dir:
+                continue
+            subject = rel_posix if anchored else target_path.name
+            if regex.match(subject):
+                ignored = not negated
+    return ignored
+
+
+def _is_gitignored(candidate: Path, *, git_chain: list[Path]) -> bool:
+    """沿从仓根到 candidate.parent 的 .gitignore 链求值是否被忽略（含祖先目录与否定规则）。"""
+    candidate_is_dir = candidate.is_dir() and not _is_link_or_junction(candidate)
+    parsed_chain: list[tuple[Path, list[tuple[bool, bool, bool, re.Pattern[str]]]]] = []
+    for base_dir in git_chain:
+        text = _read_bounded_text(base_dir / ".gitignore", _GITIGNORE_MAX_BYTES)
+        if text is None:
+            parsed_chain.append((base_dir, []))
+            continue
+        rules = [
+            rule
+            for raw_line in text.splitlines()
+            if (rule := _parse_gitignore_rule(raw_line)) is not None
+        ]
+        parsed_chain.append((base_dir, rules))
+
+    for idx in range(1, len(git_chain)):
+        if _eval_gitignore_target(
+            git_chain[idx], is_dir=True, parsed_chain=parsed_chain[:idx],
+        ):
+            return True
+
+    return _eval_gitignore_target(
+        candidate, is_dir=candidate_is_dir, parsed_chain=parsed_chain,
+    )
+
+
+def _is_convention_script_name(name: str) -> bool:
+    lower = name.lower()
+    return lower in _CONVENTION_SCRIPT_NAMES or Path(lower).suffix in _CONVENTION_SCRIPT_EXTS
+
+
+def _iter_repo_scripts(
+    scan_roots: list[Path],
+    *,
+    max_files: int,
+    deadline: float,
+) -> Iterator[Path]:
+    """在工程根与仓根下广度优先收集根级脚本及 tools/、scripts/ 内脚本。"""
+    if max_files <= 0:
+        return
+    emitted = 0
+    seen_files: set[str] = set()
+    queue: deque[tuple[Path, int]] = deque()
+    seen_dirs: set[str] = set()
+
+    for root in scan_roots:
+        if time.monotonic() >= deadline or emitted >= max_files:
+            return
+        try:
+            with os.scandir(root) as entries:
+                root_files = sorted(
+                    (e for e in entries if e.is_file(follow_symlinks=False)),
+                    key=lambda e: e.name.lower(),
+                )
+        except OSError:
+            root_files = []
+        for entry in root_files:
+            if not _is_convention_script_name(entry.name):
+                continue
+            path = Path(entry.path)
+            key = _norm_key(path)
+            if key not in seen_files:
+                seen_files.add(key)
+                emitted += 1
+                yield path
+                if emitted >= max_files:
+                    return
+        for sub_name in _CONVENTION_SCRIPT_DIRS:
+            sub = root / sub_name
+            sub_key = _norm_key(sub)
+            if sub_key not in seen_dirs and sub.is_dir() and not _is_link_or_junction(sub):
+                seen_dirs.add(sub_key)
+                queue.append((sub, 1))
+
+    while queue:
+        if time.monotonic() >= deadline or emitted >= max_files:
+            return
+        current, depth = queue.popleft()
+        try:
+            with os.scandir(current) as entries:
+                sorted_entries = sorted(entries, key=lambda e: e.name.lower())
+        except OSError:
+            continue
+        for entry in sorted_entries:
+            if time.monotonic() >= deadline:
+                return
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if (
+                        not _is_link_or_junction(entry)
+                        and depth < _CONVENTION_SCRIPT_MAX_DEPTH
+                        and entry.name not in _CONVENTION_SKIP_DIRS
+                    ):
+                        sub_path = Path(entry.path)
+                        sub_key = _norm_key(sub_path)
+                        if sub_key not in seen_dirs:
+                            seen_dirs.add(sub_key)
+                            queue.append((sub_path, depth + 1))
+                elif (
+                    entry.is_file(follow_symlinks=False)
+                    and _is_convention_script_name(entry.name)
+                ):
+                    path = Path(entry.path)
+                    key = _norm_key(path)
+                    if key not in seen_files:
+                        seen_files.add(key)
+                        emitted += 1
+                        yield path
+                        if emitted >= max_files:
+                            return
+            except OSError:
+                continue
+
+
+def _detect_rtl_studio_delegation(scan_root: Path, *, deadline: float) -> bool:
+    """兼容 otter-rtl-library：识别 tools/rtl_common.py -> studio_bridge -> rtl_studio 委托。"""
+    tools_dir = scan_root / "tools"
+    if not tools_dir.is_dir() or _is_link_or_junction(tools_dir):
+        return False
+    common_text = _read_bounded_text(tools_dir / "rtl_common.py", _CONVENTION_SCRIPT_MAX_BYTES)
+    bridge_text = _read_bounded_text(tools_dir / "studio_bridge.py", _CONVENTION_SCRIPT_MAX_BYTES)
+    if not common_text or not bridge_text:
+        return False
+    delegates_common = (
+        "studio_bridge" in common_text
+        and re.search(r"""load\(\s*["']rtl_common["']\s*\)""", common_text) is not None
+    )
+    uses_studio_context = "rtl_studio" in bridge_text and "LibraryContext" in bridge_text
+    if not (delegates_common and uses_studio_context):
+        return False
+
+    env_home = os.environ.get("RTL_STUDIO_HOME", "").strip()
+    studio_root = Path(env_home).expanduser() if env_home else scan_root.parent / "otter-rtl-studio"
+    if os.path.lexists(studio_root) and _is_link_or_junction(studio_root):
+        return False
+    studio_pkg = studio_root / "rtl_studio"
+    if not os.path.lexists(studio_pkg):
+        return True
+    if _is_link_or_junction(studio_pkg) or not studio_pkg.is_dir():
+        return False
+
+    checked = 0
+    try:
+        with os.scandir(studio_pkg) as entries:
+            py_files = sorted(
+                (
+                    e for e in entries
+                    if (
+                        e.is_file(follow_symlinks=False)
+                        and not _is_link_or_junction(e)
+                        and e.name.endswith(".py")
+                    )
+                ),
+                key=lambda e: e.name.lower(),
+            )
+    except OSError:
+        return False
+    for entry in py_files:
+        if checked >= 50 or time.monotonic() >= deadline:
+            break
+        checked += 1
+        text = _read_bounded_text(Path(entry.path), _CONVENTION_SCRIPT_MAX_BYTES)
+        if text and _WORK_TOKEN_RE.search(text):
+            return True
+    return False
+
+
+def _has_repo_work_convention(scan_roots: list[Path], *, timeout_seconds: float) -> bool:
+    """检查仓库脚本中是否明确约定使用独立的 .work 路径/词元。"""
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    for script_path in _iter_repo_scripts(
+        scan_roots, max_files=_CONVENTION_SCRIPT_MAX_FILES, deadline=deadline,
+    ):
+        if time.monotonic() >= deadline:
+            return False
+        text = _read_bounded_text(script_path, _CONVENTION_SCRIPT_MAX_BYTES)
+        if text and _WORK_TOKEN_RE.search(text):
+            return True
+    for scan_root in scan_roots:
+        if time.monotonic() >= deadline:
+            return False
+        if _detect_rtl_studio_delegation(scan_root, deadline=deadline):
+            return True
+    return False
+
+
+def _is_convention_work_dir(candidate: Path, *, timeout_seconds: float) -> bool:
+    """判断工程根 .work 目录是否同时满足已 .gitignore 忽略且有仓库脚本明确约定。"""
+    if not candidate.is_dir() or _is_link_or_junction(candidate):
+        return False
+    git_root, git_chain = _find_git_chain(candidate.parent)
+    if not _is_gitignored(candidate, git_chain=git_chain):
+        return False
+    scan_roots = [candidate.parent]
+    if git_root is not None and _norm_key(git_root) != _norm_key(candidate.parent):
+        scan_roots.append(git_root)
+    return _has_repo_work_convention(scan_roots, timeout_seconds=timeout_seconds)
+
+
 def inspect_layout_hygiene(
     layout: ProjectLayout,
     *,
@@ -369,8 +709,33 @@ def inspect_layout_hygiene(
             if key in seen_paths or not os.path.lexists(candidate):
                 continue
             seen_paths.add(key)
+            if (
+                location == "project_root"
+                and name == ".work"
+                and _is_convention_work_dir(candidate, timeout_seconds=timeout_seconds)
+            ):
+                debug_display = _display(layout.debug_dir, layout.project_root)
+                items.append({
+                    "kind": "convention_work_dir",
+                    "severity": "info",
+                    "name": name,
+                    "location": location,
+                    "path": str(candidate),
+                    "message": (
+                        f"在{loc_label}发现 {name}：{candidate}"
+                        "（已列入 .gitignore 且仓库脚本中有明确约定，降级为提示；"
+                        "智能体仍不得用作草稿，Vivado 过程文件走 Debug/）。"
+                    ),
+                    "suggestion": (
+                        f"此 {name} 为仓库脚本约定的构建目录，可按原有脚本流程保留；"
+                        "智能体仍不得用作草稿，"
+                        f"Vivado 过程文件请放 {debug_display}<YYYYMMDD_主题>/。"
+                    ),
+                })
+                continue
             items.append({
                 "kind": "leftover_hidden_dir",
+                "severity": "warning",
                 "name": name,
                 "location": location,
                 "path": str(candidate),
@@ -385,6 +750,7 @@ def inspect_layout_hygiene(
     if singular_script.is_dir() and _norm_key(singular_script) != _norm_key(layout.scripts_dir):
         items.append({
             "kind": "singular_script_dir",
+            "severity": "warning",
             "path": str(singular_script),
             "expected_scripts_dir": str(layout.scripts_dir),
             "message": (
@@ -408,6 +774,7 @@ def inspect_layout_hygiene(
             suffix = "（扫描受文件数上限或超时保护提前结束）" if scan.truncated else ""
             items.append({
                 "kind": "oversized_debug_dir",
+                "severity": "warning",
                 "path": str(layout.debug_dir),
                 "total_bytes": scan.total_bytes,
                 "threshold_bytes": debug_size_limit_bytes,
@@ -429,6 +796,7 @@ def inspect_layout_hygiene(
             )
             items.append({
                 "kind": "debug_dir_scan_truncated",
+                "severity": "warning",
                 "path": str(layout.debug_dir),
                 "total_bytes": scan.total_bytes,
                 "threshold_bytes": debug_size_limit_bytes,

@@ -6,6 +6,7 @@
 - Skill、CLI/MCP 与 UI 共用本仓源码；接入方式和参数以接入文档及实际实现为准，不复制业务树或增加同步平台。
 - 按改动做必要验证，纯文档只核对内容、参数、链接与差异；宿主发现、EDA 和板卡证据分别报告。
 - 可审阅工作分仓显式暂存并本地提交，推送按用户授权；具体工程和设备操作由当前任务授权决定。
+- 隐藏工作目录与过程目录约束遵循[项目通用条款第 5 条](../otter-engineering-guide/skills/engineering-guide/references/project-agents-clauses.md#5-不建隐藏工作目录)。
 
 ## Git 提交身份
 

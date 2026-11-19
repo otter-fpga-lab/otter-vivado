@@ -187,7 +187,7 @@ wait_run(run_name="synth_1", until="synth_design", timeout_seconds=600, session_
 | `get_next_suggestion` | **0.3.2** 11 档决策表:没项目 → open/create,没顶层 → set_property TOP,综合完成 → run_implementation...每档附可执行命令 |
 | `get_project_info` | **0.3.0** 一次拿齐项目摸底:名称/part/顶层/源文件/XDC/IP/runs 状态 |
 | `get_pre_commit_summary` | **0.3.4** 生成 markdown 工程摘要直接贴 commit body:项目/时序 WNS+WHS/资源/CW/READY-WARN-BLOCK 门禁 |
-| `get_project_layout` | 只读解析工程目录约定（`Debug/`、`Debug/NOTES.md`、`Debug/scripts/`、`Download/`、Vivado 运行目录、最近的 `99_垃圾堆`）与简短规则；`project` 留空取会话当前工程，工程根 `otter-vivado.toml` 的 `[layout]` 可覆盖，不创建目录；同时返回只读 `hygiene` 列表提示残留 `.vmcp`/`.work`、误建 `script/` 与超限 `debug_dir` |
+| `get_project_layout` | 只读解析工程目录约定（`Debug/`、`Debug/NOTES.md`、`Debug/scripts/`、`Download/`、Vivado 运行目录、最近的 `99_垃圾堆`）与简短规则；`project` 留空取会话当前工程，工程根 `otter-vivado.toml` 的 `[layout]` 可覆盖，不创建目录；同时返回只读 `hygiene` 列表提示残留 `.vmcp`/`.work`、误建 `script/` 与超限 `debug_dir`（工程根同时被 `.gitignore` 忽略且有仓库脚本约定的 `.work` 降级为 `severity="info"` 的 `convention_work_dir`） |
 
 用户对目录的偏好写进 .xpr 旁的 `otter-vivado.toml`，以后各会话直接读取，不必每轮口头重复。所有键都可省略，相对路径相对于工程根；未知键或语法错误会直接报错：
 
