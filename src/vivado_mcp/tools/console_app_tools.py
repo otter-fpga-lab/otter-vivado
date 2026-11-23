@@ -1,12 +1,14 @@
-"""Antigravity Vivado 控制台 MCP App 服务端资源、入口与零 Token App-Only 工具。"""
+"""Antigravity / 浏览器 Vivado 控制台 MCP App 服务端资源、入口与零 Token 工具。"""
 
 from __future__ import annotations
 
 import asyncio
 import copy
 import json
+import logging
 import os
 import time
+import webbrowser
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,8 @@ from vivado_mcp.batch_jobs import _decode_utf8_or_fallback, _is_link_or_junction
 from vivado_mcp.config import list_vivado_installations
 from vivado_mcp.server import AppContext, get_app_context, mcp
 
+logger = logging.getLogger(__name__)
+
 CONSOLE_APP_URI = "ui://otter-vivado/console.html"
 _APP_HTML_ENV = "VIVADO_CONSOLE_APP_HTML"
 _MAX_STRUCTURED_BYTES = 240 * 1024
@@ -26,7 +30,8 @@ _MAX_REPORT_RESPONSE_BYTES = 240 * 1024
 _ALLOWED_REPORT_EXTS = frozenset({".rpt", ".log", ".txt"})
 
 
-def _read_console_html() -> str:
+def read_console_html() -> str:
+    """读取单文件控制台 HTML；支持 VIVADO_CONSOLE_APP_HTML 环境变量热覆盖。"""
     override = os.environ.get(_APP_HTML_ENV, "").strip()
     if override:
         path = Path(override).expanduser().resolve(strict=True)
@@ -44,7 +49,7 @@ def _read_console_html() -> str:
 )
 def vivado_console_html() -> str:
     """提供自包含单文件 Vivado 控制台 MCP App HTML。"""
-    return _read_console_html()
+    return read_console_html()
 
 
 def _sanitize_monitor_snapshot(snap: dict[str, Any]) -> dict[str, Any]:
@@ -145,11 +150,12 @@ def _shrink_payload(
     return trimmed
 
 
-async def _collect_console_state(
+async def collect_console_state(
     app_ctx: AppContext,
     *,
     inspect_path: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None, str]:
+    """收集 Vivado 控制台完整聚合状态（MCP App 与 Local Web 共用）。"""
     inspect_error = ""
     inspected_entry: dict[str, Any] | None = None
     if inspect_path and inspect_path.strip():
@@ -311,6 +317,65 @@ def _read_guarded_report(
     return result
 
 
+async def execute_console_action(
+    app_ctx: AppContext,
+    *,
+    action: str,
+    path: str | None = None,
+    job_id: str | None = None,
+    report_path: str | None = None,
+    max_lines: int = 300,
+) -> tuple[str, dict[str, Any]]:
+    """执行控制台交互操作并返回 ``(text_summary, structured_payload)``。"""
+    act = (action or "").strip()
+    if act == "inspect_path":
+        if not path or not path.strip():
+            raise ValueError("inspect_path 操作需要传入 path")
+        entry = await asyncio.to_thread(
+            app_ctx.batch_jobs.inspect_and_remember, path.strip()
+        )
+        state, _, _ = await collect_console_state(app_ctx)
+        state["selected_inspected_path"] = entry["target_path"]
+        return "inspected", {"action": act, "inspected": entry, "state": state}
+
+    if act == "remove_inspected":
+        if not path or not path.strip():
+            raise ValueError("remove_inspected 操作需要传入 path")
+        removed = app_ctx.batch_jobs.remove_inspected(path.strip())
+        state, _, _ = await collect_console_state(app_ctx)
+        return "removed", {"action": act, "removed": removed, "state": state}
+
+    if act == "read_report":
+        if not report_path or not report_path.strip():
+            raise ValueError("read_report 操作需要传入 report_path")
+        preview = await asyncio.to_thread(
+            _read_guarded_report, app_ctx, report_path.strip(), max_lines
+        )
+        return f"read {preview['name']}", {"action": act, "report": preview}
+
+    if act == "cancel_job":
+        if not job_id or not job_id.strip():
+            raise ValueError("cancel_job 操作需要传入 job_id")
+        job = await app_ctx.batch_jobs.cancel_job(job_id.strip())
+        state, _, _ = await collect_console_state(app_ctx)
+        return f"cancelled {job.job_id}", {
+            "action": act,
+            "job": job.to_dict(),
+            "state": state,
+        }
+
+    if act == "clear_finished":
+        cleared = app_ctx.batch_jobs.clear_finished()
+        state, _, _ = await collect_console_state(app_ctx)
+        return f"cleared {cleared}", {
+            "action": act,
+            "cleared": cleared,
+            "state": state,
+        }
+
+    raise ValueError(f"不支持的控制台操作: {act!r}")
+
+
 @mcp.tool(
     name="open_vivado_console",
     title="Vivado 控制台",
@@ -327,11 +392,17 @@ def _read_guarded_report(
 async def open_vivado_console(
     inspect_path: str | None = None,
     job_id: str | None = None,
+    open_browser: bool = False,
     ctx: Context = None,
 ) -> CallToolResult:
-    """打开 Vivado 控制台侧边栏/全局界面，聚合工程构建、Batch/OOC、离线报告与 ILA 调试状态。"""
+    """打开 Vivado 控制台侧边栏/全局界面，或以 open_browser=True 在本机浏览器打开同款界面。
+
+    Antigravity 客户端默认使用内置 MCP App 侧栏/全局视图（open_browser=False）；
+    Codex / Claude Code / Cursor 等无 MCP App 宿主的客户端可传 open_browser=True，
+    由本机回环 HTTP 服务在系统浏览器中打开同一控制台并零 Token 查看。
+    """
     app_ctx = get_app_context(ctx)
-    state, inspected_entry, inspect_error = await _collect_console_state(
+    state, inspected_entry, inspect_error = await collect_console_state(
         app_ctx, inspect_path=inspect_path
     )
     if job_id:
@@ -340,6 +411,27 @@ async def open_vivado_console(
         state["selected_inspected_path"] = inspected_entry["target_path"]
     if inspect_error:
         state["inspect_error"] = inspect_error
+
+    browser_url = ""
+    if open_browser:
+        from vivado_mcp.console_http import ConsoleHttpServer
+
+        loop = asyncio.get_running_loop()
+        if app_ctx.console_http is None:
+            app_ctx.console_http = ConsoleHttpServer(app_ctx, loop=loop)
+        else:
+            app_ctx.console_http.set_loop(loop)
+        browser_url = await asyncio.to_thread(app_ctx.console_http.start)
+        app_ctx.console_http.set_selection(
+            job_id=job_id,
+            inspected_path=inspected_entry["target_path"] if inspected_entry else None,
+        )
+        state["url"] = browser_url
+        try:
+            await asyncio.to_thread(webbrowser.open, browser_url)
+        except Exception as exc:
+            logger.warning("自动打开浏览器失败: %s", exc)
+
     state = _shrink_payload(state)
 
     running_jobs = sum(1 for j in state["batch_jobs"] if j.get("status") == "running")
@@ -348,6 +440,8 @@ async def open_vivado_console(
         f"Batch/OOC 任务 {len(state['batch_jobs'])} 项（运行中 {running_jobs}），"
         f"离线检视 {len(state['inspected_targets'])} 项，活跃会话 {len(state['sessions'])} 个。"
     )
+    if browser_url:
+        summary_text += f" 本地浏览器地址: {browser_url}"
     if inspect_error:
         summary_text += f" [检视失败: {inspect_error}]"
 
@@ -364,7 +458,7 @@ async def vivado_console_state(
 ) -> CallToolResult:
     """App-only：刷新并返回 Vivado 控制台完整聚合状态（对模型隐藏，零上下文开销）。"""
     app_ctx = get_app_context(ctx)
-    state, inspected_entry, inspect_error = await _collect_console_state(
+    state, inspected_entry, inspect_error = await collect_console_state(
         app_ctx, inspect_path=inspect_path
     )
     if inspected_entry is not None:
@@ -390,61 +484,19 @@ async def vivado_console_action(
 ) -> CallToolResult:
     """App-only：执行控制台交互操作（离线检视、移除、受限报告预览、取消任务、清理记录）。"""
     app_ctx = get_app_context(ctx)
-    act = (action or "").strip()
     try:
-        if act == "inspect_path":
-            if not path or not path.strip():
-                raise ValueError("inspect_path 操作需要传入 path")
-            entry = await asyncio.to_thread(
-                app_ctx.batch_jobs.inspect_and_remember, path.strip()
-            )
-            state, _, _ = await _collect_console_state(app_ctx)
-            state["selected_inspected_path"] = entry["target_path"]
-            return CallToolResult(
-                content=[TextContent(type="text", text="inspected")],
-                structuredContent={"action": act, "inspected": entry, "state": state},
-            )
-
-        if act == "remove_inspected":
-            if not path or not path.strip():
-                raise ValueError("remove_inspected 操作需要传入 path")
-            removed = app_ctx.batch_jobs.remove_inspected(path.strip())
-            state, _, _ = await _collect_console_state(app_ctx)
-            return CallToolResult(
-                content=[TextContent(type="text", text="removed")],
-                structuredContent={"action": act, "removed": removed, "state": state},
-            )
-
-        if act == "read_report":
-            if not report_path or not report_path.strip():
-                raise ValueError("read_report 操作需要传入 report_path")
-            preview = await asyncio.to_thread(
-                _read_guarded_report, app_ctx, report_path.strip(), max_lines
-            )
-            return CallToolResult(
-                content=[TextContent(type="text", text=f"read {preview['name']}")],
-                structuredContent={"action": act, "report": preview},
-            )
-
-        if act == "cancel_job":
-            if not job_id or not job_id.strip():
-                raise ValueError("cancel_job 操作需要传入 job_id")
-            job = await app_ctx.batch_jobs.cancel_job(job_id.strip())
-            state, _, _ = await _collect_console_state(app_ctx)
-            return CallToolResult(
-                content=[TextContent(type="text", text=f"cancelled {job.job_id}")],
-                structuredContent={"action": act, "job": job.to_dict(), "state": state},
-            )
-
-        if act == "clear_finished":
-            cleared = app_ctx.batch_jobs.clear_finished()
-            state, _, _ = await _collect_console_state(app_ctx)
-            return CallToolResult(
-                content=[TextContent(type="text", text=f"cleared {cleared}")],
-                structuredContent={"action": act, "cleared": cleared, "state": state},
-            )
-
-        raise ValueError(f"不支持的控制台操作: {act!r}")
+        summary, structured = await execute_console_action(
+            app_ctx,
+            action=action,
+            path=path,
+            job_id=job_id,
+            report_path=report_path,
+            max_lines=max_lines,
+        )
+        return CallToolResult(
+            content=[TextContent(type="text", text=summary)],
+            structuredContent=structured,
+        )
     except KeyError:
         return CallToolResult(
             content=[TextContent(type="text", text=f"未找到任务: {job_id}")],

@@ -1,8 +1,16 @@
-import {
-  App,
-  applyDocumentTheme,
-  applyHostStyleVariables,
-} from "@modelcontextprotocol/ext-apps";
+import { App } from "@modelcontextprotocol/ext-apps";
+
+const THEMES = [
+  { id: "macos", name: "macOS 深色", source: "Apple HIG 系统色" },
+  { id: "macos-light", name: "macOS 浅色", source: "Apple HIG 浅色" },
+  { id: "graphite", name: "macOS 石墨", source: "Apple HIG · Graphite" },
+  { id: "geist", name: "Geist", source: "Vercel Geist" },
+  { id: "tokyo-night", name: "Tokyo Night", source: "enkia/tokyo-night" },
+  { id: "catppuccin", name: "Catppuccin Mocha", source: "catppuccin/catppuccin" },
+  { id: "nord", name: "Nord", source: "nordtheme/nord" },
+];
+
+const THEME_STORAGE_KEY = "otter_vivado_console_theme";
 
 const RESOURCE_KEYS = {
   lut: ["Slice LUTs", "CLB LUTs"],
@@ -31,12 +39,18 @@ const STATUS_LABELS = {
   unknown: "未知",
 };
 
-const app = new App({ name: "Vivado Console", version: "1.0.0" }, {});
+const app = new App({ name: "Vivado Console", version: "2.0.0" }, {});
 
 const ui = {
   state: null,
+  transportMode: "mcp", // "mcp" | "http"
   hostCaps: {},
+  theme: "macos",
+  manualTheme: false,
+  themeMenuOpen: false,
   selectedUid: "",
+  pendingScrollSelection: false,
+  lastSelectionSeq: 0,
   activeTab: "overview", // overview | diagnostics | reports | sessions
   statusFilter: "", // "" | running | completed | failed
   railSearch: "",
@@ -46,6 +60,8 @@ const ui = {
   reportPreview: null, // { path, name, total_lines, returned_lines, start_line, truncated, tail, lines, loading, error }
   reportReqId: 0,
   inFlightState: false,
+  autoRefresh: true,
+  connState: "connecting",
   autoTimer: null,
   toastTimer: null,
 };
@@ -133,10 +149,85 @@ function showToast(message, kind = "info") {
 }
 
 function setConnState(state, text) {
+  ui.connState = state;
   const badge = byId("conn-badge");
   if (!badge) return;
   badge.dataset.state = state;
   badge.textContent = text;
+}
+
+function getThemeMeta(themeId) {
+  return THEMES.find((t) => t.id === themeId) || THEMES[0];
+}
+
+function renderThemeMenu() {
+  const menu = byId("theme-menu");
+  if (!menu) return;
+  const itemsHtml = THEMES.map(
+    (t) => `
+      <button
+        type="button"
+        role="menuitemradio"
+        aria-checked="${ui.theme === t.id ? "true" : "false"}"
+        class="menu-item theme-item${ui.theme === t.id ? " checked" : ""}"
+        data-theme-id="${escapeHtml(t.id)}"
+        title="${escapeHtml(t.name)} · ${escapeHtml(t.source)}"
+      >
+        <span class="menu-check" aria-hidden="true">${
+          ui.theme === t.id
+            ? '<svg viewBox="0 0 12 12" width="12" height="12" fill="none"><path d="M2.2 6.4 4.8 9l5-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+            : ""
+        }</span>
+        <span class="theme-preview" data-swatch="${escapeHtml(t.id)}" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span class="theme-text">
+          <span class="theme-name">${escapeHtml(t.name)}</span>
+          <span class="theme-source">${escapeHtml(t.source)}</span>
+        </span>
+      </button>
+    `
+  ).join("");
+  menu.innerHTML = `<div class="menu-label">外观主题</div>${itemsHtml}`;
+}
+
+function setThemeMenuOpen(open) {
+  ui.themeMenuOpen = Boolean(open);
+  const menu = byId("theme-menu");
+  const btn = byId("btn-theme");
+  if (menu) menu.hidden = !ui.themeMenuOpen;
+  if (btn) btn.setAttribute("aria-expanded", ui.themeMenuOpen ? "true" : "false");
+}
+
+function applyTheme(themeId, { manual = false } = {}) {
+  const meta = getThemeMeta(themeId);
+  ui.theme = meta.id;
+  if (manual) {
+    ui.manualTheme = true;
+    if (ui.transportMode === "http") {
+      try {
+        window.localStorage?.setItem(THEME_STORAGE_KEY, meta.id);
+      } catch {
+        // 忽略受限存储上下文
+      }
+    }
+  }
+  document.documentElement.dataset.theme = meta.id;
+  const sw = byId("theme-trigger-swatch");
+  if (sw) sw.dataset.swatch = meta.id;
+  const triggerName = byId("theme-trigger-name");
+  if (triggerName) triggerName.textContent = meta.name;
+  const sbTheme = byId("sb-theme");
+  if (sbTheme) sbTheme.textContent = meta.name;
+  renderThemeMenu();
+}
+
+function readStoredTheme() {
+  try {
+    const saved = window.localStorage?.getItem(THEME_STORAGE_KEY) || "";
+    if (THEMES.some((t) => t.id === saved)) return saved;
+  } catch {
+    // ignore
+  }
+  return "";
 }
 
 function extractMonitorTiming(monitor) {
@@ -236,7 +327,7 @@ function buildItems(state) {
     items.push({
       uid: `run:${mon.session_id}:${mon.run_name}:${mon.target_step}`,
       category: "run_monitor",
-      categoryLabel: "工程构建 Runs",
+      categoryLabel: "工程构建",
       kindBadge: mon.target_step || "run",
       title: `${mon.run_name} · ${run.top || run.project || mon.session_id}`,
       subtitle: `${mon.session_id} · ${run.status || mon.connection || ""}`,
@@ -274,7 +365,7 @@ function buildItems(state) {
       uid: `job:${job.job_id}`,
       jobId: job.job_id,
       category: "batch_job",
-      categoryLabel: "Batch / OOC 任务",
+      categoryLabel: "Batch / OOC",
       kindBadge: isOoc ? "OOC 综合" : "Batch Tcl",
       title: job.top || basename(job.tcl_path) || job.job_id,
       subtitle: `${job.part || "未指定 Part"} · ${job.job_id}`,
@@ -309,16 +400,16 @@ function buildItems(state) {
       uid: `inspected:${insp.target_path}`,
       targetPath: insp.target_path,
       category: "inspected",
-      categoryLabel: "离线工程 / 报告",
+      categoryLabel: "离线目录",
       kindBadge: kindLabel,
       title: insp.project || insp.top || basename(insp.target_path),
-      subtitle: `${insp.part || "未识别 Part"} · ${insp.target_path}`,
+      subtitle: `${insp.part || "未识别 Part"} · ${basename(insp.target_path)}`,
       status: insp.status || "unknown",
       top: insp.top || "",
       part: insp.part || "",
       project: insp.project || "",
       version: insp.vivado_version || "",
-      elapsedText: insp.inspected_at ? `检视于 ${fmtTime(insp.inspected_at)}` : "—",
+      elapsedText: insp.inspected_at ? fmtTime(insp.inspected_at) : "—",
       progressPct: null,
       timing: insp.timing || { wns: null, tns: null, whs: null, ths: null, met: null, parse_status: "missing" },
       utilization: insp.utilization || { lut: null, ff: null, bram: null, dsp: null },
@@ -355,7 +446,13 @@ function buildItems(state) {
       progressPct: null,
       timing: { wns: null, tns: null, whs: null, ths: null, met: null, parse_status: "missing" },
       utilization: { lut: null, ff: null, bram: null, dsp: null },
-      diagnostics: { errors: dbg.error ? 1 : 0, critical_warnings: 0, warnings: 0, all_issues: dbg.error ? [{ severity: "ERROR", id: "DEBUG", count: 1, line: 0, message: dbg.error }] : [], warning_items: [] },
+      diagnostics: {
+        errors: dbg.error ? 1 : 0,
+        critical_warnings: 0,
+        warnings: 0,
+        all_issues: dbg.error ? [{ severity: "ERROR", id: "DEBUG", count: 1, line: 0, message: dbg.error }] : [],
+        warning_items: [],
+      },
       reports: [],
       phases: [],
       currentPhase: "",
@@ -369,7 +466,7 @@ function buildItems(state) {
   return items;
 }
 
-function updateSummaryCounts(items) {
+function updateSummaryAndStatus(items) {
   let running = 0;
   let completed = 0;
   let failed = 0;
@@ -379,16 +476,95 @@ function updateSummaryCounts(items) {
     else if (b === "completed") completed += 1;
     else if (b === "failed") failed += 1;
   }
+  byId("cnt-all").textContent = String(items.length);
   byId("cnt-running").textContent = String(running);
   byId("cnt-completed").textContent = String(completed);
   byId("cnt-failed").textContent = String(failed);
 
-  for (const chip of document.querySelectorAll(".sum-chip")) {
+  for (const chip of document.querySelectorAll(".filter-chip")) {
     chip.dataset.active = ui.statusFilter === chip.dataset.filter ? "true" : "false";
   }
 
   const finishedBatchCount = (ui.state?.batch_jobs || []).filter((j) => j.status !== "running").length;
-  byId("btn-clear-finished").hidden = finishedBatchCount === 0;
+  const footerActs = byId("sidebar-footer-actions");
+  if (footerActs) footerActs.hidden = finishedBatchCount === 0;
+
+  const installsCount = (ui.state?.vivado_installs?.installations || []).length;
+  const sessionsCount = (ui.state?.sessions || []).length;
+  const sbVivado = byId("sb-vivado");
+  if (sbVivado) {
+    sbVivado.textContent = `${installsCount} 个 Vivado · ${sessionsCount} 个会话`;
+  }
+
+  updateDynamicIsland(items, { running, completed, failed, installsCount });
+}
+
+function updateDynamicIsland(items, counts) {
+  const island = byId("dynamic-island");
+  const titleEl = byId("island-title");
+  const detailEl = byId("island-detail");
+  const meterEl = byId("island-meter");
+  const badgeEl = byId("island-badge");
+  if (!island || !titleEl || !detailEl || !meterEl || !badgeEl) return;
+
+  const { running, completed, failed, installsCount } = counts;
+  const activeItem = items.find((i) => i.uid === ui.selectedUid) || null;
+
+  island.classList.remove("idle", "online", "running", "alert");
+
+  if (ui.connState === "error") {
+    island.classList.add("alert");
+    titleEl.textContent = "同步失败";
+    detailEl.textContent = "点击立即重连";
+    meterEl.hidden = true;
+    meterEl.classList.remove("live");
+    badgeEl.hidden = true;
+    return;
+  }
+
+  if (running > 0) {
+    island.classList.add("running");
+    const runItem = (activeItem && statusBucket(activeItem.status) === "running" ? activeItem : null)
+      || items.find((i) => statusBucket(i.status) === "running");
+    titleEl.textContent = `${running} 运行中`;
+    detailEl.textContent = runItem
+      ? `${runItem.title}${runItem.currentPhase ? ` · ${runItem.currentPhase}` : ""}`
+      : `${completed} 完成 · ${failed} 异常`;
+    meterEl.hidden = false;
+    meterEl.classList.add("live");
+  } else if (failed > 0) {
+    island.classList.add("alert");
+    titleEl.textContent = `${failed} 异常`;
+    detailEl.textContent = completed > 0 ? `${completed} 完成 · 点击刷新` : (activeItem ? activeItem.title : "检查告警与日志");
+    meterEl.hidden = true;
+    meterEl.classList.remove("live");
+  } else if (items.length > 0) {
+    island.classList.add("online");
+    titleEl.textContent = completed > 0 ? `${completed} 完成` : `${items.length} 目标`;
+    detailEl.textContent = activeItem ? activeItem.title : "全部就绪";
+    meterEl.hidden = true;
+    meterEl.classList.remove("live");
+  } else {
+    island.classList.add("idle");
+    titleEl.textContent = "就绪";
+    detailEl.textContent = ui.state
+      ? `${installsCount} 个本地 Vivado · 零 Token`
+      : "正在连接控制台";
+    meterEl.hidden = true;
+    meterEl.classList.remove("live");
+  }
+
+  if (activeItem?.timing?.parse_status === "ok" && typeof activeItem.timing.wns === "number") {
+    badgeEl.hidden = false;
+    badgeEl.textContent = `WNS ${fmtSlack(activeItem.timing.wns)}ns`;
+    badgeEl.dataset.tone = activeItem.timing.met ? "ok" : "fail";
+  } else if (items.length > 0 && running > 0 && completed > 0) {
+    badgeEl.hidden = false;
+    badgeEl.textContent = `${completed} 完成`;
+    badgeEl.dataset.tone = "neutral";
+  } else {
+    badgeEl.hidden = true;
+  }
 }
 
 function renderRail(items) {
@@ -404,14 +580,14 @@ function renderRail(items) {
   });
 
   if (!filtered.length) {
-    railEl.innerHTML = `<p class="muted" style="padding: 8px 4px;">${items.length ? "没有匹配过滤条件的条目。" : "暂无运行或检视条目。"}</p>`;
+    railEl.innerHTML = `<p class="rail-empty">${items.length ? "没有匹配过滤条件的条目。" : "暂无运行或检视条目。"}</p>`;
     return;
   }
 
   const groupOrder = [
-    ["run_monitor", "工程构建 Runs"],
-    ["batch_job", "Batch / OOC 任务"],
-    ["inspected", "离线工程 / 报告"],
+    ["run_monitor", "工程构建"],
+    ["batch_job", "Batch / OOC"],
+    ["inspected", "离线目录"],
     ["debug_session", "硬件调试 / ILA"],
   ];
 
@@ -425,7 +601,7 @@ function renderRail(items) {
     for (const item of groupItems) {
       const selected = item.uid === ui.selectedUid ? "true" : "false";
       const hasTiming = item.timing && item.timing.parse_status === "ok" && typeof item.timing.wns === "number";
-      const wnsText = hasTiming ? `WNS ${fmtSlack(item.timing.wns)}` : "WNS —";
+      const wnsText = hasTiming ? `${fmtSlack(item.timing.wns)}` : "—";
       const metAttr = hasTiming ? (item.timing.met ? "true" : "false") : "na";
       const led = ledClass(item.status, item.timing);
       html.push(`
@@ -447,6 +623,13 @@ function renderRail(items) {
     html.push(`</div></div>`);
   }
   railEl.innerHTML = html.join("");
+  if (ui.pendingScrollSelection) {
+    ui.pendingScrollSelection = false;
+    const activeCard = railEl.querySelector('.nav-card[data-selected="true"]');
+    if (activeCard && typeof activeCard.scrollIntoView === "function") {
+      activeCard.scrollIntoView({ inline: "nearest", block: "nearest" });
+    }
+  }
 }
 
 function renderEmptyState() {
@@ -475,73 +658,74 @@ function renderEmptyState() {
   emptyEl.innerHTML = `
     <div class="empty-hero">
       <div class="empty-art" aria-hidden="true">
-        <svg viewBox="0 0 32 32" width="28" height="28" fill="none">
-          <rect x="7" y="7" width="18" height="18" rx="3" stroke="currentColor" stroke-width="1.8"/>
-          <path d="M10 17h3l2-5 2.5 8 2-4H22" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none">
+          <rect x="5" y="5" width="14" height="14" rx="2.5" stroke="currentColor" stroke-width="1.6"/>
+          <path d="M8 13.5h2l1.2-3.5 1.6 5 1.2-2.5H16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </div>
       <div>
         <h2>Vivado 控制台已就绪</h2>
-        <p>在上方输入任意 <code>.xpr</code> 工程、<code>.runs</code> 目录或批处理 / OOC 综合输出目录路径，即可零 Token 查看时序裕量、LUT/FF/BRAM/DSP 资源占用、去重告警和报告原文。AI 调用 <code>run_ooc_synth</code>、<code>run_batch_tcl</code> 或 <code>open_run_monitor</code> 时也会实时同步到这里。</p>
+        <p>在左下角输入任意 <code>.xpr</code> 工程、<code>.runs</code> 目录或 Batch / OOC 输出目录路径，即可零 Token 查看时序裕量、LUT/FF/BRAM/DSP 资源占用、去重告警和报告原文。AI 发起综合或运行观察时也会实时同步到此处。</p>
       </div>
     </div>
 
-    <div class="panel">
-      <div class="panel-head">
-        <h3>本机检测到的 Vivado 安装（仅路径探测，未启动进程）</h3>
-        <span class="kind-chip">${installs.length} 个安装 · ${sessions.length} 个活跃会话</span>
+    <div>
+      <div class="group-head">
+        <span>本机 Vivado 安装（仅路径探测，未启动进程）</span>
+        <span class="group-head-sub">${installs.length} 个安装 · ${sessions.length} 个活跃会话</span>
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>版本</th><th>可执行路径</th><th>发现来源</th></tr></thead>
-          <tbody>${installRows}</tbody>
-        </table>
+      <div class="group">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>版本</th><th>可执行路径</th><th>发现来源</th></tr></thead>
+            <tbody>${installRows}</tbody>
+          </table>
+        </div>
       </div>
     </div>
   `;
 }
 
-function renderHero(item) {
-  const hero = byId("detail-hero");
+function renderPaneBar(item) {
+  const titleEl = byId("pane-title");
+  const pillEl = byId("pane-status-pill");
+  const metaEl = byId("pane-kind-meta");
+  const actsEl = byId("pane-actions");
+
   const statusText = STATUS_LABELS[item.status] || item.status || "未知";
   const led = ledClass(item.status, item.timing);
+
+  if (titleEl) {
+    titleEl.textContent = item.title;
+    titleEl.title = item.title;
+  }
+  if (pillEl) {
+    pillEl.dataset.status = item.status || "unknown";
+    pillEl.innerHTML = `<span class="led ${led}"></span>${escapeHtml(statusText)}`;
+  }
+  if (metaEl) {
+    const parts = [item.kindBadge];
+    if (item.version) parts.push(`Vivado ${item.version}`);
+    if (item.timing?.stage && item.timing.stage !== "unknown") parts.push(item.timing.stage);
+    metaEl.textContent = parts.filter(Boolean).join(" · ");
+  }
+
   const canCancel = item.category === "batch_job" && item.status === "running";
   const canRemove = item.category === "inspected";
   const copyTarget = item.xprPath || item.outputDir || item.logPath || item.targetPath || "";
+  const isMcp = ui.transportMode === "mcp";
+  const canSendMsg = isMcp && Boolean(ui.hostCaps?.message);
+  const canUpdateCtx = isMcp && Boolean(ui.hostCaps?.updateModelContext);
 
-  const canSendMsg = Boolean(ui.hostCaps?.message);
-  const canUpdateCtx = Boolean(ui.hostCaps?.updateModelContext);
-
-  const errNote = item.errorMessage
-    ? `<div class="toast-banner" data-kind="error" style="margin-top:2px;">${escapeHtml(item.errorMessage)}</div>`
-    : "";
-
-  hero.innerHTML = `
-    <div class="hero-row">
-      <div class="hero-title-group">
-        <div class="hero-badges">
-          <span class="status-badge" data-status="${escapeHtml(item.status)}">
-            <span class="led ${led}"></span>
-            ${escapeHtml(statusText)}
-          </span>
-          <span class="kind-chip">${escapeHtml(item.kindBadge)}</span>
-          ${item.version ? `<span class="kind-chip">Vivado ${escapeHtml(item.version)}</span>` : ""}
-          ${item.timing?.stage && item.timing.stage !== "unknown" ? `<span class="kind-chip">${escapeHtml(item.timing.stage)}</span>` : ""}
-        </div>
-        <h2 class="hero-title">${escapeHtml(item.title)}</h2>
-        <div class="hero-sub">${escapeHtml(item.subtitle)}</div>
-      </div>
-
-      <div class="hero-actions">
-        ${canCancel ? `<button type="button" class="btn btn-danger btn-sm" id="hero-cancel-btn">取消任务</button>` : ""}
-        ${canRemove ? `<button type="button" class="btn btn-sm" id="hero-remove-btn">移除检视</button>` : ""}
-        ${copyTarget ? `<button type="button" class="btn btn-sm" id="hero-copy-btn">复制路径</button>` : ""}
-        ${canUpdateCtx ? `<button type="button" class="btn btn-sm" id="hero-ctx-btn" title="附加上下文给下次对话">附加上下文</button>` : ""}
-        ${canSendMsg ? `<button type="button" class="btn btn-primary btn-sm" id="hero-ask-btn">发到对话</button>` : ""}
-      </div>
-    </div>
-    ${errNote}
-  `;
+  if (actsEl) {
+    actsEl.innerHTML = `
+      ${canCancel ? `<button type="button" class="btn destructive" id="hero-cancel-btn">取消任务</button>` : ""}
+      ${canRemove ? `<button type="button" class="btn" id="hero-remove-btn">移除</button>` : ""}
+      ${copyTarget ? `<button type="button" class="btn" id="hero-copy-btn">复制路径</button>` : ""}
+      ${canUpdateCtx ? `<button type="button" class="btn" id="hero-ctx-btn" title="附加上下文给下次对话">附加上下文</button>` : ""}
+      ${canSendMsg ? `<button type="button" class="btn primary" id="hero-ask-btn">发到对话</button>` : ""}
+    `;
+  }
 
   if (canCancel) {
     byId("hero-cancel-btn")?.addEventListener("click", () => handleCancelJob(item.jobId));
@@ -560,8 +744,18 @@ function renderHero(item) {
   }
 }
 
+function applyProgressWidths(container) {
+  for (const fill of container.querySelectorAll(".util-bar-fill[data-pct]")) {
+    fill.style.width = `${fill.dataset.pct}%`;
+  }
+}
+
 function renderOverview(item) {
   const el = byId("tab-panel-overview");
+  const errNote = item.errorMessage
+    ? `<div class="toast-banner" data-kind="error">${escapeHtml(item.errorMessage)}</div>`
+    : "";
+
   if (item.category === "debug_session") {
     const dbg = item.raw || {};
     const hw = dbg.hardware || {};
@@ -569,17 +763,18 @@ function renderOverview(item) {
     const vios = hw.vios || [];
     el.innerHTML = `
       <div class="stack">
-        <div class="panel">
-          <div class="panel-head"><h3>调试会话状态</h3><span class="kind-chip">revision ${escapeHtml(dbg.revision ?? 0)}</span></div>
-          <div class="meta-grid">
-            <div class="meta-item"><span class="meta-k">目标 Target</span><span class="meta-v">${escapeHtml(dbg.selection?.target || "—")}</span></div>
-            <div class="meta-item"><span class="meta-k">器件 Device</span><span class="meta-v">${escapeHtml(dbg.selection?.device || "—")}</span></div>
-            <div class="meta-item"><span class="meta-k">控制权 Control</span><span class="meta-v">${escapeHtml(dbg.control || "manual")}</span></div>
+        ${errNote}
+        <div>
+          <div class="group-head">
+            <span>调试会话状态</span>
+            <span class="group-head-sub">revision ${escapeHtml(dbg.revision ?? 0)}</span>
           </div>
-        </div>
-        <div class="panel">
-          <div class="panel-head"><h3>调试核概览</h3><span class="muted">ILA ${ilas.length} / VIO ${vios.length}</span></div>
-          <p class="muted">完整探针与操作历史请在「调试与会话」标签页查看。</p>
+          <div class="group">
+            <div class="meta-row"><span class="meta-k">目标 Target</span><span class="meta-v">${escapeHtml(dbg.selection?.target || "—")}</span></div>
+            <div class="meta-row"><span class="meta-k">器件 Device</span><span class="meta-v">${escapeHtml(dbg.selection?.device || "—")}</span></div>
+            <div class="meta-row"><span class="meta-k">控制权 Control</span><span class="meta-v">${escapeHtml(dbg.control || "manual")}</span></div>
+            <div class="meta-row"><span class="meta-k">调试核数量</span><span class="meta-v">ILA ${ilas.length} / VIO ${vios.length}</span></div>
+          </div>
         </div>
       </div>
     `;
@@ -590,9 +785,9 @@ function renderOverview(item) {
   const timingOk = t.parse_status === "ok";
   const tiles = [
     { key: "wns", label: "WNS · Setup 最差", val: timingOk ? t.wns : null },
-    { key: "tns", label: "TNS · Setup 总负裕量", val: timingOk ? t.tns : null },
+    { key: "tns", label: "TNS · Setup 总负", val: timingOk ? t.tns : null },
     { key: "whs", label: "WHS · Hold 最差", val: timingOk ? t.whs : null },
-    { key: "ths", label: "THS · Hold 总负裕量", val: timingOk ? t.ths : null },
+    { key: "ths", label: "THS · Hold 总负", val: timingOk ? t.ths : null },
   ];
 
   const timingHtml = tiles
@@ -627,24 +822,24 @@ function renderOverview(item) {
       const r = util[key];
       if (!r || typeof r.pct !== "number") {
         return `
-          <div class="util-row">
+          <div class="util-cell">
             <div class="util-row-top">
               <span class="util-name">${escapeHtml(label)}</span>
               <span class="util-nums">—</span>
             </div>
-            <div class="util-bar-track"><div class="util-bar-fill" style="width:0%"></div></div>
+            <div class="util-bar-track"><div class="util-bar-fill" data-pct="0"></div></div>
           </div>
         `;
       }
       const pct = Math.max(0, Math.min(100, Number(r.pct)));
-      const level = pct >= 90 ? "crit" : pct >= 70 ? "warn" : "ok";
+      const level = pct >= 85 ? "crit" : pct >= 70 ? "warn" : "ok";
       return `
-        <div class="util-row">
+        <div class="util-cell">
           <div class="util-row-top">
             <span class="util-name">${escapeHtml(label)}</span>
             <span class="util-nums">${escapeHtml(r.used)} / ${escapeHtml(r.avail)} (${pct.toFixed(2)}%)</span>
           </div>
-          <div class="util-bar-track"><div class="util-bar-fill" data-level="${level}" style="width:${pct}%"></div></div>
+          <div class="util-bar-track"><div class="util-bar-fill" data-level="${level}" data-pct="${pct}"></div></div>
         </div>
       `;
     })
@@ -652,9 +847,12 @@ function renderOverview(item) {
 
   const progressBlock =
     typeof item.progressPct === "number"
-      ? `<div style="margin-bottom:8px;">
-           <div class="util-row-top" style="margin-bottom:4px;"><span>Vivado 原生进度</span><span class="util-nums">${item.progressPct}%</span></div>
-           <div class="util-bar-track"><div class="util-bar-fill" style="width:${Math.max(0, Math.min(100, item.progressPct))}%"></div></div>
+      ? `<div class="progress-head-wrap">
+           <div class="util-row-top">
+             <span class="util-name">Vivado 原生进度</span>
+             <span class="util-nums">${item.progressPct}%</span>
+           </div>
+           <div class="util-bar-track"><div class="util-bar-fill" data-pct="${Math.max(0, Math.min(100, item.progressPct))}"></div></div>
          </div>`
       : "";
 
@@ -667,67 +865,81 @@ function renderOverview(item) {
             `<li><span class="timeline-ln">L${escapeHtml(p.line || "?")}</span><span>${escapeHtml(p.text)}</span></li>`
         )
         .join("")}</ol>`
-    : `<p class="muted">暂未观测到 Phase 阶段行。</p>`;
+    : `<p class="muted group-pad">暂未观测到 Phase 阶段行。</p>`;
 
   const runsRows = (item.runs || []).length
-    ? `<div class="panel">
-         <div class="panel-head"><h3>工程 Runs 状态</h3><span class="kind-chip">${item.runs.length} 个</span></div>
-         <div class="table-wrap">
-           <table><thead><tr><th>Run</th><th>状态</th><th>目录</th></tr></thead><tbody>
-           ${item.runs
-             .map(
-               (r) =>
-                 `<tr><td class="mono">${escapeHtml(r.run_id)}</td><td><span class="status-badge" data-status="${escapeHtml(r.status)}">${escapeHtml(STATUS_LABELS[r.status] || r.status)}</span></td><td class="mono">${escapeHtml(r.dir)}</td></tr>`
-             )
-             .join("")}
-           </tbody></table>
+    ? `<div>
+         <div class="group-head">
+           <span>工程 Runs 状态</span>
+           <span class="group-head-sub">${item.runs.length} 个</span>
+         </div>
+         <div class="group">
+           <div class="table-wrap">
+             <table><thead><tr><th>Run</th><th>状态</th><th>目录</th></tr></thead><tbody>
+             ${item.runs
+               .map(
+                 (r) =>
+                   `<tr><td class="mono">${escapeHtml(r.run_id)}</td><td><span class="status-badge" data-status="${escapeHtml(r.status)}">${escapeHtml(STATUS_LABELS[r.status] || r.status)}</span></td><td class="mono">${escapeHtml(r.dir)}</td></tr>`
+               )
+               .join("")}
+             </tbody></table>
+           </div>
          </div>
        </div>`
     : "";
 
   el.innerHTML = `
     <div class="stack">
-      <div class="panel">
-        <div class="panel-head">
-          <h3>时序裕量 (Timing)</h3>
-          <span class="muted">${escapeHtml(t.source_report || "")}</span>
+      ${errNote}
+
+      <div>
+        <div class="group-head">
+          <span>时序裕量 · Timing</span>
+          <span class="group-head-sub">${escapeHtml(t.source_report || "")}</span>
         </div>
         <div class="timing-strip">${timingHtml}</div>
-        <p class="muted" style="margin-top:8px;">${escapeHtml(timingNote)}</p>
+        <p class="timing-caption">${escapeHtml(timingNote)}</p>
       </div>
 
-      <div class="panel">
-        <div class="panel-head">
-          <h3>资源占用 (Utilization)</h3>
-          <span class="muted">${escapeHtml(item.raw?.utilization_source || "")}</span>
+      <div>
+        <div class="group-head">
+          <span>资源占用 · Utilization</span>
+          <span class="group-head-sub">${escapeHtml(item.raw?.utilization_source || "")}</span>
         </div>
-        <div class="util-grid">${utilHtml}</div>
+        <div class="group">
+          <div class="util-grid">${utilHtml}</div>
+        </div>
       </div>
 
-      <div class="panel">
-        <div class="panel-head"><h3>元数据与路径</h3></div>
-        <div class="meta-grid">
-          <div class="meta-item"><span class="meta-k">Top 模块</span><span class="meta-v">${escapeHtml(item.top || "—")}</span></div>
-          <div class="meta-item"><span class="meta-k">器件 Part</span><span class="meta-v">${escapeHtml(item.part || "—")}</span></div>
-          <div class="meta-item"><span class="meta-k">耗时 / 状态</span><span class="meta-v">${escapeHtml(item.elapsedText)}${typeof item.exitCode === "number" ? ` (rc=${item.exitCode})` : ""}</span></div>
-          <div class="meta-item"><span class="meta-k">输出目录</span><span class="meta-v">${escapeHtml(item.outputDir || "—")}</span></div>
-          <div class="meta-item"><span class="meta-k">主日志路径</span><span class="meta-v">${escapeHtml(item.logPath || "—")}</span></div>
-          <div class="meta-item"><span class="meta-k">${item.xprPath ? "工程 .xpr" : "Tcl 脚本"}</span><span class="meta-v">${escapeHtml(item.xprPath || item.tclPath || "—")}</span></div>
+      <div>
+        <div class="group-head"><span>元数据与路径</span></div>
+        <div class="group">
+          <div class="meta-row"><span class="meta-k">Top 模块</span><span class="meta-v">${escapeHtml(item.top || "—")}</span></div>
+          <div class="meta-row"><span class="meta-k">器件 Part</span><span class="meta-v">${escapeHtml(item.part || "—")}</span></div>
+          <div class="meta-row"><span class="meta-k">Vivado 版本</span><span class="meta-v">${escapeHtml(item.version || "—")}</span></div>
+          <div class="meta-row"><span class="meta-k">耗时 / 状态</span><span class="meta-v">${escapeHtml(item.elapsedText)}${typeof item.exitCode === "number" ? ` (rc=${item.exitCode})` : ""}</span></div>
+          <div class="meta-row"><span class="meta-k">输出目录</span><span class="meta-v">${escapeHtml(item.outputDir || "—")}</span></div>
+          <div class="meta-row"><span class="meta-k">主日志路径</span><span class="meta-v">${escapeHtml(item.logPath || "—")}</span></div>
+          <div class="meta-row"><span class="meta-k">${item.xprPath ? "工程 .xpr" : "Tcl 脚本"}</span><span class="meta-v">${escapeHtml(item.xprPath || item.tclPath || "—")}</span></div>
         </div>
       </div>
 
       ${runsRows}
 
-      <div class="panel">
-        <div class="panel-head">
-          <h3>阶段与进度时间线</h3>
-          <span class="muted">${escapeHtml(item.currentPhase || "—")}</span>
+      <div>
+        <div class="group-head">
+          <span>阶段与进度时间线</span>
+          <span class="group-head-sub">${escapeHtml(item.currentPhase || "—")}</span>
         </div>
-        ${progressBlock}
-        ${phaseHtml}
+        <div class="group">
+          ${progressBlock}
+          ${phaseHtml}
+        </div>
       </div>
     </div>
   `;
+
+  applyProgressWidths(el);
 }
 
 function renderDiagnostics(item) {
@@ -745,28 +957,30 @@ function renderDiagnostics(item) {
 
   const forensics = item.forensics;
   const forensicsHtml = forensics && forensics.silent_exit_suspected
-    ? `<div class="diag-card" data-sev="ERROR">
-         <div class="diag-card-head">
-           <div class="diag-chips">
-             <span class="sev-tag" data-sev="ERROR">静默退出取证</span>
-             <span class="id-tag">Vivado_init.tcl / WER</span>
+    ? `<div class="group">
+         <div class="diag-row" data-sev="ERROR">
+           <div class="diag-row-head">
+             <div class="diag-chips">
+               <span class="sev-tag" data-sev="ERROR">静默退出取证</span>
+               <span class="id-tag">Vivado_init.tcl / WER</span>
+             </div>
            </div>
+           <p class="diag-msg">${escapeHtml(forensics.reason || "子进程非零退出且无标准 ERROR 行")}</p>
+           <div class="diag-sug">${escapeHtml(
+             (forensics.vivado_init || [])
+               .map((f) => `${f.path}: ${f.exists ? (f.max_threads ? `maxThreads=${f.max_threads}` : "未设 maxThreads") : "不存在"}`)
+               .join(" | ")
+           )}</div>
          </div>
-         <p class="diag-msg">${escapeHtml(forensics.reason || "子进程非零退出且无标准 ERROR 行")}</p>
-         <div class="diag-sug">${escapeHtml(
-           (forensics.vivado_init || [])
-             .map((f) => `${f.path}: ${f.exists ? (f.max_threads ? `maxThreads=${f.max_threads}` : "未设 maxThreads") : "不存在"}`)
-             .join(" | ")
-         )}</div>
        </div>`
     : "";
 
-  const cardsHtml = filtered.length
-    ? filtered
+  const rowsHtml = filtered.length
+    ? `<div class="group diag-list">${filtered
         .map(
           (issue) => `
-          <div class="diag-card" data-sev="${escapeHtml(issue.severity)}">
-            <div class="diag-card-head">
+          <div class="diag-row" data-sev="${escapeHtml(issue.severity)}">
+            <div class="diag-row-head">
               <div class="diag-chips">
                 <span class="sev-tag" data-sev="${escapeHtml(issue.severity)}">${escapeHtml(issue.severity)}</span>
                 <span class="id-tag">[${escapeHtml(issue.id || "UNKNOWN")}]</span>
@@ -777,27 +991,30 @@ function renderDiagnostics(item) {
             </div>
             <p class="diag-msg">${escapeHtml(issue.message || "")}</p>
             ${issue.suggestion && issue.category !== "UNKNOWN" ? `<div class="diag-sug">${escapeHtml(issue.suggestion)}</div>` : ""}
-          </div>
-        `
+          </div>`
         )
-        .join("")
-    : `<div class="panel"><p class="muted">当前过滤条件下无告警或错误条目。${d.scope ? ` (${escapeHtml(d.scope)})` : ""}</p></div>`;
+        .join("")}</div>`
+    : `<div class="group group-pad"><p class="muted">当前过滤条件下无告警或错误条目。${d.scope ? ` (${escapeHtml(d.scope)})` : ""}</p></div>`;
 
   el.innerHTML = `
     <div class="stack">
-      <div class="panel">
-        <div class="diag-toolbar">
-          <div class="filter-pills">
-            <button type="button" class="pill-btn" data-sev="ALL" data-active="${ui.diagSev === "ALL"}">全部 (${issues.length})</button>
-            <button type="button" class="pill-btn" data-sev="ERROR" data-active="${ui.diagSev === "ERROR"}">ERROR (${d.errors ?? 0})</button>
-            <button type="button" class="pill-btn" data-sev="CRITICAL WARNING" data-active="${ui.diagSev === "CRITICAL WARNING"}">CRITICAL WARNING (${d.critical_warnings ?? 0})</button>
-            <button type="button" class="pill-btn" data-sev="WARNING" data-active="${ui.diagSev === "WARNING"}">WARNING (${d.warnings ?? 0})</button>
-          </div>
-          <input id="diag-search-input" class="diag-search" type="search" value="${escapeHtml(ui.diagSearch)}" placeholder="搜索消息、ID 或文件..." aria-label="搜索诊断条目" />
+      <div class="diag-toolbar">
+        <div class="seg seg-sm" role="group" aria-label="严重度筛选">
+          <button type="button" class="pill-btn${ui.diagSev === "ALL" ? " active" : ""}" data-sev="ALL">全部 (${issues.length})</button>
+          <button type="button" class="pill-btn${ui.diagSev === "ERROR" ? " active" : ""}" data-sev="ERROR">ERROR (${d.errors ?? 0})</button>
+          <button type="button" class="pill-btn${ui.diagSev === "CRITICAL WARNING" ? " active" : ""}" data-sev="CRITICAL WARNING">CRITICAL (${d.critical_warnings ?? 0})</button>
+          <button type="button" class="pill-btn${ui.diagSev === "WARNING" ? " active" : ""}" data-sev="WARNING">WARNING (${d.warnings ?? 0})</button>
+        </div>
+        <div class="search-field diag-search-box">
+          <svg class="search-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
+            <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.4"/>
+            <path d="m10.5 10.5 3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+          <input id="diag-search-input" type="search" value="${escapeHtml(ui.diagSearch)}" placeholder="搜索消息、ID 或文件…" aria-label="搜索诊断条目" />
         </div>
       </div>
       ${forensicsHtml}
-      <div class="diag-list">${cardsHtml}</div>
+      ${rowsHtml}
     </div>
   `;
 
@@ -815,8 +1032,8 @@ function renderDiagnostics(item) {
       renderDiagnostics(item);
       const nextEl = byId("diag-search-input");
       if (nextEl) {
-        nextEl.focus();
-        nextEl.setSelectionRange(pos, pos);
+        nextEl.focus({ preventScroll: true });
+        if (typeof pos === "number") nextEl.setSelectionRange(pos, pos);
       }
     });
   }
@@ -843,8 +1060,9 @@ function renderReports(item) {
     ? reports
         .map((r) => {
           const selected = ui.reportPreview?.path === r.path;
+          const staleNote = r.freshness === "stale" ? " (过期)" : r.freshness === "mismatched" ? " (不匹配)" : "";
           return `<button type="button" class="rpt-chip" data-rpath="${escapeHtml(r.path)}" data-selected="${selected}">
-            <span>${escapeHtml(r.name)}</span>
+            <span>${escapeHtml(r.name)}${escapeHtml(staleNote)}</span>
             ${r.size ? `<span class="muted">${escapeHtml(fmtBytes(r.size))}</span>` : ""}
           </button>`;
         })
@@ -877,9 +1095,9 @@ function renderReports(item) {
     : viewerLines;
 
   const linesBody = isLoading
-    ? `<div style="padding:14px;color:var(--terminal-muted);">正在按需加载报告正文...</div>`
+    ? `<div class="terminal-msg">正在按需加载报告正文…</div>`
     : viewerError
-      ? `<div style="padding:14px;color:#ffb4ae;">加载失败: ${escapeHtml(viewerError)}</div>`
+      ? `<div class="terminal-msg err">加载失败: ${escapeHtml(viewerError)}</div>`
       : visibleLines.length
         ? visibleLines
             .map(
@@ -887,27 +1105,35 @@ function renderReports(item) {
                 `<div class="term-line" data-level="${classifyLogLine(ln.text)}"><span class="term-ln">${escapeHtml(ln.line || "")}</span><span class="term-txt">${escapeHtml(ln.text || "")}</span></div>`
             )
             .join("")
-        : `<div style="padding:14px;color:var(--terminal-muted);">没有匹配的行或内容为空。</div>`;
+        : `<div class="terminal-msg">没有匹配的行或内容为空。</div>`;
 
   el.innerHTML = `
     <div class="stack">
-      <div class="panel">
-        <div class="panel-head">
-          <h3>报告与脚本文件</h3>
-          <span class="muted">点击文件名按需读取，不占用对话 Token</span>
+      <div>
+        <div class="group-head">
+          <span>报告与脚本文件</span>
+          <span class="group-head-sub">点击文件名按需读取 · 零 Token</span>
         </div>
-        <div class="report-chips">${chipsHtml}</div>
+        <div class="group">
+          <div class="report-chips">${chipsHtml}</div>
+        </div>
       </div>
 
       <div class="terminal-box">
         <div class="terminal-header">
-          <div>
-            <strong style="color:var(--terminal-fg);">${escapeHtml(viewerTitle)}</strong>
-            <span style="margin-left:8px;">${escapeHtml(viewerMeta)}</span>
+          <div class="terminal-title-wrap">
+            <span class="terminal-title">${escapeHtml(viewerTitle)}</span>
+            <span>${escapeHtml(viewerMeta)}</span>
           </div>
-          <div style="display:flex;gap:8px;align-items:center;">
-            <input id="report-filter-input" class="diag-search" style="max-width:220px;background:#161d26;color:#e2e8f0;border-color:#2b3544;" type="search" value="${escapeHtml(ui.reportFilter)}" placeholder="行内关键字过滤..." aria-label="过滤报告行" />
-            ${activePath && isTruncated ? `<button type="button" class="btn btn-sm" id="btn-load-more-rpt">加载 1500 行</button>` : ""}
+          <div class="terminal-tools">
+            <div class="search-field">
+              <svg class="search-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
+                <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.4"/>
+                <path d="m10.5 10.5 3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              </svg>
+              <input id="report-filter-input" type="search" value="${escapeHtml(ui.reportFilter)}" placeholder="行内关键字过滤…" aria-label="过滤报告行" />
+            </div>
+            ${activePath && isTruncated ? `<button type="button" class="btn" id="btn-load-more-rpt">加载 1500 行</button>` : ""}
           </div>
         </div>
         <div class="terminal-lines">${linesBody}</div>
@@ -930,8 +1156,8 @@ function renderReports(item) {
       renderReports(item);
       const nextEl = byId("report-filter-input");
       if (nextEl) {
-        nextEl.focus();
-        nextEl.setSelectionRange(pos, pos);
+        nextEl.focus({ preventScroll: true });
+        if (typeof pos === "number") nextEl.setSelectionRange(pos, pos);
       }
     });
   }
@@ -971,18 +1197,23 @@ function renderSessionsTab() {
             .map((vio) => `<li><span class="mono">${escapeHtml(vio.name)}</span> · 探针 ${(vio.probes || []).length} 个</li>`)
             .join("");
           return `
-            <div class="panel">
-              <div class="panel-head">
-                <h3>硬件调试会话: ${escapeHtml(d.session_id)}</h3>
+            <div>
+              <div class="group-head">
+                <span>硬件调试会话: ${escapeHtml(d.session_id)}</span>
                 <span class="status-badge" data-status="${escapeHtml(d.connection)}">${escapeHtml(STATUS_LABELS[d.connection] || d.connection)}</span>
               </div>
-              <p class="muted">控制权: <code>${escapeHtml(d.control)}</code> · 目标: <code>${escapeHtml(d.selection?.target || "未选")}</code> / <code>${escapeHtml(d.selection?.device || "未选")}</code> · stop_ila=${escapeHtml(String(Boolean(d.capabilities?.stop_ila)))}</p>
-              ${ilas ? `<h4>ILA 核心</h4><ul style="margin:4px 0 8px;padding-left:18px;">${ilas}</ul>` : ""}
-              ${vios ? `<h4>VIO 核心</h4><ul style="margin:4px 0;padding-left:18px;">${vios}</ul>` : ""}
+              <div class="group group-pad">
+                <p class="muted">控制权: <code>${escapeHtml(d.control)}</code> · 目标: <code>${escapeHtml(d.selection?.target || "未选")}</code> / <code>${escapeHtml(d.selection?.device || "未选")}</code> · stop_ila=${escapeHtml(String(Boolean(d.capabilities?.stop_ila)))}</p>
+                ${ilas ? `<ul class="dbg-list">${ilas}</ul>` : ""}
+                ${vios ? `<ul class="dbg-list">${vios}</ul>` : ""}
+              </div>
             </div>`;
         })
         .join("")
-    : `<div class="panel"><p class="muted">暂无活动的硬件调试 / ILA 面板。</p></div>`;
+    : `<div>
+         <div class="group-head"><span>硬件调试 / ILA</span></div>
+         <div class="group group-pad"><p class="muted">暂无活动的硬件调试 / ILA 面板。</p></div>
+       </div>`;
 
   const instRows = installs.length
     ? installs
@@ -999,25 +1230,35 @@ function renderSessionsTab() {
 
   el.innerHTML = `
     <div class="stack">
-      <div class="panel">
-        <div class="panel-head"><h3>活跃 Vivado 会话 (Tcl / GUI / External)</h3><span class="kind-chip">${sessions.length} 个</span></div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>会话 ID</th><th>模式</th><th>状态</th><th>端口</th><th>版本</th><th>路径</th></tr></thead>
-            <tbody>${sessRows}</tbody>
-          </table>
+      <div>
+        <div class="group-head">
+          <span>活跃 Vivado 会话 (Tcl / GUI / External)</span>
+          <span class="group-head-sub">${sessions.length} 个</span>
+        </div>
+        <div class="group">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>会话 ID</th><th>模式</th><th>状态</th><th>端口</th><th>版本</th><th>路径</th></tr></thead>
+              <tbody>${sessRows}</tbody>
+            </table>
+          </div>
         </div>
       </div>
 
       ${dbgHtml}
 
-      <div class="panel">
-        <div class="panel-head"><h3>本机 Vivado 安装探测</h3><span class="kind-chip">${installs.length} 个</span></div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>版本</th><th>路径</th><th>来源</th></tr></thead>
-            <tbody>${instRows}</tbody>
-          </table>
+      <div>
+        <div class="group-head">
+          <span>本机 Vivado 安装探测</span>
+          <span class="group-head-sub">${installs.length} 个</span>
+        </div>
+        <div class="group">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>版本</th><th>路径</th><th>来源</th></tr></thead>
+              <tbody>${instRows}</tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
@@ -1027,6 +1268,7 @@ function renderSessionsTab() {
 function updateTabVisibility(item) {
   for (const btn of document.querySelectorAll(".tab-btn")) {
     const active = btn.dataset.tab === ui.activeTab;
+    btn.classList.toggle("active", active);
     btn.setAttribute("aria-selected", active ? "true" : "false");
   }
   byId("tab-panel-overview").hidden = ui.activeTab !== "overview";
@@ -1064,7 +1306,7 @@ function captureViewportState() {
     selStart: canSelect ? active.selectionStart : null,
     selEnd: canSelect ? active.selectionEnd : null,
     railScroll: byId("rail-list")?.scrollTop ?? 0,
-    stageScroll: document.querySelector(".detail-stage")?.scrollTop ?? 0,
+    stageScroll: byId("detail-stage")?.scrollTop ?? 0,
     termScroll: document.querySelector(".terminal-lines")?.scrollTop ?? 0,
     timelineScroll: document.querySelector(".timeline")?.scrollTop ?? 0,
     diagScroll: document.querySelector(".diag-list")?.scrollTop ?? 0,
@@ -1075,7 +1317,7 @@ function restoreViewportState(snap) {
   if (!snap) return;
   const rail = byId("rail-list");
   if (rail) rail.scrollTop = snap.railScroll;
-  const stage = document.querySelector(".detail-stage");
+  const stage = byId("detail-stage");
   if (stage) stage.scrollTop = snap.stageScroll;
   const term = document.querySelector(".terminal-lines");
   if (term) term.scrollTop = snap.termScroll;
@@ -1105,7 +1347,6 @@ function restoreViewportState(snap) {
 function renderAll() {
   const snap = captureViewportState();
   const items = buildItems(ui.state);
-  updateSummaryCounts(items);
 
   if (items.length && !items.some((i) => i.uid === ui.selectedUid)) {
     ui.selectedUid = items[0].uid;
@@ -1117,6 +1358,7 @@ function renderAll() {
     ui.reportReqId += 1;
   }
 
+  updateSummaryAndStatus(items);
   renderRail(items);
 
   const activeItem = items.find((i) => i.uid === ui.selectedUid) || null;
@@ -1129,7 +1371,7 @@ function renderAll() {
   byId("empty-stage").hidden = true;
   byId("detail-shell").hidden = false;
 
-  renderHero(activeItem);
+  renderPaneBar(activeItem);
   updateTabVisibility(activeItem);
 
   if (ui.activeTab === "overview") renderOverview(activeItem);
@@ -1143,19 +1385,28 @@ function renderAll() {
 function applyIncomingState(payload) {
   if (!payload || typeof payload !== "object") return;
   ui.state = payload;
-  if (payload.selected_job_id) {
-    const nextUid = `job:${payload.selected_job_id}`;
-    if (nextUid !== ui.selectedUid) {
-      ui.selectedUid = nextUid;
-      ui.reportPreview = null;
-      ui.reportReqId += 1;
-    }
-  } else if (payload.selected_inspected_path) {
-    const nextUid = `inspected:${payload.selected_inspected_path}`;
-    if (nextUid !== ui.selectedUid) {
-      ui.selectedUid = nextUid;
-      ui.reportPreview = null;
-      ui.reportReqId += 1;
+  const seq = typeof payload.selection_seq === "number" ? payload.selection_seq : null;
+  const shouldApplySelection = seq === null || seq !== ui.lastSelectionSeq;
+  if (seq !== null) {
+    ui.lastSelectionSeq = seq;
+  }
+  if (shouldApplySelection) {
+    if (payload.selected_job_id) {
+      const nextUid = `job:${payload.selected_job_id}`;
+      if (nextUid !== ui.selectedUid) {
+        ui.selectedUid = nextUid;
+        ui.pendingScrollSelection = true;
+        ui.reportPreview = null;
+        ui.reportReqId += 1;
+      }
+    } else if (payload.selected_inspected_path) {
+      const nextUid = `inspected:${payload.selected_inspected_path}`;
+      if (nextUid !== ui.selectedUid) {
+        ui.selectedUid = nextUid;
+        ui.pendingScrollSelection = true;
+        ui.reportPreview = null;
+        ui.reportReqId += 1;
+      }
     }
   }
   if (payload.inspect_error) {
@@ -1165,25 +1416,64 @@ function applyIncomingState(payload) {
   renderAll();
 }
 
+async function transportGetState() {
+  if (ui.transportMode === "http") {
+    const resp = await fetch("/api/state", { cache: "no-store" });
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok) {
+      throw new Error(data?.error || `HTTP ${resp.status}`);
+    }
+    return data;
+  }
+  const res = await app.callServerTool({
+    name: "vivado_console_state",
+    arguments: {},
+  });
+  if (res?.isError && !res?.structuredContent) {
+    throw new Error(res.content?.[0]?.text || "刷新失败");
+  }
+  return res?.structuredContent || null;
+}
+
+async function transportRunAction(args) {
+  if (ui.transportMode === "http") {
+    const resp = await fetch("/api/action", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(args),
+    });
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok || data?.error) {
+      throw new Error(data?.error || `HTTP ${resp.status}`);
+    }
+    return data;
+  }
+  const res = await app.callServerTool({
+    name: "vivado_console_action",
+    arguments: args,
+  });
+  const sc = res?.structuredContent;
+  if (res?.isError || sc?.error) {
+    throw new Error(sc?.error || res?.content?.[0]?.text || "操作失败");
+  }
+  return sc;
+}
+
 async function refreshState({ silent = false } = {}) {
   if (ui.inFlightState) return;
   ui.inFlightState = true;
   try {
-    const res = await app.callServerTool({
-      name: "vivado_console_state",
-      arguments: {},
-    });
-    if (res?.isError && !res?.structuredContent) {
-      throw new Error(res.content?.[0]?.text || "刷新失败");
-    }
-    if (res?.structuredContent) {
-      applyIncomingState(res.structuredContent);
+    const state = await transportGetState();
+    if (state) {
+      applyIncomingState(state);
     }
   } catch (err) {
     if (!silent) {
       showToast(`刷新失败: ${err?.message || String(err)}`, "error");
     }
     setConnState("error", "同步失败");
+    updateSummaryAndStatus(buildItems(ui.state));
   } finally {
     ui.inFlightState = false;
   }
@@ -1198,14 +1488,7 @@ async function handleInspectPath(pathValue) {
   const btn = byId("btn-inspect");
   btn.disabled = true;
   try {
-    const res = await app.callServerTool({
-      name: "vivado_console_action",
-      arguments: { action: "inspect_path", path: clean },
-    });
-    const sc = res?.structuredContent;
-    if (res?.isError || sc?.error) {
-      throw new Error(sc?.error || res?.content?.[0]?.text || "检视失败");
-    }
+    const sc = await transportRunAction({ action: "inspect_path", path: clean });
     if (sc?.state) {
       applyIncomingState(sc.state);
     }
@@ -1220,14 +1503,7 @@ async function handleInspectPath(pathValue) {
 
 async function handleRemoveInspected(targetPath) {
   try {
-    const res = await app.callServerTool({
-      name: "vivado_console_action",
-      arguments: { action: "remove_inspected", path: targetPath },
-    });
-    const sc = res?.structuredContent;
-    if (res?.isError || sc?.error) {
-      throw new Error(sc?.error || "移除失败");
-    }
+    const sc = await transportRunAction({ action: "remove_inspected", path: targetPath });
     if (sc?.state) {
       applyIncomingState(sc.state);
     }
@@ -1240,14 +1516,7 @@ async function handleRemoveInspected(targetPath) {
 async function handleCancelJob(jobId) {
   if (!jobId) return;
   try {
-    const res = await app.callServerTool({
-      name: "vivado_console_action",
-      arguments: { action: "cancel_job", job_id: jobId },
-    });
-    const sc = res?.structuredContent;
-    if (res?.isError || sc?.error) {
-      throw new Error(sc?.error || "取消任务失败");
-    }
+    const sc = await transportRunAction({ action: "cancel_job", job_id: jobId });
     if (sc?.state) {
       applyIncomingState(sc.state);
     }
@@ -1259,14 +1528,7 @@ async function handleCancelJob(jobId) {
 
 async function handleClearFinished() {
   try {
-    const res = await app.callServerTool({
-      name: "vivado_console_action",
-      arguments: { action: "clear_finished" },
-    });
-    const sc = res?.structuredContent;
-    if (res?.isError || sc?.error) {
-      throw new Error(sc?.error || "清理失败");
-    }
+    const sc = await transportRunAction({ action: "clear_finished" });
     if (sc?.state) {
       applyIncomingState(sc.state);
     }
@@ -1283,15 +1545,12 @@ async function handleReadReport(reportPath, maxLines = 300) {
   ui.reportPreview = { path: reportPath, name: basename(reportPath), loading: true };
   renderAll();
   try {
-    const res = await app.callServerTool({
-      name: "vivado_console_action",
-      arguments: { action: "read_report", report_path: reportPath, max_lines: maxLines },
+    const sc = await transportRunAction({
+      action: "read_report",
+      report_path: reportPath,
+      max_lines: maxLines,
     });
     if (reqId !== ui.reportReqId || targetUid !== ui.selectedUid) return;
-    const sc = res?.structuredContent;
-    if (res?.isError || sc?.error) {
-      throw new Error(sc?.error || res?.content?.[0]?.text || "读取失败");
-    }
     ui.reportPreview = { ...sc.report, loading: false };
   } catch (err) {
     if (reqId !== ui.reportReqId || targetUid !== ui.selectedUid) return;
@@ -1331,7 +1590,7 @@ function buildCompactContextText(item) {
 }
 
 async function handleAttachContext(item) {
-  if (!ui.hostCaps?.updateModelContext) return;
+  if (ui.transportMode !== "mcp" || !ui.hostCaps?.updateModelContext) return;
   try {
     await app.updateModelContext({
       content: [{ type: "text", text: buildCompactContextText(item) }],
@@ -1343,7 +1602,7 @@ async function handleAttachContext(item) {
 }
 
 async function handleSendToChat(item) {
-  if (!ui.hostCaps?.message) return;
+  if (ui.transportMode !== "mcp" || !ui.hostCaps?.message) return;
   try {
     const text = `请查看我在 Vivado 控制台选中的目标并协助分析：\n${buildCompactContextText(item)}`;
     const res = await app.sendMessage({
@@ -1362,8 +1621,12 @@ function syncAutoRefresh() {
     clearInterval(ui.autoTimer);
     ui.autoTimer = null;
   }
-  const toggle = byId("auto-refresh-toggle");
-  if (toggle?.checked) {
+  const btn = byId("btn-auto-refresh");
+  if (btn) {
+    btn.classList.toggle("on", ui.autoRefresh);
+    btn.setAttribute("aria-pressed", ui.autoRefresh ? "true" : "false");
+  }
+  if (ui.autoRefresh) {
     ui.autoTimer = setInterval(() => {
       refreshState({ silent: true });
     }, 5000);
@@ -1382,18 +1645,60 @@ function bindEvents() {
   });
 
   byId("btn-refresh").addEventListener("click", () => refreshState({ silent: false }));
-  byId("btn-clear-finished").addEventListener("click", handleClearFinished);
-  byId("auto-refresh-toggle").addEventListener("change", syncAutoRefresh);
+  byId("btn-clear-finished")?.addEventListener("click", handleClearFinished);
+  byId("btn-auto-refresh").addEventListener("click", () => {
+    ui.autoRefresh = !ui.autoRefresh;
+    syncAutoRefresh();
+  });
+
+  byId("dynamic-island")?.addEventListener("click", () => {
+    const items = buildItems(ui.state);
+    const runningItem = items.find((i) => statusBucket(i.status) === "running" && i.uid !== ui.selectedUid);
+    if (runningItem) {
+      ui.selectedUid = runningItem.uid;
+      ui.pendingScrollSelection = true;
+      ui.reportPreview = null;
+      ui.reportReqId += 1;
+      ui.reportFilter = "";
+      renderAll();
+      return;
+    }
+    refreshState({ silent: false });
+  });
+
+  byId("btn-theme")?.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    setThemeMenuOpen(!ui.themeMenuOpen);
+  });
+
+  byId("theme-menu")?.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("[data-theme-id]");
+    if (!btn) return;
+    applyTheme(btn.dataset.themeId, { manual: true });
+    setThemeMenuOpen(false);
+  });
+
+  document.addEventListener("click", (ev) => {
+    if (!ui.themeMenuOpen) return;
+    if (!ev.target.closest("#theme-menu-wrap")) {
+      setThemeMenuOpen(false);
+    }
+  });
+
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && ui.themeMenuOpen) {
+      setThemeMenuOpen(false);
+    }
+  });
 
   byId("rail-search").addEventListener("input", (ev) => {
     ui.railSearch = ev.target.value;
     renderRail(buildItems(ui.state));
   });
 
-  for (const chip of document.querySelectorAll(".sum-chip")) {
+  for (const chip of document.querySelectorAll(".filter-chip")) {
     chip.addEventListener("click", () => {
-      const f = chip.dataset.filter;
-      ui.statusFilter = ui.statusFilter === f ? "" : f;
+      ui.statusFilter = chip.dataset.filter || "";
       renderAll();
     });
   }
@@ -1420,12 +1725,15 @@ function bindEvents() {
 }
 
 function applyHostCtx(ctx) {
-  if (!ctx) return;
-  if (ctx.theme) applyDocumentTheme(ctx.theme);
-  if (ctx.styles?.variables) applyHostStyleVariables(ctx.styles.variables);
+  if (!ctx || ui.manualTheme) return;
+  if (ctx.theme === "light") {
+    applyTheme("macos-light", { manual: false });
+  } else if (ctx.theme === "dark") {
+    applyTheme("macos", { manual: false });
+  }
 }
 
-// 必须在 connect() 之前注册所有处理器，避免错过初始 toolinput / toolresult
+// 必须在 connect() 之前注册 MCP App 处理器，避免错过初始 toolinput / toolresult
 app.ontoolinput = (params) => {
   const args = params?.arguments || {};
   if (args.job_id) ui.selectedUid = `job:${args.job_id}`;
@@ -1447,13 +1755,56 @@ app.onhostcontextchanged = (ctx) => {
   applyHostCtx(ctx);
 };
 
-async function init() {
-  if (window.matchMedia?.("(prefers-color-scheme: dark)").matches) {
-    applyDocumentTheme("dark");
+function setTransportMode(mode) {
+  ui.transportMode = mode;
+  const sb = byId("sb-transport");
+  if (sb) sb.textContent = mode === "http" ? "Local Web" : "MCP App";
+}
+
+async function initHttpMode() {
+  setTransportMode("http");
+  ui.hostCaps = {};
+  const stored = readStoredTheme();
+  if (stored) {
+    applyTheme(stored, { manual: true });
+  } else {
+    applyTheme("macos", { manual: false });
   }
+  await refreshState({ silent: false });
+  syncAutoRefresh();
+}
+
+async function init() {
+  applyTheme("macos", { manual: false });
   bindEvents();
+
+  const isEmbedded = (() => {
+    try {
+      return window.parent !== window;
+    } catch {
+      return true;
+    }
+  })();
+
+  const isLoopbackHttp =
+    (window.location.protocol === "http:" || window.location.protocol === "https:") &&
+    window.location.hostname === "127.0.0.1";
+
+  if (!isEmbedded) {
+    await initHttpMode();
+    return;
+  }
+
   try {
-    await app.connect();
+    if (isLoopbackHttp) {
+      await Promise.race([
+        app.connect(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("MCP handshake timeout")), 1200)),
+      ]);
+    } else {
+      await app.connect();
+    }
+    setTransportMode("mcp");
     ui.hostCaps = app.getHostCapabilities() || {};
     applyHostCtx(app.getHostContext());
     if (!ui.state) {
@@ -1463,6 +1814,10 @@ async function init() {
     }
     syncAutoRefresh();
   } catch (err) {
+    if (isLoopbackHttp) {
+      await initHttpMode();
+      return;
+    }
     setConnState("error", "连接失败");
     showToast(`MCP App 握手失败: ${err?.message || String(err)}`, "error");
     renderEmptyState();

@@ -1,117 +1,173 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="macos">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="light dark" />
   <title>Vivado 控制台 · Otter Vivado</title>
+  <!-- CONSOLE_STYLE -->
   <!-- __INLINE_CSS__ -->
 </head>
 <body>
   <div id="app" class="app-shell">
-    <header class="telemetry-header">
-      <div class="header-top-row">
-        <div class="brand">
-          <div class="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 28 28" width="22" height="22" fill="none">
-              <rect x="7" y="7" width="14" height="14" rx="2.5" stroke="currentColor" stroke-width="1.8"/>
-              <path d="M11 3v4M17 3v4M11 21v4M17 21v4M3 11h4M3 17h4M21 11h4M21 17h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-              <path d="M10.5 15.5h2l1.2-3.5 1.6 5 1.2-2.5H17.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </div>
-          <div class="brand-copy">
-            <div class="brand-title-row">
-              <h1>Vivado 控制台</h1>
-              <span id="conn-badge" class="conn-pill" data-state="connecting">连接中</span>
-            </div>
-            <p id="header-subtitle" class="header-sub">聚合 Runs · Batch/OOC · 离线工程 · ILA 调试</p>
-          </div>
-        </div>
-
-        <div class="header-controls">
-          <div class="summary-chips" id="summary-chips">
-            <button type="button" class="sum-chip" data-filter="running" id="chip-running" title="筛选运行中任务">
-              <span class="led led-running"></span>
-              <span>运行中</span>
-              <strong id="cnt-running">0</strong>
-            </button>
-            <button type="button" class="sum-chip" data-filter="completed" id="chip-completed" title="筛选已完成任务">
-              <span class="led led-ok"></span>
-              <span>已完成</span>
-              <strong id="cnt-completed">0</strong>
-            </button>
-            <button type="button" class="sum-chip" data-filter="failed" id="chip-failed" title="筛选异常任务">
-              <span class="led led-fail"></span>
-              <span>异常</span>
-              <strong id="cnt-failed">0</strong>
-            </button>
-          </div>
-
-          <div class="action-buttons">
-            <label class="auto-toggle" title="每 5 秒自动静默刷新状态">
-              <input type="checkbox" id="auto-refresh-toggle" checked />
-              <span>自动 5s</span>
-            </label>
-            <button type="button" id="btn-refresh" class="btn btn-secondary">刷新</button>
-            <button type="button" id="btn-clear-finished" class="btn btn-ghost" hidden>清理已完成</button>
-          </div>
-        </div>
-      </div>
-
-      <div id="inspect-form" class="inspect-bar" role="search">
-        <div class="inspect-input-wrap">
-          <svg class="inspect-icon" viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
-            <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.2 1.5h4.8A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-7Z" stroke="currentColor" stroke-width="1.3"/>
+    <header class="titlebar">
+      <div class="titlebar-left">
+        <div class="app-title" title="Vivado 控制台">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true">
+            <rect x="6" y="6" width="12" height="12" rx="2.5" stroke="currentColor" stroke-width="1.6"/>
+            <path d="M9.5 2.5v3.5M14.5 2.5v3.5M9.5 18v3.5M14.5 18v3.5M2.5 9.5H6M2.5 14.5H6M18 9.5h3.5M18 14.5h3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <path d="M9 13.2h1.7l1-3 1.4 4.2 1-2.2H15" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
-          <input
-            id="inspect-input"
-            type="text"
-            autocomplete="off"
-            placeholder="输入 .xpr 或报告目录路径，零 Token 查看"
-            aria-label="输入 .xpr 或报告目录路径，零 Token 查看"
-          />
+          <span>Vivado 控制台</span>
         </div>
-        <button type="button" id="btn-inspect" class="btn btn-primary">检视目录</button>
       </div>
 
-      <div id="toast-banner" class="toast-banner" role="status" aria-live="polite" hidden></div>
+      <div class="island-slot">
+        <button type="button" id="dynamic-island" class="link-island idle" title="点击跳转到运行中任务或刷新状态">
+          <span class="island-dot" aria-hidden="true"></span>
+          <span id="island-title" class="island-title">就绪</span>
+          <span class="island-divider" aria-hidden="true"></span>
+          <span id="island-detail" class="island-mode">等待数据</span>
+          <span id="island-meter" class="island-meter" aria-hidden="true" hidden><i></i><i></i><i></i><i></i></span>
+          <span id="island-badge" class="island-badge" hidden></span>
+        </button>
+      </div>
+
+      <div class="titlebar-right">
+        <div id="theme-menu-wrap" class="menu-wrap">
+          <button
+            type="button"
+            id="btn-theme"
+            class="theme-trigger island-trigger"
+            title="切换外观主题"
+            aria-haspopup="menu"
+            aria-expanded="false"
+          >
+            <span id="theme-trigger-swatch" class="theme-preview-mini" data-swatch="macos" aria-hidden="true">
+              <i></i><i></i><i></i><i></i>
+            </span>
+            <span id="theme-trigger-name" class="theme-trigger-name">macOS 深色</span>
+            <svg class="theme-chevron" viewBox="0 0 12 12" width="10" height="10" fill="none" aria-hidden="true">
+              <path d="M3 4.5 6 7.5 9 4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <div id="theme-menu" class="menu island-menu menu-right theme-menu" role="menu" hidden></div>
+        </div>
+
+        <button
+          type="button"
+          id="btn-auto-refresh"
+          class="tool-btn on"
+          title="自动 5s 静默刷新（点击切换）"
+          aria-pressed="true"
+          aria-label="自动 5s 静默刷新"
+        >
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
+            <circle cx="8" cy="8" r="5.5" stroke="currentColor" stroke-width="1.35"/>
+            <path d="M8 4.8V8l2.2 1.4" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+
+        <button
+          type="button"
+          id="btn-refresh"
+          class="tool-btn"
+          title="立即刷新状态"
+          aria-label="立即刷新状态"
+        >
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
+            <path d="M13 8a5 5 0 1 1-1.35-3.42" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/>
+            <path d="M13.2 2.6v2.7h-2.7" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
     </header>
 
-    <main id="workspace-main" class="workspace-grid">
-      <aside class="left-rail" aria-label="任务与目标导航">
-        <div class="rail-toolbar">
-          <input id="rail-search" type="search" placeholder="过滤目标 / Top / Part..." aria-label="过滤目标" />
+    <main id="workspace-main" class="app-main">
+      <aside class="sidebar" aria-label="目标与任务导航">
+        <div class="sidebar-top">
+          <div class="search-field">
+            <svg class="search-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
+              <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.4"/>
+              <path d="m10.5 10.5 3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+            </svg>
+            <input id="rail-search" type="search" placeholder="过滤目标 / Top / Part…" aria-label="过滤目标" />
+          </div>
+
+          <div class="filter-bar" id="summary-chips">
+            <button type="button" class="filter-chip" data-filter="" data-active="true">全部 <strong id="cnt-all">0</strong></button>
+            <button type="button" class="filter-chip" data-filter="running" id="chip-running"><span class="led led-running"></span>运行 <strong id="cnt-running">0</strong></button>
+            <button type="button" class="filter-chip" data-filter="completed" id="chip-completed"><span class="led led-ok"></span>完成 <strong id="cnt-completed">0</strong></button>
+            <button type="button" class="filter-chip" data-filter="failed" id="chip-failed"><span class="led led-fail"></span>异常 <strong id="cnt-failed">0</strong></button>
+          </div>
         </div>
-        <div id="rail-list" class="rail-list"></div>
+
+        <div id="rail-list" class="sidebar-scroll"></div>
+
+        <div class="sidebar-footer">
+          <div id="inspect-form" class="inspect-box" role="search">
+            <input
+              id="inspect-input"
+              class="text-field mono"
+              type="text"
+              autocomplete="off"
+              placeholder="检视 .xpr 或报告目录…"
+              aria-label="输入 .xpr 或报告目录路径，零 Token 查看"
+            />
+            <button type="button" id="btn-inspect" class="btn primary">检视</button>
+          </div>
+          <div class="sidebar-footer-actions" id="sidebar-footer-actions" hidden>
+            <button type="button" id="btn-clear-finished" class="ug-link-btn">清理已结束任务</button>
+          </div>
+        </div>
       </aside>
 
-      <section class="detail-stage" aria-label="详情工作区">
-        <div id="empty-stage" class="empty-stage" hidden></div>
+      <section class="pane main-pane" aria-label="详情工作区">
+        <div id="toast-banner" class="toast-banner" role="status" aria-live="polite" hidden></div>
+
+        <div id="empty-stage" class="detail-stage empty-stage-wrap" hidden></div>
 
         <div id="detail-shell" class="detail-shell" hidden>
-          <div id="detail-hero" class="detail-hero"></div>
+          <div id="pane-bar" class="pane-bar">
+            <div class="pane-bar-left">
+              <span id="pane-title" class="pane-title"></span>
+              <span id="pane-status-pill" class="status-badge"></span>
+              <span id="pane-kind-meta" class="pane-meta-text"></span>
+            </div>
 
-          <nav class="tab-bar" role="tablist" aria-label="控制台视图">
-            <button type="button" class="tab-btn" role="tab" data-tab="overview" aria-selected="true">总览</button>
-            <button type="button" class="tab-btn" role="tab" data-tab="diagnostics" aria-selected="false">
-              告警与错误 <span id="tab-diag-badge" class="tab-badge" hidden>0</span>
-            </button>
-            <button type="button" class="tab-btn" role="tab" data-tab="reports" aria-selected="false">
-              报告与日志 <span id="tab-rpt-badge" class="tab-badge" hidden>0</span>
-            </button>
-            <button type="button" class="tab-btn" role="tab" data-tab="sessions" aria-selected="false">
-              调试与会话 <span id="tab-sess-badge" class="tab-badge" hidden>0</span>
-            </button>
-          </nav>
+            <div class="seg seg-sm pane-tabs" role="tablist" aria-label="控制台视图">
+              <button type="button" class="tab-btn active" role="tab" data-tab="overview" aria-selected="true">总览</button>
+              <button type="button" class="tab-btn" role="tab" data-tab="diagnostics" aria-selected="false">告警 <span id="tab-diag-badge" class="seg-badge" hidden>0</span></button>
+              <button type="button" class="tab-btn" role="tab" data-tab="reports" aria-selected="false">报告 <span id="tab-rpt-badge" class="seg-badge" hidden>0</span></button>
+              <button type="button" class="tab-btn" role="tab" data-tab="sessions" aria-selected="false">调试 <span id="tab-sess-badge" class="seg-badge" hidden>0</span></button>
+            </div>
 
-          <div id="tab-panel-overview" class="tab-panel" role="tabpanel"></div>
-          <div id="tab-panel-diagnostics" class="tab-panel" role="tabpanel" hidden></div>
-          <div id="tab-panel-reports" class="tab-panel" role="tabpanel" hidden></div>
-          <div id="tab-panel-sessions" class="tab-panel" role="tabpanel" hidden></div>
+            <div id="pane-actions" class="pane-actions"></div>
+          </div>
+
+          <div id="detail-stage" class="detail-stage">
+            <div id="tab-panel-overview" class="tab-panel" role="tabpanel"></div>
+            <div id="tab-panel-diagnostics" class="tab-panel" role="tabpanel" hidden></div>
+            <div id="tab-panel-reports" class="tab-panel" role="tabpanel" hidden></div>
+            <div id="tab-panel-sessions" class="tab-panel" role="tabpanel" hidden></div>
+          </div>
         </div>
       </section>
     </main>
+
+    <footer class="status-bar">
+      <span id="sb-transport" class="sb-item sb-pill">MCP App</span>
+      <span id="conn-badge" class="sb-item sb-conn" data-state="connecting">连接中</span>
+      <div class="right">
+        <span id="sb-vivado" class="sb-item">0 个 Vivado</span>
+        <span class="sb-sep" aria-hidden="true">·</span>
+        <span class="sb-item sb-hint">零 Token 本地查看</span>
+        <span class="sb-sep sb-hint" aria-hidden="true">·</span>
+        <span id="sb-theme" class="sb-item">macOS 深色</span>
+      </div>
+    </footer>
   </div>
+  <!-- CONSOLE_SCRIPT -->
   <!-- __INLINE_JS__ -->
 </body>
 </html>

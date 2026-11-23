@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import shutil
 import subprocess
+from http.client import HTTPConnection
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
+import pytest
 from mcp.server.mcpserver import Context
 
 from vivado_mcp import batch_jobs
-from vivado_mcp.server import AppContext, mcp
+from vivado_mcp.console_http import ConsoleHttpServer, _inject_csp_nonce
+from vivado_mcp.server import AppContext, app_lifespan, mcp
 from vivado_mcp.tools.console_app_tools import (
     _MAX_STRUCTURED_BYTES,
     CONSOLE_APP_URI,
@@ -220,14 +225,28 @@ def test_built_console_html_is_self_contained_csp_safe_and_under_budget():
     assert "Vivado 控制台" in html
     assert "<form" not in html.lower()
     assert "--app-font-sans" in html
+    assert "var(--font-sans)" not in html
     assert ".nav-card-meta span:last-child" in html
     assert "reportReqId" in html
     assert "preventScroll" in html
     assert 'freshness==="stale"' in html or 'freshness === "stale"' in html
+    for theme_id in (
+        "macos",
+        "macos-light",
+        "graphite",
+        "geist",
+        "tokyo-night",
+        "catppuccin",
+        "nord",
+    ):
+        assert theme_id in html
+    assert "/api/state" in html and "/api/action" in html
+    assert "Local Web" in html and "MCP App" in html
 
-    # CSP 严格校验：脚本外零外链 URL、无外链资源标签
+    # CSP 严格校验：脚本外零外链 URL、无外链资源标签、无内联 style 属性
     non_script = re.sub(r"<script>[\s\S]*?</script>", "", html, flags=re.IGNORECASE)
     assert not re.search(r"https?://", non_script, flags=re.IGNORECASE)
+    assert "style=" not in non_script.lower()
     assert not re.search(
         r"<(?:script|link|img|iframe|source|video|audio)\b[^>]*(?:src|href)\s*=",
         non_script,
@@ -390,3 +409,346 @@ async def test_read_report_enforces_response_byte_budget_and_utf8_tail(tmp_path)
     assert "中文诊断信息" in report["lines"][-1]["text"]
     assert "\ufffd" not in report["lines"][-1]["text"]
     await app_ctx.batch_jobs.close()
+
+
+def _http_request(
+    url: str,
+    *,
+    path: str | None = None,
+    method: str = "GET",
+    body=None,
+    headers=None,
+):
+    parsed = urlsplit(url)
+    conn = HTTPConnection(parsed.hostname, parsed.port, timeout=4)
+    try:
+        target = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        conn.request(
+            method,
+            target if path is None else path,
+            body=body,
+            headers=headers or {},
+        )
+        resp = conn.getresponse()
+        return resp.status, dict(resp.getheaders()), resp.read()
+    finally:
+        conn.close()
+
+
+async def test_console_http_serves_page_state_actions_and_enforces_security_guards(tmp_path):
+    app_ctx = AppContext(
+        session_manager=SessionManager(vivado_path=""),
+        batch_jobs=batch_jobs.BatchJobRegistry(jobs_dir=tmp_path / "jobs"),
+    )
+    allowed_dir = tmp_path / "ooc_http"
+    allowed_dir.mkdir()
+    timing_text = (FIXTURES / "sample_report_timing.txt").read_text(encoding="utf-8")
+    rpt = allowed_dir / "timing.rpt"
+    rpt.write_text("| Design State : Synthesized\n" + timing_text, encoding="utf-8")
+    outside = tmp_path / "outside.log"
+    outside.write_text("SECRET", encoding="utf-8")
+
+    server = ConsoleHttpServer(app_ctx, loop=asyncio.get_running_loop())
+    url = await asyncio.to_thread(server.start)
+    parsed = urlsplit(url)
+    origin = f"http://{parsed.netloc}"
+    try:
+        assert parsed.hostname == "127.0.0.1"
+        assert parsed.port > 0
+        assert parsed.path == "/"
+        assert await asyncio.to_thread(server.start) == url
+
+        # 1. GET / 返回含 nonce CSP 的控制台页面，无 CORS 放行
+        status, headers, page_bytes = await asyncio.to_thread(_http_request, url)
+        assert status == 200
+        page = page_bytes.decode("utf-8")
+        assert "Vivado 控制台" in page
+        nonce = re.search(r'<script nonce="([A-Za-z0-9_-]+)">', page).group(1)
+        assert f'<style nonce="{nonce}">' in page
+        policy = headers["Content-Security-Policy"]
+        assert f"script-src 'nonce-{nonce}'" in policy
+        assert f"style-src 'nonce-{nonce}'" in policy
+        assert "connect-src 'self'" in policy
+        assert "frame-ancestors 'none'" in policy
+        assert "unsafe-inline" not in policy
+        assert "Access-Control-Allow-Origin" not in headers
+        assert headers["Cache-Control"] == "no-store"
+
+        # 2. GET /api/state 返回与 vivado_console_state 同构的状态
+        status, _, state_bytes = await asyncio.to_thread(_http_request, url, path="/api/state")
+        assert status == 200
+        state_data = json.loads(state_bytes)
+        assert set(state_data) >= {
+            "sessions",
+            "run_monitors",
+            "batch_jobs",
+            "debug_sessions",
+            "inspected_targets",
+            "vivado_installs",
+            "server_time",
+        }
+
+        # 3. POST /api/action 支持 inspect_path / read_report / remove_inspected
+        post_headers = {"Origin": origin, "Content-Type": "application/json"}
+        status, _, insp_bytes = await asyncio.to_thread(
+            _http_request,
+            url,
+            path="/api/action",
+            method="POST",
+            body=json.dumps({"action": "inspect_path", "path": str(allowed_dir)}),
+            headers=post_headers,
+        )
+        assert status == 200
+        insp_data = json.loads(insp_bytes)
+        assert insp_data["action"] == "inspect_path"
+        assert insp_data["state"]["inspected_targets"][0]["timing"]["wns"] == 0.234
+
+        status, _, rpt_bytes = await asyncio.to_thread(
+            _http_request,
+            url,
+            path="/api/action",
+            method="POST",
+            body=json.dumps(
+                {"action": "read_report", "report_path": str(rpt), "max_lines": 5}
+            ),
+            headers=post_headers,
+        )
+        assert status == 200
+        assert json.loads(rpt_bytes)["report"]["name"] == "timing.rpt"
+
+        # 越界读取拦截
+        status, _, _ = await asyncio.to_thread(
+            _http_request,
+            url,
+            path="/api/action",
+            method="POST",
+            body=json.dumps({"action": "read_report", "report_path": str(outside)}),
+            headers=post_headers,
+        )
+        assert status == 400
+
+        status, _, rem_bytes = await asyncio.to_thread(
+            _http_request,
+            url,
+            path="/api/action",
+            method="POST",
+            body=json.dumps({"action": "remove_inspected", "path": str(allowed_dir)}),
+            headers=post_headers,
+        )
+        assert status == 200
+        assert json.loads(rem_bytes)["removed"] is True
+
+        # 4. Host / Origin / Sec-Fetch-Site / 写请求缺失 Origin 全部拒绝 403
+        for bad_headers in (
+            {"Host": "attacker.example"},
+            {"Host": "localhost"},
+            {"Origin": "https://attacker.example"},
+            {"Origin": "null"},
+            {"Sec-Fetch-Site": "cross-site"},
+        ):
+            s_get, _, _ = await asyncio.to_thread(
+                _http_request, url, path="/api/state", headers=bad_headers
+            )
+            assert s_get == 403
+
+        # POST 必须带同源 Origin
+        s_no_origin, _, _ = await asyncio.to_thread(
+            _http_request,
+            url,
+            path="/api/action",
+            method="POST",
+            body=json.dumps({"action": "clear_finished"}),
+            headers={"Content-Type": "application/json"},
+        )
+        assert s_no_origin == 403
+
+        # 5. 非法 JSON / 重复键 / 未知字段 / 未知路由 / 非法方法拦截
+        for bad_body in (
+            b"{",
+            b'{"action":"clear_finished","action":"clear_finished"}',
+            b'{"action":"clear_finished","extra":1}',
+            b'{"action":"run_tcl"}',
+        ):
+            s_bad, _, _ = await asyncio.to_thread(
+                _http_request,
+                url,
+                path="/api/action",
+                method="POST",
+                body=bad_body,
+                headers=post_headers,
+            )
+            assert s_bad == 400
+
+        s_415, _, _ = await asyncio.to_thread(
+            _http_request,
+            url,
+            path="/api/action",
+            method="POST",
+            body=b"{}",
+            headers={"Origin": origin, "Content-Type": "text/plain"},
+        )
+        assert s_415 == 415
+
+        assert (await asyncio.to_thread(_http_request, url, path="/etc/passwd"))[0] == 404
+        fav_status, _, fav_body = await asyncio.to_thread(
+            _http_request, url, path="/favicon.ico"
+        )
+        assert fav_status == 204
+        assert fav_body == b""
+        assert (
+            await asyncio.to_thread(_http_request, url, path="/api/state", method="DELETE")
+        )[0] == 405
+
+        sample_html = (
+            "<html><head><!-- CONSOLE_STYLE --><style>body{}</style></head>"
+            "<body><!-- CONSOLE_SCRIPT --><script>const s='<script>';</script></body></html>"
+        )
+        injected = _inject_csp_nonce(sample_html, "abc123")
+        assert '<style nonce="abc123">body{}</style>' in injected
+        assert '<script nonce="abc123">const s=\'<script>\';</script>' in injected
+
+        with pytest.raises(ValueError):
+            ConsoleHttpServer(app_ctx, host="0.0.0.0")
+    finally:
+        await asyncio.to_thread(server.close)
+        await app_ctx.batch_jobs.close()
+
+
+async def test_open_vivado_console_open_browser_and_lifespan_teardown(monkeypatch, tmp_path):
+    ctx, app_ctx = _make_context(tmp_path)
+    off_dir = tmp_path / "codex_ooc"
+    off_dir.mkdir()
+    (off_dir / "vivado.log").write_text("Vivado v2024.2\nFinished synth_design\n", encoding="utf-8")
+
+    opened_urls: list[str] = []
+    monkeypatch.setattr("webbrowser.open", lambda u: opened_urls.append(u) or True)
+
+    try:
+        res = await mcp.call_tool(
+            "open_vivado_console",
+            {"inspect_path": str(off_dir), "open_browser": True},
+            context=ctx,
+        )
+        assert not res.is_error
+        sc = res.structured_content
+        url = sc.get("url", "")
+        assert url.startswith("http://127.0.0.1:")
+        assert url in res.content[0].text
+        assert opened_urls == [url]
+        assert app_ctx.console_http is not None
+
+        status, _, state_bytes = await asyncio.to_thread(_http_request, url, path="/api/state")
+        assert status == 200
+        state_json = json.loads(state_bytes)
+        assert state_json["selected_inspected_path"] == str(off_dir.resolve())
+        assert state_json["selection_seq"] == 1
+    finally:
+        if app_ctx.console_http is not None:
+            await asyncio.to_thread(app_ctx.console_http.close)
+        await app_ctx.batch_jobs.close()
+
+
+async def test_app_lifespan_closes_console_http_on_exit(monkeypatch, tmp_path):
+    monkeypatch.setattr("vivado_mcp.server.find_vivado", lambda: "")
+    async with app_lifespan(mcp) as app_ctx:
+        srv = ConsoleHttpServer(app_ctx, loop=asyncio.get_running_loop())
+        url = await asyncio.to_thread(srv.start)
+        app_ctx.console_http = srv
+        assert (await asyncio.to_thread(_http_request, url))[0] == 200
+    assert app_ctx.console_http is None
+    assert srv.url == ""
+
+
+def test_console_cli_subcommand_help():
+    res = subprocess.run(
+        [str(ROOT / ".venv" / "Scripts" / "python.exe"), "-m", "vivado_mcp", "console", "--help"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert res.returncode == 0
+    assert "--inspect" in res.stdout
+    assert "--no-browser" in res.stdout
+    assert "--port" in res.stdout
+
+
+def test_browser_console_http_themes_and_responsive_layout(tmp_path):
+    """可选真实浏览器验证：7 主题切换、严格 CSP 零报错、Local Web 模式与 460px 窄栏。"""
+    playwright = pytest.importorskip("playwright.sync_api")
+    executable = shutil.which("chromium") or shutil.which("chromium-browser")
+    if executable is None:
+        pytest.skip("未安装 Chromium；HTTP 边界与构造测试仍独立运行")
+
+    app_ctx = AppContext(
+        session_manager=SessionManager(vivado_path=""),
+        batch_jobs=batch_jobs.BatchJobRegistry(jobs_dir=tmp_path / "jobs"),
+    )
+    off_dir = tmp_path / "pw_ooc"
+    off_dir.mkdir()
+    timing_text = (FIXTURES / "sample_report_timing.txt").read_text(encoding="utf-8")
+    util_text = (FIXTURES / "sample_report_utilization.txt").read_text(encoding="utf-8")
+    (off_dir / "timing.rpt").write_text(
+        "| Design State : Synthesized\n" + timing_text, encoding="utf-8"
+    )
+    (off_dir / "utilization.rpt").write_text(util_text, encoding="utf-8")
+    (off_dir / "vivado.log").write_text(
+        "Vivado v2024.2\nPhase 1.1 Placer Initialization\nERROR: [Synth 8-123] demo err\n",
+        encoding="utf-8",
+    )
+
+    server = ConsoleHttpServer(app_ctx)
+    url = server.start()
+    try:
+        with playwright.sync_playwright() as runtime:
+            browser = runtime.chromium.launch(
+                executable_path=executable, headless=True, args=["--no-sandbox"]
+            )
+            try:
+                page = browser.new_page(viewport={"width": 1280, "height": 840})
+                errors: list[str] = []
+                page.on("pageerror", lambda err: errors.append(str(err)))
+                page.on(
+                    "console",
+                    lambda msg: errors.append(msg.text) if msg.type == "error" else None,
+                )
+
+                page.goto(url)
+                playwright.expect(page.locator("#sb-transport")).to_have_text("Local Web")
+                assert page.locator("#hero-ctx-btn").count() == 0
+                assert page.locator("#hero-ask-btn").count() == 0
+
+                page.locator("#inspect-input").fill(str(off_dir))
+                page.locator("#btn-inspect").click()
+                playwright.expect(page.locator("#pane-title")).not_to_be_empty()
+                playwright.expect(page.locator("#tab-panel-overview")).to_contain_text("0.234")
+
+                # 测试 7 主题菜单切换
+                page.locator("#btn-theme").click()
+                page.locator('[data-theme-id="catppuccin"]').click()
+                playwright.expect(page.locator("html")).to_have_attribute(
+                    "data-theme", "catppuccin"
+                )
+                page.locator("#btn-theme").click()
+                page.locator('[data-theme-id="macos-light"]').click()
+                playwright.expect(page.locator("html")).to_have_attribute(
+                    "data-theme", "macos-light"
+                )
+
+                # 切换标签页并读取报告
+                page.get_by_role("tab", name="告警").click()
+                playwright.expect(
+                    page.locator("#tab-panel-diagnostics")
+                ).to_contain_text("Synth 8-123")
+                page.get_by_role("tab", name="报告").click()
+                page.locator(".rpt-chip", has_text="timing.rpt").click()
+                playwright.expect(page.locator(".terminal-lines")).to_contain_text("WNS(ns)")
+
+                # 窄屏 460x840 零横向溢出
+                page.set_viewport_size({"width": 460, "height": 840})
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+                assert errors == []
+            finally:
+                browser.close()
+    finally:
+        server.close()
+        asyncio.run(app_ctx.batch_jobs.close())

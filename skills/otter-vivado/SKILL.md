@@ -24,7 +24,7 @@ description: 操作 AMD Vivado 工程、本地或远程综合与实现、查看�
 **独立 OOC 综合与批处理 Tcl（省 Token、禁 shell sleep）**：
 - 无 `.xpr` 独立综合优先用 `run_ooc_synth`（1 次调用生成 Tcl、可选时钟约束并自动解析 WNS/TNS/WHS/THS、LUT/FF/BRAM/DSP 与去重告警，返回 < 2 KB 紧凑 JSON）；跑批处理 Tcl 脚本优先用 `run_batch_tcl`。
 - 禁止用裸 shell `vivado -mode batch` + `sleep` 轮询！两工具均支持服务端等待（`wait=True` 带进度上报；超时不杀 Vivado，返回 `wait_timed_out=True` 与 `job_id`，再用 `get_batch_job(job_id=..., wait_seconds=...)` 续等）且工作目录隔离在 `%LOCALAPPDATA%\otter-vivado\jobs\`。
-- 需要可视化或零 Token 检视离线 `.xpr`/`.runs`/OOC 目录时，使用 `open_vivado_console`（Antigravity 侧栏「Vivado 控制台」）。
+- 需要可视化或零 Token 检视离线 `.xpr`/`.runs`/OOC 目录时，使用 `open_vivado_console`：Antigravity 使用原生侧栏「Vivado 控制台」（`open_vivado_console()`），Codex / 浏览器客户端传 `open_vivado_console(open_browser=True)` 在本机浏览器打开同款控制台。
 
 可视化职责：本插件提供接口、状态数据与生成方法，智能体为具体消费者工程生成页面和
 交互。页面、布局、主题、业务控件语义保存在消费者工程；已有内置网页仅为可选参考实现，

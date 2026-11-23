@@ -15,6 +15,7 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from typing import Any
 
 from mcp.server import MCPServer
 
@@ -61,6 +62,7 @@ class AppContext:
     run_monitors: MonitorRegistry = field(default_factory=MonitorRegistry)
     debug_services: DebugRegistry = field(default_factory=DebugRegistry)
     batch_jobs: BatchJobRegistry = field(default_factory=BatchJobRegistry)
+    console_http: Any = None
 
 
 _app_context_ref: AppContext | None = None
@@ -117,6 +119,9 @@ async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
     finally:
         _app_context_ref = None
         _manager_ref = None
+        if app_context.console_http is not None:
+            await asyncio.to_thread(app_context.console_http.close)
+            app_context.console_http = None
         await app_context.batch_jobs.close()
         await app_context.debug_services.close()
         await app_context.run_monitors.close()

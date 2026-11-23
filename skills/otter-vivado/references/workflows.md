@@ -47,7 +47,7 @@ GUI 使用已有 `start_session` 的 `gui`/`attach` 模式和 Vivado 工程命�
 
 ## 进度与报告
 
-需要可视化总览（Runs、Batch/OOC 任务、离线 `.xpr`/`.runs` 与 ILA 会话）时，调用 `open_vivado_console` 或从宿主侧栏打开「Vivado 控制台」；用户可直接输入路径零 Token 预览报告与日志。需要单 run 独立本机 HTTP 面板时，`open_run_monitor` 返回本机 URL；`get_run_snapshot` 读取同一缓存。两者只登记/读取观察器，不启动构建。首次 `waiting` 允许等待采样；`busy`、失联或错误时先看最后成功采样时间，保留原始原因。
+需要可视化总览（Runs、Batch/OOC 任务、离线 `.xpr`/`.runs` 与 ILA 会话）时，Antigravity 使用原生侧栏「Vivado 控制台」（`open_vivado_console()`），Codex / 浏览器客户端传 `open_vivado_console(open_browser=True)` 在本机浏览器打开同款控制台；用户可直接输入路径零 Token 预览报告与日志。需要单 run 独立本机 HTTP 面板时，`open_run_monitor` 返回本机 URL；`get_run_snapshot` 读取同一缓存。两者只登记/读取观察器，不启动构建。首次 `waiting` 允许等待采样；`busy`、失联或错误时先看最后成功采样时间，保留原始原因。
 
 判断顺序：
 
