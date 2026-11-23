@@ -75,7 +75,7 @@ async def test_console_tool_metadata_entrypoints_visibility_and_resource(monkeyp
     assert "override-console" in overridden[0].content
 
 
-async def test_open_vivado_console_and_state_payload_contract(tmp_path):
+async def test_open_vivado_console_and_state_payload_contract(monkeypatch, tmp_path):
     ctx, app_ctx = _make_context(tmp_path)
     off_dir = tmp_path / "ooc_out"
     off_dir.mkdir()
@@ -85,34 +85,54 @@ async def test_open_vivado_console_and_state_payload_contract(tmp_path):
         encoding="utf-8",
     )
 
-    # 无参 {} 启动
-    empty_res = await mcp.call_tool("open_vivado_console", {}, context=ctx)
-    assert not empty_res.is_error
-    sc = empty_res.structured_content
-    assert set(sc) >= {
-        "sessions",
-        "run_monitors",
-        "batch_jobs",
-        "debug_sessions",
-        "inspected_targets",
-        "vivado_installs",
-        "server_time",
-    }
-    assert len(json.dumps(sc, ensure_ascii=False).encode("utf-8")) < 256 * 1024
+    opened_urls: list[str] = []
+    monkeypatch.setattr("webbrowser.open", lambda u: opened_urls.append(u) or True)
 
-    # 传入 inspect_path
-    inspected_res = await mcp.call_tool(
-        "open_vivado_console", {"inspect_path": str(off_dir)}, context=ctx
-    )
-    assert not inspected_res.is_error
-    assert len(inspected_res.structured_content["inspected_targets"]) == 1
-    assert inspected_res.structured_content["inspected_targets"][0]["timing"]["wns"] == 0.234
+    try:
+        # 无参 {} 启动（open_browser=False）：静默启动 127.0.0.1 服务且不弹出浏览器
+        empty_res = await mcp.call_tool("open_vivado_console", {}, context=ctx)
+        assert not empty_res.is_error
+        sc = empty_res.structured_content
+        assert set(sc) >= {
+            "sessions",
+            "run_monitors",
+            "batch_jobs",
+            "debug_sessions",
+            "inspected_targets",
+            "vivado_installs",
+            "local_web",
+            "url",
+            "server_time",
+        }
+        lw = sc["local_web"]
+        assert lw["running"] is True
+        assert lw["url"].startswith("http://127.0.0.1:")
+        assert lw["host_port"].startswith("127.0.0.1:")
+        assert sc["url"] == lw["url"]
+        assert lw["url"] in empty_res.content[0].text
+        assert opened_urls == []
+        assert app_ctx.console_http is not None
+        assert len(json.dumps(sc, ensure_ascii=False).encode("utf-8")) < 256 * 1024
 
-    # state 工具不附带大报告正文
-    state_res = await mcp.call_tool("vivado_console_state", {}, context=ctx)
-    assert not state_res.is_error
-    assert len(state_res.structured_content["inspected_targets"]) == 1
-    await app_ctx.batch_jobs.close()
+        # 传入 inspect_path，复用同一 127.0.0.1 URL
+        inspected_res = await mcp.call_tool(
+            "open_vivado_console", {"inspect_path": str(off_dir)}, context=ctx
+        )
+        assert not inspected_res.is_error
+        assert len(inspected_res.structured_content["inspected_targets"]) == 1
+        assert inspected_res.structured_content["inspected_targets"][0]["timing"]["wns"] == 0.234
+        assert inspected_res.structured_content["local_web"]["url"] == lw["url"]
+        assert opened_urls == []
+
+        # state 工具不附带大报告正文，且保留 local_web
+        state_res = await mcp.call_tool("vivado_console_state", {}, context=ctx)
+        assert not state_res.is_error
+        assert len(state_res.structured_content["inspected_targets"]) == 1
+        assert state_res.structured_content["local_web"] == lw
+    finally:
+        if app_ctx.console_http is not None:
+            await asyncio.to_thread(app_ctx.console_http.close)
+        await app_ctx.batch_jobs.close()
 
 
 async def test_console_action_read_report_and_path_traversal_guards(tmp_path):
@@ -242,6 +262,9 @@ def test_built_console_html_is_self_contained_csp_safe_and_under_budget():
         assert theme_id in html
     assert "/api/state" in html and "/api/action" in html
     assert "Local Web" in html and "MCP App" in html
+    assert "sb-local-wrap" in html
+    assert "本机服务地址 (127.0.0.1)" in html
+    assert "open_local_browser" in html and "ensure_local_web" in html
 
     # CSP 严格校验：脚本外零外链 URL、无外链资源标签、无内联 style 属性
     non_script = re.sub(r"<script>[\s\S]*?</script>", "", html, flags=re.IGNORECASE)
@@ -624,6 +647,21 @@ async def test_open_vivado_console_open_browser_and_lifespan_teardown(monkeypatc
     monkeypatch.setattr("webbrowser.open", lambda u: opened_urls.append(u) or True)
 
     try:
+        # 1. open_browser=False 启动 127.0.0.1 监听，但不触发 webbrowser.open
+        silent_res = await mcp.call_tool(
+            "open_vivado_console",
+            {"open_browser": False},
+            context=ctx,
+        )
+        assert not silent_res.is_error
+        silent_sc = silent_res.structured_content
+        url = silent_sc.get("url", "")
+        assert url.startswith("http://127.0.0.1:")
+        assert silent_sc["local_web"]["running"] is True
+        assert silent_sc["local_web"]["url"] == url
+        assert opened_urls == []
+
+        # 2. open_browser=True 复用同一 URL 并调用 webbrowser.open
         res = await mcp.call_tool(
             "open_vivado_console",
             {"inspect_path": str(off_dir), "open_browser": True},
@@ -631,8 +669,8 @@ async def test_open_vivado_console_open_browser_and_lifespan_teardown(monkeypatc
         )
         assert not res.is_error
         sc = res.structured_content
-        url = sc.get("url", "")
-        assert url.startswith("http://127.0.0.1:")
+        assert sc.get("url") == url
+        assert sc["local_web"]["url"] == url
         assert url in res.content[0].text
         assert opened_urls == [url]
         assert app_ctx.console_http is not None
@@ -642,9 +680,79 @@ async def test_open_vivado_console_open_browser_and_lifespan_teardown(monkeypatc
         state_json = json.loads(state_bytes)
         assert state_json["selected_inspected_path"] == str(off_dir.resolve())
         assert state_json["selection_seq"] == 1
+        assert state_json["local_web"]["url"] == url
     finally:
         if app_ctx.console_http is not None:
             await asyncio.to_thread(app_ctx.console_http.close)
+        await app_ctx.batch_jobs.close()
+
+
+async def test_console_actions_ensure_local_web_and_open_local_browser(monkeypatch, tmp_path):
+    ctx, app_ctx = _make_context(tmp_path)
+    opened_urls: list[str] = []
+    monkeypatch.setattr("webbrowser.open", lambda u: opened_urls.append(u) or True)
+
+    try:
+        ensure_res = await mcp.call_tool(
+            "vivado_console_action",
+            {"action": "ensure_local_web"},
+            context=ctx,
+        )
+        assert not ensure_res.is_error
+        ensure_sc = ensure_res.structured_content
+        url = ensure_sc["url"]
+        assert url.startswith("http://127.0.0.1:")
+        assert ensure_sc["local_web"]["running"] is True
+        assert opened_urls == []
+
+        open_res = await mcp.call_tool(
+            "vivado_console_action",
+            {"action": "open_local_browser"},
+            context=ctx,
+        )
+        assert not open_res.is_error
+        assert open_res.structured_content["url"] == url
+        assert opened_urls == [url]
+    finally:
+        if app_ctx.console_http is not None:
+            await asyncio.to_thread(app_ctx.console_http.close)
+        await app_ctx.batch_jobs.close()
+
+
+async def test_console_state_preserves_monitor_and_debug_loopback_urls(tmp_path):
+    from vivado_mcp.debug_service import DebugService
+
+    ctx, app_ctx = _make_context(tmp_path)
+
+    class _FakeSession:
+        session_id = "default"
+        mode = "gui"
+        is_alive = True
+        state = "stopped"
+
+    fake_session = _FakeSession()
+    mon = app_ctx.run_monitors.get(fake_session, "impl_1", "route_design")
+    await mon.close()
+    mon_url = mon.open_view()
+
+    dbg = DebugService(fake_session, backend=SimpleNamespace())
+    app_ctx.debug_services._services["default"] = dbg
+    dbg_url = dbg.open_view()
+
+    try:
+        state_res = await mcp.call_tool("vivado_console_state", {}, context=ctx)
+        assert not state_res.is_error
+        sc = state_res.structured_content
+        assert sc["run_monitors"][0]["url"] == mon_url
+        assert sc["debug_sessions"][0]["url"] == dbg_url
+        # 底层快照本身不注入 url，保持 MonitorHTTP/DebugHTTP 契约不变
+        assert "url" not in mon.snapshot()
+        assert "url" not in dbg.snapshot()
+    finally:
+        if mon._http is not None:
+            await asyncio.to_thread(mon._http.close)
+            mon._http = None
+        await dbg.close()
         await app_ctx.batch_jobs.close()
 
 

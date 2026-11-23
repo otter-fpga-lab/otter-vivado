@@ -64,6 +64,10 @@ const ui = {
   connState: "connecting",
   autoTimer: null,
   toastTimer: null,
+  localUrlCopied: false,
+  localCopyTimer: null,
+  copiedServiceUrl: "",
+  serviceCopyTimer: null,
 };
 
 function byId(id) {
@@ -496,7 +500,107 @@ function updateSummaryAndStatus(items) {
     sbVivado.textContent = `${installsCount} 个 Vivado · ${sessionsCount} 个会话`;
   }
 
+  renderLocalWebStatus();
   updateDynamicIsland(items, { running, completed, failed, installsCount });
+}
+
+function getLocalWebInfo() {
+  const lw = ui.state?.local_web;
+  let url =
+    lw && lw.running !== false && typeof lw.url === "string" && lw.url
+      ? lw.url
+      : typeof ui.state?.url === "string"
+        ? ui.state.url
+        : "";
+  let hostPort = lw && typeof lw.host_port === "string" && lw.host_port ? lw.host_port : "";
+  if (!url && ui.transportMode === "http" && window.location.hostname === "127.0.0.1") {
+    url = `${window.location.origin}/`;
+    hostPort = window.location.host;
+  }
+  if (url && !hostPort) {
+    try {
+      hostPort = new URL(url).host;
+    } catch {
+      hostPort = "";
+    }
+  }
+  const running = Boolean(url && (lw ? lw.running !== false : true));
+  return {
+    running,
+    url: running ? url : "",
+    hostPort: running ? hostPort : "",
+    error: lw?.error || "",
+  };
+}
+
+function collectLocalServices() {
+  const info = getLocalWebInfo();
+  const list = [
+    {
+      id: "console",
+      kind: "console",
+      title: "Vivado 控制台",
+      badge: ui.transportMode === "http" ? "Local Web" : "MCP App",
+      status: info.running ? "completed" : "idle",
+      statusLabel: info.running ? "运行中" : "未启动",
+      url: info.url,
+      error: info.error,
+    },
+  ];
+  for (const mon of ui.state?.run_monitors || []) {
+    const url = mon?.url || mon?.local_url || mon?.view_url || "";
+    if (typeof url === "string" && url.startsWith("http://127.0.0.1:")) {
+      list.push({
+        id: `mon:${mon.session_id || ""}:${mon.run_name || ""}:${mon.target_step || ""}`,
+        kind: "monitor",
+        title: `运行观察 · ${mon.run_name || "run"}`,
+        badge: `${mon.session_id || "default"} · ${mon.target_step || "monitor"}`,
+        status: "completed",
+        statusLabel: "运行中",
+        url,
+        error: "",
+      });
+    }
+  }
+  for (const dbg of ui.state?.debug_sessions || []) {
+    const url = dbg?.url || dbg?.local_url || dbg?.view_url || "";
+    if (typeof url === "string" && url.startsWith("http://127.0.0.1:")) {
+      list.push({
+        id: `dbg:${dbg.session_id || ""}`,
+        kind: "debug",
+        title: `硬件调试面板 · ${dbg.session_id || "default"}`,
+        badge: "ILA / VIO",
+        status: "completed",
+        statusLabel: "运行中",
+        url,
+        error: "",
+      });
+    }
+  }
+  return list;
+}
+
+function renderLocalWebStatus() {
+  const wrap = byId("sb-local-wrap");
+  const copyBtn = byId("btn-sb-copy-url");
+  const addrEl = byId("sb-local-addr");
+  const copiedEl = byId("sb-local-copied");
+  const openBtn = byId("btn-sb-open-browser");
+  if (!wrap || !copyBtn || !addrEl || !copiedEl || !openBtn) return;
+
+  const info = getLocalWebInfo();
+  if (!info.running || !info.hostPort) {
+    wrap.hidden = true;
+    openBtn.hidden = true;
+    return;
+  }
+
+  wrap.hidden = false;
+  addrEl.textContent = info.hostPort;
+  copyBtn.title = `点击复制 ${info.url}`;
+  copyBtn.dataset.copied = ui.localUrlCopied ? "true" : "false";
+  copiedEl.hidden = !ui.localUrlCopied;
+  openBtn.hidden = ui.transportMode !== "mcp";
 }
 
 function updateDynamicIsland(items, counts) {
@@ -1169,6 +1273,35 @@ function renderSessionsTab() {
   const debugs = ui.state?.debug_sessions || [];
   const installs = ui.state?.vivado_installs?.installations || [];
   const selectedVivado = ui.state?.vivado_installs?.selected_path || "";
+  const localServices = collectLocalServices();
+  const activeServicesCount = localServices.filter((s) => Boolean(s.url)).length;
+
+  const localServiceRows = localServices
+    .map((svc) => {
+      const copied = Boolean(svc.url) && ui.copiedServiceUrl === svc.url;
+      const urlHtml = svc.url
+        ? `<code class="service-url mono">${escapeHtml(svc.url)}</code>`
+        : `<span class="service-url muted">${escapeHtml(svc.error ? `未启动 (${svc.error})` : "尚未启动本机 HTTP 服务")}</span>`;
+      const actionsHtml = svc.url
+        ? `<button type="button" class="btn" data-copy-service-url="${escapeHtml(svc.url)}">${copied ? "已复制" : "复制地址"}</button>
+           <button type="button" class="btn" data-open-service-url="${escapeHtml(svc.url)}" data-service-kind="${escapeHtml(svc.kind)}">浏览器打开</button>`
+        : `<button type="button" class="btn" id="btn-ensure-console-web">启动本机服务</button>
+           <button type="button" class="btn" data-open-service-url="" data-service-kind="console">浏览器打开</button>`;
+      return `
+        <div class="service-row">
+          <div class="service-main">
+            <div class="service-title-line">
+              <span class="service-name">${escapeHtml(svc.title)}</span>
+              <span class="kind-chip">${escapeHtml(svc.badge)}</span>
+              <span class="status-badge" data-status="${escapeHtml(svc.status)}">${escapeHtml(svc.statusLabel)}</span>
+            </div>
+            ${urlHtml}
+          </div>
+          <div class="service-actions">${actionsHtml}</div>
+        </div>
+      `;
+    })
+    .join("");
 
   const sessRows = sessions.length
     ? sessions
@@ -1232,6 +1365,14 @@ function renderSessionsTab() {
     <div class="stack">
       <div>
         <div class="group-head">
+          <span>本机服务地址 (127.0.0.1)</span>
+          <span class="group-head-sub">${activeServicesCount} 个可用</span>
+        </div>
+        <div class="group">${localServiceRows}</div>
+      </div>
+
+      <div>
+        <div class="group-head">
           <span>活跃 Vivado 会话 (Tcl / GUI / External)</span>
           <span class="group-head-sub">${sessions.length} 个</span>
         </div>
@@ -1263,6 +1404,20 @@ function renderSessionsTab() {
       </div>
     </div>
   `;
+
+  for (const btn of el.querySelectorAll("[data-copy-service-url]")) {
+    btn.addEventListener("click", () => {
+      handleCopyLocalUrl(btn.dataset.copyServiceUrl, { source: "service" });
+    });
+  }
+  for (const btn of el.querySelectorAll("[data-open-service-url]")) {
+    btn.addEventListener("click", () => {
+      handleOpenLocalUrl(btn.dataset.openServiceUrl, {
+        isConsole: btn.dataset.serviceKind === "console",
+      });
+    });
+  }
+  byId("btn-ensure-console-web")?.addEventListener("click", handleEnsureLocalWeb);
 }
 
 function updateTabVisibility(item) {
@@ -1564,17 +1719,145 @@ async function handleReadReport(reportPath, maxLines = 300) {
   renderAll();
 }
 
-async function copyText(text) {
+function isClipboardWriteAllowed() {
   try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      showToast("已复制到剪贴板", "success");
-      return;
+    if (typeof document.permissionsPolicy?.allowsFeature === "function") {
+      return document.permissionsPolicy.allowsFeature("clipboard-write");
+    }
+    if (typeof document.featurePolicy?.allowsFeature === "function") {
+      return document.featurePolicy.allowsFeature("clipboard-write");
     }
   } catch {
-    // fallback below
+    // ignore
+  }
+  return ui.transportMode !== "mcp";
+}
+
+async function copyWithFallback(text) {
+  if (navigator.clipboard?.writeText && isClipboardWriteAllowed()) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // fallback below
+    }
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.className = "sr-copy-input";
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return Boolean(ok);
+  } catch {
+    return false;
+  }
+}
+
+async function copyText(text) {
+  if (await copyWithFallback(text)) {
+    showToast("已复制到剪贴板", "success");
+    return;
   }
   showToast(`路径: ${text}`, "info");
+}
+
+async function handleCopyLocalUrl(url, { source = "status" } = {}) {
+  const targetUrl = url || getLocalWebInfo().url;
+  if (!targetUrl) return;
+  const ok = await copyWithFallback(targetUrl);
+  if (source === "status") {
+    ui.localUrlCopied = true;
+    if (ui.localCopyTimer) clearTimeout(ui.localCopyTimer);
+    ui.localCopyTimer = setTimeout(() => {
+      ui.localUrlCopied = false;
+      renderLocalWebStatus();
+    }, 1800);
+    renderLocalWebStatus();
+  } else {
+    ui.copiedServiceUrl = targetUrl;
+    if (ui.serviceCopyTimer) clearTimeout(ui.serviceCopyTimer);
+    ui.serviceCopyTimer = setTimeout(() => {
+      ui.copiedServiceUrl = "";
+      if (ui.activeTab === "sessions") renderSessionsTab();
+    }, 1800);
+    if (ui.activeTab === "sessions") renderSessionsTab();
+  }
+  showToast(
+    ok ? `已复制本机服务地址: ${targetUrl}` : `请手动复制地址: ${targetUrl}`,
+    ok ? "success" : "info"
+  );
+}
+
+async function handleEnsureLocalWeb() {
+  if (ui.transportMode !== "mcp") return;
+  try {
+    const sc = await transportRunAction({ action: "ensure_local_web" });
+    if (sc?.local_web) {
+      ui.state = { ...(ui.state || {}), local_web: sc.local_web, url: sc.url || sc.local_web.url };
+      renderAll();
+    }
+    if (sc?.url) {
+      showToast(`已启动本机服务: ${sc.url}`, "success");
+    }
+  } catch (err) {
+    showToast(`启动本机服务失败: ${err?.message || String(err)}`, "error");
+  }
+}
+
+async function handleOpenLocalUrl(url, { isConsole = true } = {}) {
+  let targetUrl = url || (isConsole ? getLocalWebInfo().url : "");
+  if (ui.transportMode === "http") {
+    if (targetUrl) {
+      window.open(targetUrl, "_blank", "noopener,noreferrer");
+    }
+    return;
+  }
+
+  if (isConsole && !targetUrl) {
+    try {
+      const sc = await transportRunAction({ action: "ensure_local_web" });
+      if (sc?.local_web) {
+        ui.state = { ...(ui.state || {}), local_web: sc.local_web, url: sc.url || sc.local_web.url };
+        renderLocalWebStatus();
+      }
+      targetUrl = sc?.url || sc?.local_web?.url || "";
+    } catch {
+      // fall through to open_local_browser
+    }
+  }
+
+  if (targetUrl && ui.hostCaps?.openLinks && typeof app.openLink === "function") {
+    try {
+      const res = await app.openLink({ url: targetUrl });
+      if (!res?.isError) return;
+    } catch {
+      // fall back below
+    }
+  }
+
+  if (isConsole) {
+    try {
+      const sc = await transportRunAction({ action: "open_local_browser" });
+      if (sc?.local_web) {
+        ui.state = { ...(ui.state || {}), local_web: sc.local_web, url: sc.url || sc.local_web.url };
+        renderLocalWebStatus();
+      }
+      const openedUrl = sc?.url || sc?.local_web?.url || targetUrl;
+      showToast(`已在浏览器打开: ${openedUrl}`, "success");
+    } catch (err) {
+      showToast(`打开浏览器失败: ${err?.message || String(err)}`, "error");
+    }
+    return;
+  }
+
+  if (targetUrl) {
+    await copyWithFallback(targetUrl);
+    showToast(`已复制地址，请在浏览器打开: ${targetUrl}`, "info");
+  }
 }
 
 function buildCompactContextText(item) {
@@ -1646,6 +1929,8 @@ function bindEvents() {
 
   byId("btn-refresh").addEventListener("click", () => refreshState({ silent: false }));
   byId("btn-clear-finished")?.addEventListener("click", handleClearFinished);
+  byId("btn-sb-copy-url")?.addEventListener("click", () => handleCopyLocalUrl("", { source: "status" }));
+  byId("btn-sb-open-browser")?.addEventListener("click", () => handleOpenLocalUrl("", { isConsole: true }));
   byId("btn-auto-refresh").addEventListener("click", () => {
     ui.autoRefresh = !ui.autoRefresh;
     syncAutoRefresh();
@@ -1759,6 +2044,7 @@ function setTransportMode(mode) {
   ui.transportMode = mode;
   const sb = byId("sb-transport");
   if (sb) sb.textContent = mode === "http" ? "Local Web" : "MCP App";
+  renderLocalWebStatus();
 }
 
 async function initHttpMode() {

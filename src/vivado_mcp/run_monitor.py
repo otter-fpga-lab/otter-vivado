@@ -352,7 +352,15 @@ class MonitorRegistry:
 
     def snapshots(self) -> list[dict]:
         """只读返回所有已登记观察器的当前缓存快照。"""
-        return [monitor.snapshot() for monitor in self._monitors.values()]
+        result = []
+        for monitor in self._monitors.values():
+            snap = monitor.snapshot()
+            http = getattr(monitor, "_http", None)
+            url = (getattr(http, "url", "") or getattr(http, "_url", "")) if http else ""
+            if isinstance(url, str) and url.startswith("http://127.0.0.1:") and not snap.get("url"):
+                snap["url"] = url
+            result.append(snap)
+        return result
 
     async def release(self, session_id: str, run_name: str, target_step: str) -> int:
         """释放匹配的现有观察器（含重连前旧会话）；不查询或创建会话。"""

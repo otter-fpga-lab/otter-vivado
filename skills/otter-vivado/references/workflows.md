@@ -34,6 +34,7 @@
 2. **自定义批处理 Tcl**：调用 `run_batch_tcl(tcl_file=... | tcl_content=...)`，不要在 shell 中裸跑 `vivado -mode batch` 并用 `sleep` 轮询。
 3. **Token 节约与断点续等**：两个工具默认服务端等待并上报进度，完成后自动复用解析器返回紧凑摘要（时序 WNS/TNS/WHS/THS、资源 LUT/FF/BRAM/DSP、去重错误/CW 与报告路径列表，不倾倒原始报告正文）。若单次等待超时，Vivado 仍在后台运行，直接用 `get_batch_job(job_id=..., wait_seconds=...)` 继续等待或 `cancel=True` 取消。
 4. **CLI 场景**：纯命令行或自动化流水线仍可使用 `vivado-mcp local-batch` / `build --target local`。
+5. **综合后核对**：顺手核对 `[Synth 8-3848]`（未驱动网表接地，仿真通过时也可能潜伏）与异常资源量级，不擅加 `-no_srlextract` / `use_dsp="no"` 偏方掩盖问题。
 
 ## 原生 GUI 交接
 
@@ -47,7 +48,7 @@ GUI 使用已有 `start_session` 的 `gui`/`attach` 模式和 Vivado 工程命�
 
 ## 进度与报告
 
-需要可视化总览（Runs、Batch/OOC 任务、离线 `.xpr`/`.runs` 与 ILA 会话）时，Antigravity 使用原生侧栏「Vivado 控制台」（`open_vivado_console()`），Codex / 浏览器客户端传 `open_vivado_console(open_browser=True)` 在本机浏览器打开同款控制台；用户可直接输入路径零 Token 预览报告与日志。需要单 run 独立本机 HTTP 面板时，`open_run_monitor` 返回本机 URL；`get_run_snapshot` 读取同一缓存。两者只登记/读取观察器，不启动构建。首次 `waiting` 允许等待采样；`busy`、失联或错误时先看最后成功采样时间，保留原始原因。
+需要可视化总览（Runs、Batch/OOC 任务、离线 `.xpr`/`.runs` 与 ILA 会话）时，Antigravity 使用原生侧栏「Vivado 控制台」（`open_vivado_console()`），Codex / 浏览器客户端传 `open_vivado_console(open_browser=True)` 在本机浏览器打开同款控制台；界面实时展示本机 `127.0.0.1` 地址供一键复制或浏览器打开，完整 `.rpt` 与长日志由控制台按需零 Token 预览（不在对话中倾倒原始报告正文）。需要单 run 独立本机 HTTP 面板时，`open_run_monitor` 返回本机 URL；`get_run_snapshot` 读取同一缓存。两者只登记/读取观察器，不启动构建。首次 `waiting` 允许等待采样；`busy`、失联或错误时先看最后成功采样时间，保留原始原因。
 
 判断顺序：
 

@@ -157,13 +157,34 @@
 
     <footer class="status-bar">
       <span id="sb-transport" class="sb-item sb-pill">MCP App</span>
+      <span id="sb-local-wrap" class="sb-local-wrap" hidden>
+        <button
+          type="button"
+          id="btn-sb-copy-url"
+          class="sb-local-pill mono"
+          title="点击复制本机控制台地址"
+          aria-label="复制本机服务地址"
+        >
+          <span class="sb-local-dot" aria-hidden="true"></span>
+          <span id="sb-local-addr" class="sb-local-addr">127.0.0.1:0</span>
+          <span id="sb-local-copied" class="sb-local-copied" hidden>已复制</span>
+        </button>
+        <button
+          type="button"
+          id="btn-sb-open-browser"
+          class="sb-local-open"
+          title="在系统浏览器打开 Vivado 控制台"
+          aria-label="在浏览器打开"
+          hidden
+        >↗</button>
+      </span>
       <span id="conn-badge" class="sb-item sb-conn" data-state="connecting">连接中</span>
       <div class="right">
-        <span id="sb-vivado" class="sb-item">0 个 Vivado</span>
-        <span class="sb-sep" aria-hidden="true">·</span>
-        <span class="sb-item sb-hint">零 Token 本地查看</span>
+        <span id="sb-vivado" class="sb-item sb-vivado">0 个 Vivado</span>
         <span class="sb-sep sb-hint" aria-hidden="true">·</span>
-        <span id="sb-theme" class="sb-item">macOS 深色</span>
+        <span class="sb-item sb-hint">零 Token 本地查看</span>
+        <span class="sb-sep sb-theme-item" aria-hidden="true">·</span>
+        <span id="sb-theme" class="sb-item sb-theme-item">macOS 深色</span>
       </div>
     </footer>
   </div>

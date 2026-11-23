@@ -40,6 +40,11 @@ class MonitorHTTP:
         self._url = ""
         self._lock = threading.Lock()
 
+    @property
+    def url(self) -> str:
+        with self._lock:
+            return self._url
+
     def start(self) -> str:
         """启动本机展示服务；重复调用返回同一 URL。"""
         with self._lock:

@@ -442,7 +442,15 @@ class DebugRegistry:
 
     def snapshots(self) -> list[dict]:
         """只读返回所有共享调试服务的当前缓存快照。"""
-        return [service.snapshot() for service in self._services.values()]
+        result = []
+        for service in self._services.values():
+            snap = service.snapshot()
+            http = getattr(service, "_http", None)
+            url = (getattr(http, "url", "") or getattr(http, "_url", "")) if http else ""
+            if isinstance(url, str) and url.startswith("http://127.0.0.1:") and not snap.get("url"):
+                snap["url"] = url
+            result.append(snap)
+        return result
 
     async def release(self, session_id: str) -> bool:
         async with self._lifecycle:

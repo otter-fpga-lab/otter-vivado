@@ -16,7 +16,14 @@ if TYPE_CHECKING:
 
 _MAX_BODY = 64 * 1024
 _ALLOWED_ACTIONS = frozenset(
-    {"inspect_path", "remove_inspected", "read_report", "cancel_job", "clear_finished"}
+    {
+        "inspect_path",
+        "remove_inspected",
+        "read_report",
+        "cancel_job",
+        "clear_finished",
+        "ensure_local_web",
+    }
 )
 _ALLOWED_KEYS = frozenset({"action", "path", "job_id", "report_path", "max_lines"})
 
@@ -134,6 +141,18 @@ class ConsoleHttpServer:
     def url(self) -> str:
         with self._lock:
             return self._url
+
+    @property
+    def is_running(self) -> bool:
+        with self._lock:
+            return self._server is not None and bool(self._url)
+
+    @property
+    def host_port(self) -> str:
+        with self._lock:
+            if not self._url:
+                return ""
+            return self._url.removeprefix("http://").rstrip("/")
 
     def set_loop(self, loop: asyncio.AbstractEventLoop | None) -> None:
         with self._lock:

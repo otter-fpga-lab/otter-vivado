@@ -88,6 +88,11 @@ class DebugHTTP:
         self._url = ""
         self._lock = threading.Lock()
 
+    @property
+    def url(self) -> str:
+        with self._lock:
+            return self._url
+
     def start(self) -> str:
         """启动随机端口与随机路径；重复启动返回当前 URL。"""
         with self._lock:
