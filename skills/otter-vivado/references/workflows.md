@@ -28,6 +28,13 @@
 
 同一 Vivado Tcl 会话顺序执行命令。长任务期间让已有运行继续，观察超时后保留 session/run，继续读状态；无需为取得结果重新 launch。
 
+## 独立 OOC 与批处理 Tcl
+
+1. **无需 `.xpr` 的快速综合**：直接调用 `run_ooc_synth(top=..., part=..., files=[...], clock_port=..., clock_period_ns=...)`，无需手建临时工程、`.work` 或批处理脚本。
+2. **自定义批处理 Tcl**：调用 `run_batch_tcl(tcl_file=... | tcl_content=...)`，不要在 shell 中裸跑 `vivado -mode batch` 并用 `sleep` 轮询。
+3. **Token 节约与断点续等**：两个工具默认服务端等待并上报进度，完成后自动复用解析器返回紧凑摘要（时序 WNS/TNS/WHS/THS、资源 LUT/FF/BRAM/DSP、去重错误/CW 与报告路径列表，不倾倒原始报告正文）。若单次等待超时，Vivado 仍在后台运行，直接用 `get_batch_job(job_id=..., wait_seconds=...)` 继续等待或 `cancel=True` 取消。
+4. **CLI 场景**：纯命令行或自动化流水线仍可使用 `vivado-mcp local-batch` / `build --target local`。
+
 ## 原生 GUI 交接
 
 用户需要新建且可由 GUI 接续的工程时，默认使用磁盘 Project Mode，显式指定新目录、part/top、源和约束；不以 `-in_memory` 或临时 Tcl 状态代替持久工程。可运行样例是仓库 `examples/progress/create_demo.tcl`，现有工程则保留其原组织方式。
@@ -40,7 +47,7 @@ GUI 使用已有 `start_session` 的 `gui`/`attach` 模式和 Vivado 工程命�
 
 ## 进度与报告
 
-需要人机共同观察时，`open_run_monitor` 返回运行 MCP 那台机器上的本机 URL；`get_run_snapshot` 读取同一缓存。两者只登记/读取观察器，不启动构建。首次 `waiting` 允许等待采样；`busy`、失联或错误时先看最后成功采样时间，保留原始原因。
+需要可视化总览（Runs、Batch/OOC 任务、离线 `.xpr`/`.runs` 与 ILA 会话）时，调用 `open_vivado_console` 或从宿主侧栏打开「Vivado 控制台」；用户可直接输入路径零 Token 预览报告与日志。需要单 run 独立本机 HTTP 面板时，`open_run_monitor` 返回本机 URL；`get_run_snapshot` 读取同一缓存。两者只登记/读取观察器，不启动构建。首次 `waiting` 允许等待采样；`busy`、失联或错误时先看最后成功采样时间，保留原始原因。
 
 判断顺序：
 

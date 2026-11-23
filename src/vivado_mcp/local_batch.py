@@ -28,8 +28,17 @@ def validate_batch_paths(tcl: Path, workspace: Path, log: Path | None) -> None:
         )
 
 
-def build_command(vivado: str, tcl: Path, log: Path | None, tclargs: list[str]) -> list[str]:
-    command = [vivado, "-mode", "batch", "-nojournal", "-notrace"]
+def build_command(
+    vivado: str,
+    tcl: Path,
+    log: Path | None,
+    tclargs: list[str],
+    *,
+    notrace: bool = True,
+) -> list[str]:
+    command = [vivado, "-mode", "batch", "-nojournal"]
+    if notrace:
+        command.append("-notrace")
     command += ["-log", str(log)] if log else ["-nolog"]
     command += ["-source", str(tcl)]
     if tclargs:

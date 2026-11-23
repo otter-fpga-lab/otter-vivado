@@ -19,7 +19,12 @@ description: 操作 AMD Vivado 工程、本地或远程综合与实现、查看�
 - 过程目录用完移入 `trash_dir`（最近的 `99_垃圾堆`）并附清单；为 null 时留在 Debug，不擅自删除。
 - Vivado 自身的 `.Xil/.jou/.log` 落在会话 cwd，默认与 GUI 相同的 `%APPDATA%\Xilinx\Vivado`，无须再 `cd` 到仓根或 TEMP。
 
-**会话选择**：9999 上的 GUI 已打开同一工程 → 复用。它属于别的工程或别的线程 → 不要 attach 后切换它的工程；用 `start_session(port=0)` 开独立实例，或用 CLI `vivado-mcp local-batch` / `build --target local` 跑隔离批处理（见仓库 `docs/USAGE.md`）。等待构建用 `wait=False` 发起，再用 `wait_run(until=...)` 或 run monitor 快照；不要 sleep 循环调用 `get_run_progress`。
+**会话选择**：9999 上的 GUI 已打开同一工程 → 复用。它属于别的工程或别的线程 → 不要 attach 后切换它的工程；用 `start_session(port=0)` 开独立实例，或用 MCP 托管批处理（见下）。等待构建用 `wait=False` 发起，再用 `wait_run(until=...)` 或 run monitor 快照；不要 sleep 循环调用 `get_run_progress`。
+
+**独立 OOC 综合与批处理 Tcl（省 Token、禁 shell sleep）**：
+- 无 `.xpr` 独立综合优先用 `run_ooc_synth`（1 次调用生成 Tcl、可选时钟约束并自动解析 WNS/TNS/WHS/THS、LUT/FF/BRAM/DSP 与去重告警，返回 < 2 KB 紧凑 JSON）；跑批处理 Tcl 脚本优先用 `run_batch_tcl`。
+- 禁止用裸 shell `vivado -mode batch` + `sleep` 轮询！两工具均支持服务端等待（`wait=True` 带进度上报；超时不杀 Vivado，返回 `wait_timed_out=True` 与 `job_id`，再用 `get_batch_job(job_id=..., wait_seconds=...)` 续等）且工作目录隔离在 `%LOCALAPPDATA%\otter-vivado\jobs\`。
+- 需要可视化或零 Token 检视离线 `.xpr`/`.runs`/OOC 目录时，使用 `open_vivado_console`（Antigravity 侧栏「Vivado 控制台」）。
 
 可视化职责：本插件提供接口、状态数据与生成方法，智能体为具体消费者工程生成页面和
 交互。页面、布局、主题、业务控件语义保存在消费者工程；已有内置网页仅为可选参考实现，
@@ -32,8 +37,9 @@ description: 操作 AMD Vivado 工程、本地或远程综合与实现、查看�
 | 用户目标 | 读取内容 | 已有入口 |
 |---|---|---|
 | 接续工程、综合或实现 | [workflows.md](references/workflows.md#工程与构建) | `list_sessions`、`start_session`、`run_synthesis`、`run_implementation` |
+| 独立 OOC 综合与托管 Batch Tcl | [workflows.md](references/workflows.md#独立-ooc-与批处理-tcl) | `run_ooc_synth`、`run_batch_tcl`、`get_batch_job` |
 | Linux 远程构建、原生 Tcl、队列与结果交付 | [远程构建](../../docs/REMOTE_BUILD.md)、[原生 Tcl](../../docs/REMOTE_TCL.md) | `vivado-mcp remote`；当前没有远程 MCP 工具 |
-| 看进度、日志或报告 | [workflows.md](references/workflows.md#进度与报告) | `open_run_monitor`、`get_run_snapshot`、`get_run_progress` |
+| 看进度、日志、报告或 Vivado 控制台 | [workflows.md](references/workflows.md#进度与报告) | `open_vivado_console`、`open_run_monitor`、`get_run_snapshot`、`get_run_progress` |
 | 按工程生成页面/可视化 | [visualization.md](references/visualization.md) | 状态/报告 JSON、`DebugService`；可选参考页 |
 | 调试构建与产物交付 | [debug-delivery.md](references/debug-delivery.md) | 已有构建工具、`export_debug_bundle`、`check_debug_artifacts` |
 | 工程控件、枚举、定点数、单位与预设 | [controls.md](references/controls.md) | `resolve_debug_controls`、`write_debug_control` |

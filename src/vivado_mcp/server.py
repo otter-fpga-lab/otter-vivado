@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from mcp.server import MCPServer
 
 from vivado_mcp import prompts as _prompts
+from vivado_mcp.batch_jobs import BatchJobRegistry
 from vivado_mcp.config import find_vivado
 from vivado_mcp.debug_service import DebugRegistry
 from vivado_mcp.run_monitor import MonitorRegistry
@@ -49,7 +50,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 模块级 SessionManager 引用，供 Resources 使用（lifespan 中设置）
+# 模块级 SessionManager / AppContext 引用，供 Resources 与无请求上下文调用使用
 _manager_ref: SessionManager | None = None
 
 
@@ -59,6 +60,35 @@ class AppContext:
     session_manager: SessionManager
     run_monitors: MonitorRegistry = field(default_factory=MonitorRegistry)
     debug_services: DebugRegistry = field(default_factory=DebugRegistry)
+    batch_jobs: BatchJobRegistry = field(default_factory=BatchJobRegistry)
+
+
+_app_context_ref: AppContext | None = None
+_fallback_app_context: AppContext | None = None
+
+
+def get_app_context(ctx=None) -> AppContext:
+    """从 MCP Context 中提取 AppContext；无请求上下文时回退到模块级上下文。"""
+    global _fallback_app_context
+    if ctx is not None:
+        try:
+            req_ctx = ctx.request_context
+            lifespan_ctx = getattr(req_ctx, "lifespan_context", None)
+            if isinstance(lifespan_ctx, AppContext):
+                return lifespan_ctx
+        except ValueError:
+            pass
+    if _app_context_ref is not None:
+        return _app_context_ref
+    if _fallback_app_context is None:
+        try:
+            vp = find_vivado()
+        except FileNotFoundError:
+            vp = ""
+        _fallback_app_context = AppContext(
+            session_manager=SessionManager(vivado_path=vp)
+        )
+    return _fallback_app_context
 
 
 @asynccontextmanager
@@ -67,7 +97,7 @@ async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
 
     启动时初始化 SessionManager，关闭时清理所有 Vivado 会话。
     """
-    global _manager_ref
+    global _app_context_ref, _manager_ref
 
     # 检测 Vivado 路径（启动时即验证，快速报错）
     try:
@@ -81,10 +111,13 @@ async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
     manager = SessionManager(vivado_path=vivado_path)
     app_context = AppContext(session_manager=manager)
     _manager_ref = manager
+    _app_context_ref = app_context
     try:
         yield app_context
     finally:
+        _app_context_ref = None
         _manager_ref = None
+        await app_context.batch_jobs.close()
         await app_context.debug_services.close()
         await app_context.run_monitors.close()
         await manager.close_all()
@@ -413,6 +446,8 @@ _prompts.register_prompts(mcp)
 #  导入工具模块，触发 @mcp.tool() 装饰器注册
 # --------------------------------------------------------------------------- #
 
+import vivado_mcp.tools.batch_tools  # noqa: E402, F401
+import vivado_mcp.tools.console_app_tools  # noqa: E402, F401
 import vivado_mcp.tools.debug_design_tools  # noqa: E402, F401
 import vivado_mcp.tools.debug_tools  # noqa: E402, F401
 import vivado_mcp.tools.diagnostic_tools  # noqa: E402, F401

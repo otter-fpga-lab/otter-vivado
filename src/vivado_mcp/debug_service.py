@@ -440,6 +440,10 @@ class DebugRegistry:
     def last(self, session_id: str) -> DebugService | None:
         return self._services.get(session_id)
 
+    def snapshots(self) -> list[dict]:
+        """只读返回所有共享调试服务的当前缓存快照。"""
+        return [service.snapshot() for service in self._services.values()]
+
     async def release(self, session_id: str) -> bool:
         async with self._lifecycle:
             service = self._services.get(session_id)

@@ -350,6 +350,10 @@ class MonitorRegistry:
                 return monitor
         return None
 
+    def snapshots(self) -> list[dict]:
+        """只读返回所有已登记观察器的当前缓存快照。"""
+        return [monitor.snapshot() for monitor in self._monitors.values()]
+
     async def release(self, session_id: str, run_name: str, target_step: str) -> int:
         """释放匹配的现有观察器（含重连前旧会话）；不查询或创建会话。"""
         validate_identifier(run_name, "run_name")
