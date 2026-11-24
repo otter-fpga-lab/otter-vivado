@@ -25,9 +25,14 @@ const STATUS_LABELS = {
   completed: "已完成",
   succeeded: "已成功",
   stage_complete: "阶段完成",
+  reached: "已达目标",
   ended: "已结束",
   failed: "失败",
   error: "异常",
+  early_error: "提前报错",
+  silent_exit: "静默退出",
+  stalled: "疑似卡死",
+  memory_critical: "内存告急",
   cancelled: "已取消",
   timeout: "等待超时",
   idle: "未启动",
@@ -38,6 +43,13 @@ const STATUS_LABELS = {
   stale: "可能过期",
   unobserved: "未观测",
   unknown: "未知",
+};
+
+const WATCH_ALERT_TONES = {
+  stalled: "warn",
+  memory_critical: "crit",
+  early_error: "crit",
+  silent_exit: "crit",
 };
 
 const app = new App({ name: "Vivado Console", version: "2.0.0" }, {});
@@ -64,6 +76,10 @@ const ui = {
   inFlightState: false,
   inFlightPromise: null,
   autoRefresh: true,
+  autoNotify: false,
+  notifyBaselineReady: false,
+  prevItemStates: new Map(),
+  notifiedEdges: new Set(),
   connState: "connecting",
   autoTimer: null,
   toastTimer: null,
@@ -178,8 +194,29 @@ function inferPhasesFromTail(logTail, currentPhase) {
 function statusBucket(status) {
   const s = String(status || "").toLowerCase();
   if (s === "running" || s === "queued" || s === "busy" || s === "waiting") return "running";
-  if (s === "completed" || s === "succeeded" || s === "connected" || s === "stage_complete" || s === "ended") return "completed";
-  if (s === "failed" || s === "error" || s === "disconnected" || s === "cancelled" || s === "timeout") return "failed";
+  if (
+    s === "completed" ||
+    s === "succeeded" ||
+    s === "connected" ||
+    s === "stage_complete" ||
+    s === "ended" ||
+    s === "reached"
+  ) {
+    return "completed";
+  }
+  if (
+    s === "failed" ||
+    s === "error" ||
+    s === "early_error" ||
+    s === "silent_exit" ||
+    s === "stalled" ||
+    s === "memory_critical" ||
+    s === "disconnected" ||
+    s === "cancelled" ||
+    s === "timeout"
+  ) {
+    return "failed";
+  }
   return "other";
 }
 
@@ -191,6 +228,8 @@ function pickPrimaryIssues(d) {
 }
 
 function ledClass(status, timing) {
+  const s = String(status || "").toLowerCase();
+  if (s === "stalled" || s === "timeout" || s === "cancelled") return "led-warn";
   const bucket = statusBucket(status);
   if (bucket === "running") return "led-running";
   if (bucket === "failed") return "led-fail";
@@ -966,8 +1005,9 @@ function updateDynamicIsland(items, counts) {
   const { running, completed, failed, installsCount } = counts;
   const activeItem = items.find((i) => i.uid === ui.selectedUid) || null;
   const runningItems = items.filter((i) => statusBucket(i.status) === "running");
+  const failedItems = items.filter((i) => statusBucket(i.status) === "failed");
 
-  island.classList.remove("idle", "online", "running", "alert");
+  island.classList.remove("idle", "online", "running", "alert", "warn");
   island.title = "点击跳转到运行中任务或刷新状态";
 
   let badgeSource = null;
@@ -1018,10 +1058,36 @@ function updateDynamicIsland(items, counts) {
     meterEl.hidden = false;
     meterEl.classList.add("live");
   } else if (failed > 0) {
+    const alertItem =
+      (activeItem && statusBucket(activeItem.status) === "failed" ? activeItem : null) ||
+      failedItems.find((i) => WATCH_ALERT_TONES[String(i.status || "").toLowerCase()]) ||
+      failedItems[0] ||
+      null;
+    const alertStatus = String(alertItem?.status || "").toLowerCase();
+    const alertTone = WATCH_ALERT_TONES[alertStatus] || "";
+    const allWarnOnly =
+      failedItems.length > 0 &&
+      failedItems.every((i) => {
+        const st = String(i.status || "").toLowerCase();
+        return st === "stalled" || st === "timeout" || st === "cancelled";
+      });
     island.classList.add("alert");
-    titleEl.textContent = `${failed} 异常`;
-    detailEl.textContent = completed > 0 ? `${completed} 完成 · 点击刷新` : (activeItem ? activeItem.title : "检查告警与日志");
-    badgeSource = completed > 0 ? null : activeItem;
+    if (allWarnOnly) island.classList.add("warn");
+    titleEl.textContent =
+      failed === 1 && alertTone
+        ? `1 ${STATUS_LABELS[alertStatus] || "异常"}`
+        : `${failed} 异常`;
+    if (alertItem) {
+      const prefix =
+        alertItem.clientSource && alertItem.clientSource !== "本会话"
+          ? `${alertItem.clientSource} · `
+          : "";
+      detailEl.textContent = `${prefix}${alertItem.title}${completed > 0 ? ` · ${completed} 完成` : ""}`;
+      badgeSource = alertItem;
+    } else {
+      detailEl.textContent = completed > 0 ? `${completed} 完成 · 点击刷新` : "检查告警与日志";
+      badgeSource = null;
+    }
     meterEl.hidden = true;
     meterEl.classList.remove("live");
   } else if (items.length > 0) {
@@ -1041,10 +1107,15 @@ function updateDynamicIsland(items, counts) {
     meterEl.classList.remove("live");
   }
 
+  const badgeStatus = String(badgeSource?.status || "").toLowerCase();
   if (badgeSource?.timing?.parse_status === "ok" && typeof badgeSource.timing.wns === "number") {
     badgeEl.hidden = false;
     badgeEl.textContent = `WNS ${fmtSlack(badgeSource.timing.wns)}ns`;
     badgeEl.dataset.tone = badgeSource.timing.met ? "ok" : "fail";
+  } else if (running === 0 && failed > 1 && WATCH_ALERT_TONES[badgeStatus]) {
+    badgeEl.hidden = false;
+    badgeEl.textContent = STATUS_LABELS[badgeStatus] || badgeStatus;
+    badgeEl.dataset.tone = WATCH_ALERT_TONES[badgeStatus] === "warn" ? "warn" : "fail";
   } else if (items.length > 0 && running > 0 && completed > 0) {
     badgeEl.hidden = false;
     badgeEl.textContent = `${completed} 完成`;
@@ -1088,15 +1159,31 @@ function renderRail(items) {
     html.push(`<div class="rail-cards">`);
     for (const item of groupItems) {
       const selected = item.uid === ui.selectedUid ? "true" : "false";
+      const sLower = String(item.status || "").toLowerCase();
+      const alertTone = WATCH_ALERT_TONES[sLower] || "";
       const hasTiming = item.timing && item.timing.parse_status === "ok" && typeof item.timing.wns === "number";
-      const wnsText = hasTiming ? `${fmtSlack(item.timing.wns)}` : "—";
-      const metAttr = hasTiming ? (item.timing.met ? "true" : "false") : "na";
+      const alertLabel = !hasTiming && alertTone ? STATUS_LABELS[sLower] || "" : "";
+      const wnsText = hasTiming ? `${fmtSlack(item.timing.wns)}` : alertLabel || "—";
+      const metAttr = hasTiming
+        ? item.timing.met
+          ? "true"
+          : "false"
+        : alertTone === "warn"
+          ? "warn"
+          : alertTone === "crit"
+            ? "false"
+            : "na";
       const led = ledClass(item.status, item.timing);
+      const alertAttr = alertTone ? ` data-alert="${escapeHtml(alertTone)}"` : "";
+      const subText =
+        hasTiming && alertTone && STATUS_LABELS[sLower]
+          ? `${STATUS_LABELS[sLower]} · ${item.subtitle}`
+          : item.subtitle;
       const clientPill = item.clientSource
         ? `<span class="client-pill">${escapeHtml(item.clientSource)}</span>`
         : "";
       html.push(`
-        <button type="button" class="nav-card" data-uid="${escapeHtml(item.uid)}" data-selected="${selected}">
+        <button type="button" class="nav-card" data-uid="${escapeHtml(item.uid)}" data-selected="${selected}"${alertAttr}>
           <div class="nav-card-top">
             <div class="nav-card-title">
               <span class="led ${led}"></span>
@@ -1106,7 +1193,7 @@ function renderRail(items) {
           </div>
           <div class="nav-card-meta">
             ${clientPill}
-            <span class="nav-card-sub">${escapeHtml(item.subtitle)}</span>
+            <span class="nav-card-sub">${escapeHtml(subText)}</span>
             <span>${escapeHtml(item.elapsedText)}</span>
           </div>
         </button>
@@ -1514,6 +1601,43 @@ function renderDiagnostics(item) {
     return hay.includes(query);
   });
 
+  const sLower = String(item.status || "").toLowerCase();
+  const alertTone = WATCH_ALERT_TONES[sLower] || "";
+  const alertSev = alertTone === "warn" ? "CRITICAL WARNING" : "ERROR";
+  let watchAlertHtml = "";
+  if (alertTone && (ui.diagSev === "ALL" || ui.diagSev === alertSev)) {
+    const label = STATUS_LABELS[sLower] || item.status;
+    const sys = ui.state?.system;
+    let msg = item.errorMessage || "";
+    if (!msg) {
+      if (sLower === "stalled") {
+        msg = `运行日志与阶段长时间未推进${item.currentPhase ? `（停留在 ${item.currentPhase}）` : ""}，请检查 Vivado 进程 CPU 占用与日志。`;
+      } else if (sLower === "memory_critical") {
+        const ramNote =
+          sys && typeof sys.ram_pct === "number"
+            ? `（当前主机 RAM ${sys.ram_pct.toFixed(1)}%，可用 ${Number(sys.ram_avail_gb || 0).toFixed(1)} GB）`
+            : "";
+        msg = `主机内存进入高危水位${ramNote}，请留意 OOM 风险并检查并发 EDA 进程。`;
+      } else if (sLower === "early_error") {
+        msg = "日志中提前检测到致命错误，请核查下方诊断条目与 runme.log 尾部。";
+      } else {
+        msg = "运行子进程异常退出且未写出正常结束标记，请核查取证与日志。";
+      }
+    }
+    watchAlertHtml = `<div class="group">
+      <div class="diag-row" data-sev="${alertSev}">
+        <div class="diag-row-head">
+          <div class="diag-chips">
+            <span class="sev-tag" data-sev="${alertSev}">${escapeHtml(label)}</span>
+            <span class="id-tag">WATCH EVENT</span>
+          </div>
+          ${item.currentPhase ? `<span class="muted">${escapeHtml(item.currentPhase)}</span>` : ""}
+        </div>
+        <p class="diag-msg">${escapeHtml(msg)}</p>
+      </div>
+    </div>`;
+  }
+
   const forensics = item.forensics;
   const forensicsHtml = forensics && forensics.silent_exit_suspected
     ? `<div class="group">
@@ -1572,6 +1696,7 @@ function renderDiagnostics(item) {
           <input id="diag-search-input" type="search" value="${escapeHtml(ui.diagSearch)}" placeholder="搜索消息、ID 或文件…" aria-label="搜索诊断条目" />
         </div>
       </div>
+      ${watchAlertHtml}
       ${forensicsHtml}
       ${rowsHtml}
     </div>
@@ -2058,9 +2183,17 @@ function updateTabVisibility(item) {
   const d = item?.diagnostics || {};
   const issueTotal = (d.errors || 0) + (d.critical_warnings || 0);
   const diagBadge = byId("tab-diag-badge");
-  diagBadge.hidden = issueTotal === 0;
-  diagBadge.textContent = String(issueTotal);
-  diagBadge.dataset.tone = (d.errors || 0) > 0 ? "danger" : "normal";
+  const sLower = String(item?.status || "").toLowerCase();
+  const alertTone = WATCH_ALERT_TONES[sLower] || "";
+  if (issueTotal === 0 && alertTone) {
+    diagBadge.hidden = false;
+    diagBadge.textContent = "!";
+    diagBadge.dataset.tone = alertTone === "warn" ? "warn" : "danger";
+  } else {
+    diagBadge.hidden = issueTotal === 0;
+    diagBadge.textContent = String(issueTotal);
+    diagBadge.dataset.tone = (d.errors || 0) > 0 ? "danger" : "normal";
+  }
 
   const rptCount = (item?.reports || []).length;
   const rptBadge = byId("tab-rpt-badge");
@@ -2203,6 +2336,7 @@ function applyIncomingState(payload) {
   }
   setConnState("ready", "已同步", fmtTime(payload.server_time));
   renderAll();
+  processAutoNotify(buildItems(ui.state));
 }
 
 async function transportGetState() {
@@ -2616,6 +2750,229 @@ async function handleSendToChat(item) {
   }
 }
 
+function canSendHostMessage() {
+  return ui.transportMode === "mcp" && Boolean(ui.hostCaps?.message);
+}
+
+const NOTIFY_EDGE_STATES = ["completed", "failed", "stalled", "memory_critical"];
+
+function clearNotifiedEdgesForUid(uid) {
+  for (const state of NOTIFY_EDGE_STATES) {
+    ui.notifiedEdges.delete(`${uid}:${state}`);
+  }
+}
+
+function syncAutoNotifyControl() {
+  const allowed = canSendHostMessage();
+  if (!allowed && (ui.autoNotify || ui.notifyBaselineReady || ui.prevItemStates.size > 0 || ui.notifiedEdges.size > 0)) {
+    ui.autoNotify = false;
+    ui.notifyBaselineReady = false;
+    ui.prevItemStates.clear();
+    ui.notifiedEdges.clear();
+  }
+  const btn = byId("btn-auto-notify");
+  if (!btn) return;
+  btn.hidden = !allowed;
+  btn.classList.toggle("on", allowed && ui.autoNotify);
+  btn.setAttribute("aria-pressed", allowed && ui.autoNotify ? "true" : "false");
+}
+
+function normalizeNotifyBucket(item) {
+  if (!item || (item.category !== "run_monitor" && item.category !== "batch_job")) {
+    return "other";
+  }
+  const s = String(item.status || "").toLowerCase();
+  if (s === "stalled") return "stalled";
+  if (s === "memory_critical") return "memory_critical";
+  if (
+    s === "running" ||
+    s === "queued" ||
+    s === "busy" ||
+    s === "waiting" ||
+    s === "stage_complete"
+  ) {
+    return "running";
+  }
+  if (s === "completed" || s === "succeeded" || s === "reached" || s === "ended") {
+    return "completed";
+  }
+  if (s === "failed" || s === "error" || s === "early_error" || s === "silent_exit") {
+    return "failed";
+  }
+  return "other";
+}
+
+function notifyStatusVerb(item, edgeBucket) {
+  const s = String(item?.status || "").toLowerCase();
+  const map = {
+    completed: "已完成",
+    succeeded: "已完成",
+    reached: "已达目标",
+    stage_complete: "阶段完成",
+    ended: "已结束",
+    failed: "已失败",
+    error: "已失败",
+    early_error: "已提前报错",
+    silent_exit: "已静默退出",
+    stalled: "疑似卡死",
+    memory_critical: "内存告急",
+  };
+  return map[s] || STATUS_LABELS[s] || STATUS_LABELS[edgeBucket] || item?.status || "状态变更";
+}
+
+function cleanOneLine(text) {
+  return String(text || "")
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function formatAutoNotifyMessage(item, edgeBucket) {
+  const subject =
+    item.clientSource && item.clientSource !== "本会话"
+      ? `${item.clientSource} · ${item.title}`
+      : item.title;
+  const verb = notifyStatusVerb(item, edgeBucket);
+  const t = item.timing || {};
+  const u = item.utilization || {};
+  const d = item.diagnostics || {};
+  const sys = ui.state?.system || {};
+  const logOrDir = item.logPath
+    ? `，日志：${item.logPath}`
+    : item.outputDir
+      ? `，目录：${item.outputDir}`
+      : "";
+
+  if (edgeBucket === "completed") {
+    const parts = [];
+    if (t.parse_status === "ok" && typeof t.wns === "number" && Number.isFinite(t.wns)) {
+      parts.push(`WNS ${fmtSlack(t.wns)}ns`);
+    }
+    if (typeof u.lut?.pct === "number" && Number.isFinite(u.lut.pct)) {
+      parts.push(`LUT ${u.lut.pct.toFixed(1)}%`);
+    }
+    if (d.errors > 0) parts.push(`ERR ${d.errors}`);
+    if (d.critical_warnings > 0) parts.push(`CW ${d.critical_warnings}`);
+    const detail = parts.length ? ` · ${parts.join(" · ")}` : "";
+    return cleanOneLine(`[Vivado 控制台] ${subject} ${verb}${detail}${logOrDir}`);
+  }
+
+  const details = [];
+  if (edgeBucket === "memory_critical" && typeof sys.ram_pct === "number") {
+    const used = Number(sys.ram_used_gb || 0).toFixed(1);
+    const total = Number(sys.ram_total_gb || 0).toFixed(1);
+    details.push(`RAM ${Math.round(sys.ram_pct)}% (${used}/${total}GB)`);
+  }
+  const phase = cleanOneLine(item.currentPhase || "").slice(0, 64);
+  if (phase) {
+    const phaseHasErr = /error/i.test(phase);
+    details.push(
+      edgeBucket === "failed" && d.errors > 0 && !phaseHasErr ? `${phase} ERROR` : phase
+    );
+  } else if (d.errors > 0) {
+    details.push(`ERROR ${d.errors}`);
+  }
+  if (t.parse_status === "ok" && typeof t.wns === "number" && Number.isFinite(t.wns)) {
+    details.push(`WNS ${fmtSlack(t.wns)}ns`);
+  }
+  if (d.critical_warnings > 0) {
+    details.push(`CW ${d.critical_warnings}`);
+  }
+  if (edgeBucket === "stalled" && item.elapsedText && item.elapsedText !== "—") {
+    details.push(`耗时 ${item.elapsedText}`);
+  }
+  if (!details.length && item.errorMessage) {
+    details.push(cleanOneLine(item.errorMessage).slice(0, 80));
+  }
+  const detailBlock = details.length ? `（${details.join("，")}）` : "";
+  return cleanOneLine(`[Vivado 控制台] ${subject} ${verb}${detailBlock}${logOrDir}`);
+}
+
+async function sendAutoNotifyMessage(item, edgeBucket, statusVerb) {
+  if (!canSendHostMessage()) return;
+  const text = formatAutoNotifyMessage(item, edgeBucket);
+  try {
+    const res = await app.sendMessage({
+      role: "user",
+      content: [{ type: "text", text }],
+    });
+    if (res?.isError) throw new Error("宿主拒绝发送消息");
+    showToast(
+      `已自动唤醒对话: ${item.title} ${statusVerb}`,
+      edgeBucket === "completed" ? "success" : "info"
+    );
+  } catch (err) {
+    showToast(`自动唤醒对话失败: ${err?.message || String(err)}`, "error");
+  }
+}
+
+function processAutoNotify(items) {
+  if (!ui.autoNotify || !canSendHostMessage()) return;
+  const nextStates = new Map();
+  for (const item of items) {
+    nextStates.set(item.uid, normalizeNotifyBucket(item));
+  }
+  if (!ui.notifyBaselineReady) {
+    ui.prevItemStates = nextStates;
+    ui.notifyBaselineReady = true;
+    return;
+  }
+  const triggers = [];
+  for (const item of items) {
+    const next = nextStates.get(item.uid);
+    if (next === "running") {
+      clearNotifiedEdgesForUid(item.uid);
+      continue;
+    }
+    if (
+      next !== "completed" &&
+      next !== "failed" &&
+      next !== "stalled" &&
+      next !== "memory_critical"
+    ) {
+      continue;
+    }
+    const prev = ui.prevItemStates.get(item.uid);
+    if (prev === next) continue;
+    const fromActive = prev === "running" || prev === "stalled" || prev === "memory_critical";
+    const enteredAlert = (next === "stalled" || next === "memory_critical") && prev !== next;
+    if (!fromActive && !enteredAlert) continue;
+    const edgeKey = `${item.uid}:${next}`;
+    if (ui.notifiedEdges.has(edgeKey)) continue;
+    ui.notifiedEdges.add(edgeKey);
+    triggers.push({ item, next, verb: notifyStatusVerb(item, next) });
+  }
+  ui.prevItemStates = nextStates;
+  for (const trig of triggers) {
+    void sendAutoNotifyMessage(trig.item, trig.next, trig.verb);
+  }
+}
+
+function toggleAutoNotify() {
+  if (!canSendHostMessage()) {
+    syncAutoNotifyControl();
+    return;
+  }
+  ui.autoNotify = !ui.autoNotify;
+  ui.prevItemStates.clear();
+  ui.notifiedEdges.clear();
+  if (ui.autoNotify) {
+    if (ui.state) {
+      for (const item of buildItems(ui.state)) {
+        ui.prevItemStates.set(item.uid, normalizeNotifyBucket(item));
+      }
+      ui.notifyBaselineReady = true;
+    } else {
+      ui.notifyBaselineReady = false;
+    }
+    showToast("已开启提醒对话（构建结束或异常时自动发送 1 行摘要）", "info");
+  } else {
+    ui.notifyBaselineReady = false;
+    showToast("已关闭自动提醒对话", "info");
+  }
+  syncAutoNotifyControl();
+}
+
 function syncAutoRefresh() {
   if (ui.autoTimer) {
     clearInterval(ui.autoTimer);
@@ -2652,6 +3009,7 @@ function bindEvents() {
     ui.activeTab = "sessions";
     renderAll();
   });
+  byId("btn-auto-notify")?.addEventListener("click", toggleAutoNotify);
   byId("btn-auto-refresh").addEventListener("click", () => {
     ui.autoRefresh = !ui.autoRefresh;
     syncAutoRefresh();
@@ -2774,11 +3132,13 @@ function setTransportMode(mode) {
   const sb = byId("sb-transport");
   if (sb) sb.textContent = mode === "http" ? "Local Web" : "MCP App";
   renderLocalWebStatus();
+  syncAutoNotifyControl();
 }
 
 async function initHttpMode() {
   setTransportMode("http");
   ui.hostCaps = {};
+  syncAutoNotifyControl();
   const stored = readStoredTheme();
   if (stored) {
     applyTheme(stored, { manual: true });
@@ -2791,6 +3151,7 @@ async function initHttpMode() {
 
 async function init() {
   applyTheme("macos", { manual: false });
+  syncAutoNotifyControl();
   bindEvents();
 
   const isEmbedded = (() => {
@@ -2819,8 +3180,8 @@ async function init() {
     } else {
       await app.connect();
     }
-    setTransportMode("mcp");
     ui.hostCaps = app.getHostCapabilities() || {};
+    setTransportMode("mcp");
     applyHostCtx(app.getHostContext());
     if (!ui.state) {
       await refreshState({ silent: true });

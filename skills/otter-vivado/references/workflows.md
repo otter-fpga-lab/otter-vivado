@@ -32,7 +32,9 @@
 
 1. **无需 `.xpr` 的快速综合**：直接调用 `run_ooc_synth(top=..., part=..., files=[...], clock_port=..., clock_period_ns=...)`，无需手建临时工程、`.work` 或批处理脚本。
 2. **自定义批处理 Tcl**：调用 `run_batch_tcl(tcl_file=... | tcl_content=...)`，不要在 shell 中裸跑 `vivado -mode batch` 并用 `sleep` 轮询。
-3. **Token 节约与断点续等**：两个工具默认服务端等待并上报进度，完成后自动复用解析器返回紧凑摘要（时序 WNS/TNS/WHS/THS、资源 LUT/FF/BRAM/DSP、去重错误/CW 与报告路径列表，不倾倒原始报告正文）。若单次等待超时，Vivado 仍在后台运行，直接用 `get_batch_job(job_id=..., wait_seconds=...)` 继续等待或 `cancel=True` 取消。
+3. **零浪费等待与断点续等**：
+   - **后台零 Token 自动唤醒**（Antigravity / Codex / Claude）：用 `vivado-mcp watch --job <id>` / `--run-dir <path>` / `--xpr <path>`（自适应工程规模阈值，退出码 `0/2/3/4/5` 对应完成/早错或失败/卡死/超时/内存危急）。
+   - **MCP 同步等待**：`run_ooc_synth` / `run_batch_tcl` / `get_batch_job` / `wait_run` 内置 10s 进度心跳、自适应 `stall_seconds` 与早错/卡死/内存早醒，完成后自带紧凑签收摘要（WNS/TNS/WHS/THS、LUT/FF/BRAM/DSP 与去重告警），超时不杀 Vivado，可再用 `get_batch_job` / `wait_run` 续等。
 4. **CLI 场景**：纯命令行或自动化流水线仍可使用 `vivado-mcp local-batch` / `build --target local`。
 5. **综合后核对**：顺手核对 `[Synth 8-3848]`（未驱动网表接地，仿真通过时也可能潜伏）与异常资源量级，不擅加 `-no_srlextract` / `use_dsp="no"` 偏方掩盖问题。
 

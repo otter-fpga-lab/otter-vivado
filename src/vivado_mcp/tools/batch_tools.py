@@ -42,6 +42,30 @@ async def _collect_memory_warning() -> str:
     return ""
 
 
+def _apply_watch_info(
+    summary: dict[str, Any],
+    watch_info: dict[str, Any] | None,
+    *,
+    always_include_profile: bool = False,
+) -> dict[str, Any]:
+    if not watch_info:
+        return summary
+    ev = watch_info.get("event")
+    is_alert = ev in {"stalled", "early_error", "memory_critical"}
+    is_wait_state = bool(summary.get("wait_timed_out")) or is_alert or always_include_profile
+    if is_wait_state and watch_info.get("watch_profile"):
+        summary["watch_profile"] = watch_info["watch_profile"]
+    if is_alert:
+        summary["watch_event"] = ev
+        if watch_info.get("alert_reason"):
+            summary["watch_reason"] = watch_info["alert_reason"]
+        if watch_info.get("error_lines"):
+            summary["early_error_lines"] = watch_info["error_lines"]
+        if watch_info.get("cpu_pct") is not None:
+            summary["cpu_pct"] = watch_info["cpu_pct"]
+    return summary
+
+
 @mcp.tool()
 async def run_batch_tcl(
     tcl_file: str | None = None,
@@ -50,21 +74,23 @@ async def run_batch_tcl(
     output_dir: str | None = None,
     vivado_path: str | None = None,
     tcl_args: list[str] | None = None,
-    timeout_seconds: int = 600,
+    timeout_seconds: int | None = None,
     wait: bool = True,
     max_cw_items: int = 8,
     notrace: bool = True,
+    stall_seconds: int | None = None,
+    fail_fast: bool = True,
+    mem_guard: bool = True,
     ctx: Context = None,
 ) -> str:
-    """在服务端托管运行 ``vivado -mode batch`` 并返回紧凑结构化摘要。
-
-    ``tcl_file`` 与 ``tcl_content`` 必须且只能提供一个；省略 ``output_dir`` 时落盘到
-    ``%LOCALAPPDATA%\\otter-vivado\\jobs\\<job_id>\\``。``wait=True`` 限 1~1800s，
-    超时不终止 Vivado，返回 ``job_id`` 供 ``get_batch_job`` 续查。
-    """
+    """在服务端托管运行 ``vivado -mode batch`` 并返回紧凑摘要（超时/早醒不终止 Vivado）。"""
     try:
         cw_limit = max(0, min(int(max_cw_items), 50))
-        wait_limit = max(1, min(int(timeout_seconds), 1800))
+        wait_limit = (
+            None
+            if timeout_seconds is None
+            else max(1, min(int(timeout_seconds), 1800))
+        )
         registry = _registry(ctx)
         job = await registry.start_batch_tcl(
             tcl_file=tcl_file,
@@ -76,12 +102,21 @@ async def run_batch_tcl(
             notrace=notrace,
         )
         timed_out = False
+        watch_info: dict[str, Any] | None = None
         if wait and job.status == "running":
-            job, timed_out = await registry.wait_job(job.job_id, wait_limit, ctx=ctx)
+            job, timed_out, watch_info = await registry.wait_job_ex(
+                job.job_id,
+                wait_limit,
+                ctx=ctx,
+                stall_seconds=stall_seconds,
+                fail_fast=fail_fast,
+                mem_guard=mem_guard,
+            )
         record = job.to_dict()
         if timed_out:
             record["wait_timed_out"] = True
         summary = compact_summary_from_record(record, max_cw_items=cw_limit)
+        _apply_watch_info(summary, watch_info)
         mem_warn = await _collect_memory_warning()
         if mem_warn:
             summary["memory_warning"] = mem_warn
@@ -103,14 +138,20 @@ async def run_ooc_synth(
     synth_args: list[str] | None = None,
     output_dir: str | None = None,
     vivado_path: str | None = None,
-    timeout_seconds: int = 600,
+    timeout_seconds: int | None = None,
     wait: bool = True,
+    stall_seconds: int | None = None,
+    fail_fast: bool = True,
+    mem_guard: bool = True,
     ctx: Context = None,
 ) -> str:
-    """独立 Out-of-Context 综合（无需 .xpr），支持 SV/V/VHD/XCI/XDC 与可选单时钟，
-    返回紧凑 JSON 摘要。"""
+    """独立 Out-of-Context 综合（无需 .xpr），内置自适应心跳与早醒，返回紧凑 JSON 摘要。"""
     try:
-        wait_limit = max(1, min(int(timeout_seconds), 1800))
+        wait_limit = (
+            None
+            if timeout_seconds is None
+            else max(1, min(int(timeout_seconds), 1800))
+        )
         registry = _registry(ctx)
         job = await registry.start_ooc_synth(
             top=top,
@@ -126,12 +167,21 @@ async def run_ooc_synth(
             vivado_path=vivado_path,
         )
         timed_out = False
+        watch_info: dict[str, Any] | None = None
         if wait and job.status == "running":
-            job, timed_out = await registry.wait_job(job.job_id, wait_limit, ctx=ctx)
+            job, timed_out, watch_info = await registry.wait_job_ex(
+                job.job_id,
+                wait_limit,
+                ctx=ctx,
+                stall_seconds=stall_seconds,
+                fail_fast=fail_fast,
+                mem_guard=mem_guard,
+            )
         record = job.to_dict()
         if timed_out:
             record["wait_timed_out"] = True
         summary = compact_summary_from_record(record, max_cw_items=8)
+        _apply_watch_info(summary, watch_info)
         mem_warn = await _collect_memory_warning()
         if mem_warn:
             summary["memory_warning"] = mem_warn
@@ -146,9 +196,12 @@ async def get_batch_job(
     wait_seconds: int = 0,
     log_tail_lines: int = 25,
     cancel: bool = False,
+    stall_seconds: int | None = None,
+    fail_fast: bool = True,
+    mem_guard: bool = True,
     ctx: Context = None,
 ) -> str:
-    """查询、等待（wait_seconds 0~1800）或取消批处理/OOC 任务；job_id=None 返回最近任务列表。"""
+    """查询、等待（wait_seconds 0~1800，含 10s 心跳与卡死/早错/内存早醒）或取消批处理/OOC 任务。"""
     try:
         registry = _registry(ctx)
         tail_limit = max(0, min(int(log_tail_lines), 200))
@@ -176,12 +229,21 @@ async def get_batch_job(
 
         jid = str(job_id).strip()
         timed_out = False
+        wait_limit = 0
+        watch_info: dict[str, Any] | None = None
         if cancel:
             job = await registry.cancel_job(jid)
         else:
             wait_limit = max(0, min(int(wait_seconds), 1800))
             if wait_limit > 0:
-                job, timed_out = await registry.wait_job(jid, wait_limit, ctx=ctx)
+                job, timed_out, watch_info = await registry.wait_job_ex(
+                    jid,
+                    wait_limit,
+                    ctx=ctx,
+                    stall_seconds=stall_seconds,
+                    fail_fast=fail_fast,
+                    mem_guard=mem_guard,
+                )
             else:
                 found = registry.get_job(jid, log_tail_lines=tail_limit)
                 if found is None:
@@ -198,6 +260,7 @@ async def get_batch_job(
             max_cw_items=8,
             include_log_tail=tail_limit > 0,
         )
+        _apply_watch_info(summary, watch_info, always_include_profile=wait_limit > 0)
         if tail_limit == 0:
             summary.pop("log_tail", None)
         elif "log_tail" not in summary:

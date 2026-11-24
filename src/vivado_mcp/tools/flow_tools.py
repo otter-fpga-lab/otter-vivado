@@ -45,6 +45,17 @@ from vivado_mcp.tcl_scripts import (
     QUERY_FILESET_OVERRIDES,
 )
 from vivado_mcp.vivado.tcl_utils import to_tcl_path, validate_identifier
+from vivado_mcp.watch_engine import (
+    PROGRESS_HEARTBEAT_SEC,
+    LogWatchState,
+    _extract_rst_pid,
+    _is_link_or_junction,
+    estimate_watch_profile,
+    extract_compact_signoff,
+    format_heartbeat_message,
+    format_signoff_line,
+    report_mcp_progress,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -764,25 +775,74 @@ _WAIT_OUTCOME_LABEL = {
     "idle": "未在运行",
     "unknown": "状态无法识别",
     "timeout": "等待超时（run 未取消）",
+    "stalled": "疑似卡死（run 未取消）",
+    "early_error": "提前捕获 ERROR（run 未取消）",
+    "memory_critical": "主机内存告急（run 未取消）",
 }
+
+_QUERY_WAIT_META_TCL = """\
+set __r [get_runs -quiet {run_name}]
+if {{$__r ne ""}} {{
+    puts "VMCP_WAIT_META:dir=[get_property DIRECTORY $__r]"
+    catch {{puts "VMCP_WAIT_META:part=[get_property PART [current_project]]"}}
+    catch {{
+        set __p [current_project]
+        set __pd [get_property DIRECTORY $__p]
+        set __pn [get_property NAME $__p]
+        set __xp [file join $__pd "$__pn.xpr"]
+        if {{[file isfile $__xp]}} {{ puts "VMCP_WAIT_META:xpr=$__xp" }}
+    }}
+}}
+"""
+
+
+async def _query_wait_meta(session, run_name: str) -> tuple[Path | None, Path | None, str]:
+    """等待开始时只读查询一次 run_dir / xpr / part（缓存供后续磁盘观测）。"""
+    if _session_is_busy(session):
+        return None, None, ""
+    try:
+        res = await session.execute(_QUERY_WAIT_META_TCL.format(run_name=run_name), timeout=10.0)
+    except Exception:
+        return None, None, ""
+    if getattr(res, "is_error", False):
+        return None, None, ""
+    run_dir: Path | None = None
+    xpr_path: Path | None = None
+    part = ""
+    for line in (getattr(res, "output", "") or "").splitlines():
+        s = line.strip()
+        if s.startswith("VMCP_WAIT_META:dir="):
+            raw_dir = s[len("VMCP_WAIT_META:dir="):].strip()
+            if raw_dir:
+                cand = Path(raw_dir)
+                if cand.is_dir():
+                    run_dir = cand
+        elif s.startswith("VMCP_WAIT_META:xpr="):
+            raw_xpr = s[len("VMCP_WAIT_META:xpr="):].strip()
+            if raw_xpr and Path(raw_xpr).is_file():
+                xpr_path = Path(raw_xpr)
+        elif s.startswith("VMCP_WAIT_META:part="):
+            part = s[len("VMCP_WAIT_META:part="):].strip()
+    return run_dir, xpr_path, part
 
 
 @mcp.tool()
 async def wait_run(
     run_name: str = "impl_1",
     until: str = "complete",
-    timeout_seconds: int = 600,
+    timeout_seconds: int | None = None,
     poll_seconds: int = 15,
     session_id: str = "default",
     compact: bool = True,
+    stall_seconds: int | None = None,
+    fail_fast: bool = True,
+    mem_guard: bool = True,
     ctx: Context = None,
 ) -> str:
-    """在服务端只读轮询 run 直到目标步骤/完成/失败/超时，替代 sleep 循环，不占用 session 锁。
+    """只读轮询 run 至目标/完成/失败/超时，内置 10s 心跳与卡死/早错/内存早醒（超时不取消）。
 
-    ``until`` 支持 ``"complete"`` 或 ``synth_design/opt_design/power_opt_design/place_design/
-    post_place_power_opt_design/phys_opt_design/route_design/post_route_phys_opt_design/write_bitstream``；
-    ``timeout_seconds`` 限 1~1800（建议小于宿主单次调用超时），``poll_seconds`` 限 2~300。
-    ``compact=True`` 时对正常/超时结果返回 4~6 行精简摘要，失败时仍保留完整静默退出取证。
+    ``until`` 支持 ``complete`` 或 ``synth_design``..``write_bitstream``；
+    ``timeout_seconds``/``stall_seconds`` 省略时按工程规模自适应（1~1800 / 0 禁用卡死）。
     """
     try:
         run_name = validate_identifier(run_name, "run_name")
@@ -791,11 +851,13 @@ async def wait_run(
     until = (until or "").strip().lower()
     if until not in WAIT_UNTIL_CHOICES:
         return f"[ERROR] until 必须是 {', '.join(WAIT_UNTIL_CHOICES)} 之一（收到 {until!r}）。"
-    if not 1 <= timeout_seconds <= _WAIT_MAX_TIMEOUT_SEC:
+    if timeout_seconds is not None and not 1 <= timeout_seconds <= _WAIT_MAX_TIMEOUT_SEC:
         return (
             f"[ERROR] timeout_seconds 必须在 1~{_WAIT_MAX_TIMEOUT_SEC} 之间"
             f"（收到 {timeout_seconds}）；更长的构建请分次调用 wait_run。"
         )
+    if stall_seconds is not None and stall_seconds < 0:
+        return f"[ERROR] stall_seconds 不能为负数（收到 {stall_seconds}）。"
     if not 2 <= poll_seconds <= 300:
         return f"[ERROR] poll_seconds 必须在 2~300 之间（收到 {poll_seconds}）。"
 
@@ -803,15 +865,45 @@ async def wait_run(
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
+    run_dir, xpr_path, part = await _query_wait_meta(session, run_name)
+    profile = estimate_watch_profile(
+        run_dir=run_dir,
+        xpr_path=xpr_path,
+        part=part,
+        run_name=run_name,
+        until=until,
+    )
+    eff_timeout = (
+        min(profile.timeout_seconds, _WAIT_MAX_TIMEOUT_SEC)
+        if timeout_seconds is None
+        else int(timeout_seconds)
+    )
+    eff_stall = profile.stall_seconds if stall_seconds is None else int(stall_seconds)
+
     started = time.monotonic()
-    deadline = started + timeout_seconds
+    deadline = started + eff_timeout
     polls = 0
     status = "UNKNOWN"
     outcome = "timeout"
     pending_settle: str | None = None
     last_percent = None
+    last_heartbeat_at = started
+    last_now = started
+    tracker = LogWatchState(
+        started_monotonic=started,
+        stall_seconds=eff_stall,
+        fail_fast=fail_fast,
+        mem_guard=mem_guard,
+    )
+    log_file = (run_dir / "runme.log") if run_dir is not None else None
+    vivado_pid = _extract_rst_pid(run_dir / ".vivado.begin.rst") if run_dir else None
+    if vivado_pid is None:
+        raw_pid = getattr(session, "pid", None)
+        if isinstance(raw_pid, int) and raw_pid > 0:
+            vivado_pid = raw_pid
 
     while True:
+        percent = None
         if _session_is_busy(session):
             verdict = "busy"
         else:
@@ -845,12 +937,22 @@ async def wait_run(
                 polls += 1
                 status = parts[0].strip()
                 percent = progress_percent(parts[1].strip())
-                if ctx is not None and percent is not None and percent != last_percent:
-                    await ctx.report_progress(progress=percent, total=100)
-                    last_percent = percent
                 verdict = evaluate_wait(status, until)
 
         if verdict in {"reached", "failed", "cancelled"}:
+            if ctx is not None and percent is not None and percent != last_percent:
+                await report_mcp_progress(
+                    ctx,
+                    progress=percent,
+                    total=100,
+                    message=format_heartbeat_message(
+                        status=status,
+                        phase=tracker.latest_phase,
+                        elapsed_sec=max(0.0, time.monotonic() - started),
+                        ram_pct=tracker.ram_pct,
+                    ),
+                )
+                last_percent = percent
             outcome = verdict
             break
         if verdict in {"settled", "idle", "unknown"}:
@@ -865,7 +967,60 @@ async def wait_run(
         elif verdict != "busy":
             pending_settle = None
 
-        remaining = deadline - time.monotonic()
+        now = time.monotonic()
+        last_now = now
+
+        if log_file is not None:
+            begin_mtime: float | None = None
+            if run_dir is not None:
+                begin_rst = run_dir / ".vivado.begin.rst"
+                fresh_pid = _extract_rst_pid(begin_rst)
+                if fresh_pid is not None:
+                    vivado_pid = fresh_pid
+                if not _is_link_or_junction(begin_rst):
+                    with contextlib.suppress(OSError):
+                        begin_mtime = begin_rst.stat().st_mtime
+            tracker.scan_log(log_file, now, begin_mtime=begin_mtime)
+            if fail_fast and tracker.fatal_errors:
+                settle_sec = min(2.0, max(0.05, deadline - now))
+                await asyncio.sleep(settle_sec)
+                tracker.scan_log(log_file, time.monotonic(), begin_mtime=begin_mtime)
+                outcome = "early_error"
+                break
+
+        mem_crit, ram_pct, _ = tracker.check_memory()
+        if mem_crit:
+            outcome = "memory_critical"
+            break
+
+        if run_dir is not None and verdict == "running":
+            is_stalled = await asyncio.to_thread(tracker.evaluate_stall, now, vivado_pid)
+            if is_stalled:
+                outcome = "stalled"
+                break
+
+        elapsed_now = max(0.0, now - started)
+        percent_changed = percent is not None and percent != last_percent
+        heartbeat_due = (now - last_heartbeat_at) >= PROGRESS_HEARTBEAT_SEC
+        if ctx is not None and (percent_changed or heartbeat_due):
+            msg = format_heartbeat_message(
+                status=status,
+                phase=tracker.latest_phase,
+                elapsed_sec=elapsed_now,
+                ram_pct=ram_pct,
+                cpu_active_grace=tracker.cpu_active_grace,
+            )
+            await report_mcp_progress(
+                ctx,
+                progress=percent if percent is not None else round(elapsed_now, 1),
+                total=100 if percent is not None else float(eff_timeout),
+                message=msg,
+            )
+            last_heartbeat_at = now
+            if percent is not None:
+                last_percent = percent
+
+        remaining = deadline - now
         if remaining <= 0:
             outcome = "timeout"
             break
@@ -882,21 +1037,57 @@ async def wait_run(
     ]
     if outcome == "timeout":
         header.append(
-            f"run 仍在执行且未被取消。可再次 wait_run(run_name='{run_name}', until='{until}', "
+            f"run 仍在执行且未被取消（阈值 {profile.tier}: stall={eff_stall}s, "
+            f"timeout={eff_timeout}s; {profile.basis}）。"
+            f"可再次 wait_run(run_name='{run_name}', until='{until}', "
             f"session_id='{session.session_id}')；不要 sleep 后反复查询。"
+        )
+    elif outcome == "stalled":
+        silent_sec = int(max(0.0, last_now - tracker.last_activity_at))
+        cpu_note = (
+            f"CPU {tracker.last_cpu_pct:.1f}%"
+            if tracker.last_cpu_pct is not None
+            else "无活跃 CPU 信号"
+        )
+        header.append(
+            f"run 未取消！日志连续 {silent_sec} 秒未增长且无新阶段（{cpu_note}；"
+            f"阈值 {eff_stall}s, {profile.tier}）。"
+        )
+    elif outcome == "early_error":
+        header.append(
+            f"run 未取消！提前捕获 {len(tracker.fatal_errors)} 条 ERROR"
+            f"（{profile.tier}）："
+        )
+        for err_ln in tracker.fatal_errors[:5]:
+            header.append(f"  {err_ln[:200]}")
+    elif outcome == "memory_critical":
+        header.append(
+            f"run 未取消！主机内存危急：{tracker.ram_pct:.1f}% "
+            f"（可用 {tracker.ram_avail_gb:.1f} GB）；建议排查孤儿 vivado.exe 或降低并行。"
         )
     elif outcome == "stopped":
         header.append(
             f"run 已不在运行，但停在 {status}，未到达 {until}；"
             "确认是否用 -to_step 提前结束，或需要继续 launch。"
         )
-    use_compact = bool(compact) and outcome != "failed"
+
+    use_compact = bool(compact) and outcome not in {"failed", "early_error"}
     rp, report = await build_run_progress_report(
         session,
         run_name,
         tail_lines=5 if use_compact else 30,
         compact=use_compact,
     )
+    if outcome in {"completed", "reached"}:
+        summary_dir = run_dir or (Path(rp.run_dir) if rp and getattr(rp, "run_dir", "") else None)
+        if summary_dir is not None and summary_dir.is_dir():
+            signoff = await asyncio.to_thread(
+                extract_compact_signoff, summary_dir, run_name=run_name
+            )
+            signoff_line = format_signoff_line(signoff)
+            if signoff_line:
+                header.append(signoff_line)
+
     _sync_from_rp(ctx, session.session_id, rp, until=until)
     return "\n".join(header) + "\n\n" + report
 

@@ -56,6 +56,22 @@
 
         <button
           type="button"
+          id="btn-auto-notify"
+          class="notify-toggle"
+          title="构建完成/失败/卡死时自动发送 1 行摘要唤醒当前对话"
+          aria-pressed="false"
+          aria-label="提醒对话"
+          hidden
+        >
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
+            <path d="M4.2 6.8a3.8 3.8 0 0 1 7.6 0c0 2.6.9 3.7 1.4 4.2H2.8c.5-.5 1.4-1.6 1.4-4.2Z" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/>
+            <path d="M6.6 12.6a1.5 1.5 0 0 0 2.8 0" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/>
+          </svg>
+          <span class="notify-toggle-label">提醒</span>
+        </button>
+
+        <button
+          type="button"
           id="btn-auto-refresh"
           class="tool-btn on"
           title="自动 5s 静默刷新（点击切换）"

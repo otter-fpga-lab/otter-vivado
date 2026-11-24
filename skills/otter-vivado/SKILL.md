@@ -23,7 +23,9 @@ description: 操作 AMD Vivado 工程、本地或远程综合与实现、查看�
 
 **独立 OOC 综合与批处理 Tcl（省 Token、禁 shell sleep）**：
 - 无 `.xpr` 独立综合优先用 `run_ooc_synth`（1 次调用生成 Tcl、可选时钟约束并自动解析 WNS/TNS/WHS/THS、LUT/FF/BRAM/DSP 与去重告警，返回 < 2 KB 紧凑 JSON）；跑批处理 Tcl 脚本优先用 `run_batch_tcl`。
-- 禁止用裸 shell `vivado -mode batch` + `sleep` 轮询！两工具均支持服务端等待（`wait=True` 带进度上报；超时不杀 Vivado，返回 `wait_timed_out=True` 与 `job_id`，再用 `get_batch_job(job_id=..., wait_seconds=...)` 续等）且工作目录隔离在 `%LOCALAPPDATA%\otter-vivado\jobs\`。
+- 禁止用裸 shell `vivado -mode batch` + `sleep` 轮询！两条零浪费等待路径：
+  - **后台零 Token 自动唤醒**（Antigravity / Codex / Claude）：`vivado-mcp watch --job <id>` / `--run-dir <path>` / `--xpr <path>`（自适应工程规模阈值，退出码 `0` 完成 / `2` 失败或早错 / `3` 卡死 / `4` 超时 / `5` 内存危急）；
+  - **MCP 同步等待**：`wait_run` / `get_batch_job`（含 `run_ooc_synth` / `run_batch_tcl`）内置 10s 进度心跳、自适应 `stall_seconds` 与早错/卡死/内存早醒，完成后自带紧凑签收摘要；隔离工作目录在 `%LOCALAPPDATA%\otter-vivado\jobs\`。
 - 综合完成后顺手核对 `[Synth 8-3848]`（未驱动网表接地，仿真通过时也可能潜伏）与异常资源量级，不擅加 `-no_srlextract` / `use_dsp="no"` 偏方掩盖问题。
 - 省 Token 签核与跨 Agent 观测：优先调用 `get_build_summary()`（`<1 KB` 列跨客户端会话/批处理/内存）或 `get_build_summary(target=<.xpr/.runs/OOC>)`（`<700 B` 返回 WNS/TNS/WHS/THS/WPWS、LUT/FF/DSP/BRAM/URAM、Synth 8-3848、DRC、功耗与 `.bit/.ltx/.xsa`）；Windows Vivado 2024.x 若在 route 后自动 `report_power` 处静默退出，传 `run_implementation(..., skip_route_power_report=True)` 续跑。
 - 需要可视化或零 Token 检视离线 `.xpr`/`.runs`/OOC 目录与全部 Agent 运行时，使用 `open_vivado_console`（共享优选端口 `http://127.0.0.1:18765/`；Antigravity 打开原生侧栏「Vivado 控制台」`open_vivado_console()`，Codex / 浏览器客户端传 `open_vivado_console(open_browser=True)`）。控制台底栏与「调试」页均实时展示本机 `127.0.0.1` 地址供一键复制或浏览器打开；完整 `.rpt` 与长日志留给控制台按需预览，不在对话里倾倒大段原始报告。

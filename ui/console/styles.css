@@ -476,6 +476,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   border-color: rgba(255, 90, 82, 0.45);
 }
 
+.link-island.alert.warn {
+  border-color: rgba(255, 159, 10, 0.48);
+}
+
 .island-dot {
   width: 6px;
   height: 6px;
@@ -498,6 +502,11 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .link-island.alert .island-dot {
   background: #FF453A;
   box-shadow: 0 0 8px rgba(255, 69, 58, 0.55);
+}
+
+.link-island.alert.warn .island-dot {
+  background: #FF9F0A;
+  box-shadow: 0 0 8px rgba(255, 159, 10, 0.55);
 }
 
 .island-title {
@@ -567,6 +576,11 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   background: rgba(255, 69, 58, 0.18);
 }
 
+.island-badge[data-tone="warn"] {
+  color: #FFC15E;
+  background: rgba(255, 159, 10, 0.18);
+}
+
 /* ---------- 顶栏工具按钮与主题弹出菜单 ---------- */
 .tool-btn {
   width: 26px;
@@ -594,6 +608,43 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .tool-btn.on {
   color: var(--accent);
   background: var(--accent-tint);
+}
+
+.notify-toggle {
+  height: 24px;
+  padding: 0 8px 0 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--label-2);
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background-color 120ms var(--ease), color 120ms var(--ease), border-color 120ms var(--ease);
+}
+
+.notify-toggle:hover:not(:disabled) {
+  background: var(--control);
+  color: var(--label);
+}
+
+.notify-toggle:active:not(:disabled) {
+  background: var(--control-pressed);
+}
+
+.notify-toggle.on {
+  color: var(--accent);
+  background: var(--accent-tint);
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+}
+
+.notify-toggle.on svg {
+  color: var(--accent);
 }
 
 .menu-wrap {
@@ -986,6 +1037,14 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   color: var(--selection-fg);
 }
 
+.nav-card[data-alert="warn"] {
+  box-shadow: inset 2.5px 0 0 var(--tx);
+}
+
+.nav-card[data-alert="crit"] {
+  box-shadow: inset 2.5px 0 0 var(--red);
+}
+
 .nav-card-top {
   display: flex;
   align-items: center;
@@ -1057,6 +1116,11 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   background: color-mix(in srgb, var(--red) 12%, transparent);
 }
 
+.wns-pill[data-met="warn"] {
+  color: var(--tx);
+  background: color-mix(in srgb, var(--tx) 14%, transparent);
+}
+
 .nav-card[data-selected="true"] .wns-pill {
   background: rgba(0, 0, 0, 0.22);
   color: var(--selection-fg-2);
@@ -1077,12 +1141,21 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   background: color-mix(in srgb, var(--red) 14%, transparent);
 }
 
+[data-theme="macos-light"] .nav-card[data-selected="true"] .wns-pill[data-met="warn"] {
+  color: var(--tx);
+  background: color-mix(in srgb, var(--tx) 16%, transparent);
+}
+
 .nav-card[data-selected="true"] .wns-pill[data-met="true"] {
   color: #7DF59C;
 }
 
 .nav-card[data-selected="true"] .wns-pill[data-met="false"] {
   color: #FFA09B;
+}
+
+.nav-card[data-selected="true"] .wns-pill[data-met="warn"] {
+  color: #FFC66D;
 }
 
 .nav-card-meta {
@@ -1448,7 +1521,9 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .status-badge[data-status="completed"],
 .status-badge[data-status="connected"],
-.status-badge[data-status="succeeded"] {
+.status-badge[data-status="succeeded"],
+.status-badge[data-status="reached"],
+.status-badge[data-status="stage_complete"] {
   background: color-mix(in srgb, var(--green) 14%, transparent);
   color: var(--green);
 }
@@ -1460,11 +1535,15 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .status-badge[data-status="failed"],
 .status-badge[data-status="error"],
+.status-badge[data-status="early_error"],
+.status-badge[data-status="silent_exit"],
+.status-badge[data-status="memory_critical"],
 .status-badge[data-status="disconnected"] {
   background: color-mix(in srgb, var(--red) 14%, transparent);
   color: var(--red);
 }
 
+.status-badge[data-status="stalled"],
 .status-badge[data-status="cancelled"],
 .status-badge[data-status="timeout"],
 .status-badge[data-status="busy"],
@@ -2517,6 +2596,13 @@ td.mono {
     gap: 6px;
   }
   .app-title span {
+    display: none;
+  }
+  .notify-toggle {
+    width: 26px;
+    padding: 0;
+  }
+  .notify-toggle-label {
     display: none;
   }
   .link-island {

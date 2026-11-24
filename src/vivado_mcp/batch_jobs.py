@@ -2355,52 +2355,195 @@ class BatchJobRegistry:
             preallocated_job_id=job_id,
         )
 
-    async def wait_job(
+    async def wait_job_ex(
         self,
         job_id: str,
-        timeout_seconds: int,
+        timeout_seconds: int | None = None,
         *,
         ctx: Any = None,
-    ) -> tuple[BatchJob, bool]:
-        """等待任务结束；超时不杀死 Vivado，返回 ``(job, wait_timed_out)``。"""
+        stall_seconds: int | None = None,
+        fail_fast: bool = True,
+        mem_guard: bool = True,
+    ) -> tuple[BatchJob, bool, dict[str, Any]]:
+        """等待任务结束或触发自适应早醒；超时/早醒不杀死 Vivado。"""
+        from vivado_mcp.watch_engine import (
+            PROGRESS_HEARTBEAT_SEC,
+            LogWatchState,
+            estimate_watch_profile,
+            format_heartbeat_message,
+            report_mcp_progress,
+        )
+
         with self._lock:
             self._ensure_loaded()
             job = self._jobs.get(job_id)
             if job is None:
                 raise KeyError(job_id)
-            if job.status != "running":
-                return job, False
+            job_status = job.status
+            job_kind = job.kind
             event = self._events.get(job_id)
-        if event is None:
-            return job, False
 
-        wait_limit = _clamp_wait_seconds(timeout_seconds, minimum=_MIN_WAIT_SECONDS)
+        profile = estimate_watch_profile(
+            job=job,
+            is_ooc=(job_kind == "ooc_synth"),
+            jobs_dir=self.jobs_dir,
+        )
+        if job_status != "running":
+            return job, False, {
+                "event": job_status,
+                "watch_profile": profile.to_compact_dict(),
+            }
+
+        raw_timeout = profile.timeout_seconds if timeout_seconds is None else int(timeout_seconds)
+        wait_limit = _clamp_wait_seconds(raw_timeout, minimum=_MIN_WAIT_SECONDS)
+        eff_stall = (
+            profile.stall_seconds
+            if stall_seconds is None
+            else max(0, int(stall_seconds))
+        )
+
         started = time.monotonic()
         deadline = started + wait_limit
         last_phase = ""
-        while not event.is_set():
+        last_heartbeat_at = started
+        sent_progress = False
+        tracker = LogWatchState(
+            started_monotonic=started,
+            stall_seconds=eff_stall,
+            fail_fast=fail_fast,
+            mem_guard=mem_guard,
+        )
+        log_file = Path(job.log_path) if job.log_path else None
+
+        while True:
+            if event is not None and event.is_set():
+                break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 self._refresh_live_tail(job)
-                return job, True
+                return job, True, {
+                    "event": "timeout",
+                    "watch_profile": profile.to_compact_dict(),
+                }
             step = min(2.0, remaining)
-            try:
-                await asyncio.wait_for(event.wait(), timeout=step)
-            except asyncio.TimeoutError:
-                pass
-            self._refresh_live_tail(job)
-            if ctx is not None and hasattr(ctx, "report_progress"):
-                elapsed = round(min(float(wait_limit), time.monotonic() - started), 1)
-                with self._lock:
-                    msg = job.current_phase or f"Vivado 批处理运行中 ({elapsed:.0f}s)"
-                if msg != last_phase or elapsed > 0:
-                    last_phase = msg
-                    with contextlib.suppress(Exception):
-                        await ctx.report_progress(
-                            progress=elapsed, total=float(wait_limit), message=msg
-                        )
+            if event is not None:
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=step)
+                except asyncio.TimeoutError:
+                    pass
+                if event.is_set():
+                    break
+            else:
+                await asyncio.sleep(step)
+                reloaded = self.get_job(job_id)
+                if reloaded is not None:
+                    job = reloaded
+                if job.status != "running":
+                    break
 
-        return job, False
+            self._refresh_live_tail(job)
+            now = time.monotonic()
+            with self._lock:
+                cur_phase = job.current_phase
+                watched_pid = job.pid if isinstance(job.pid, int) and job.pid > 0 else None
+                log_file = Path(job.log_path) if job.log_path else log_file
+
+            if log_file is not None:
+                tracker.scan_log(log_file, now)
+                if fail_fast and tracker.fatal_errors:
+                    settle = min(2.0, max(0.05, deadline - now))
+                    if event is not None:
+                        with contextlib.suppress(asyncio.TimeoutError):
+                            await asyncio.wait_for(event.wait(), timeout=settle)
+                        if event.is_set():
+                            break
+                    else:
+                        await asyncio.sleep(settle)
+                        reloaded = self.get_job(job_id)
+                        if reloaded is not None:
+                            job = reloaded
+                        if job.status != "running":
+                            break
+                    tracker.scan_log(log_file, time.monotonic())
+                    self._refresh_live_tail(job)
+                    return job, False, {
+                        "event": "early_error",
+                        "watch_profile": profile.to_compact_dict(),
+                        "error_lines": list(tracker.fatal_errors[:5]),
+                        "alert_reason": (
+                            "检测到致命 ERROR 日志行（fail_fast 提前唤醒，未杀死 Vivado）"
+                        ),
+                    }
+
+            mem_crit, ram_pct, ram_avail = await asyncio.to_thread(tracker.check_memory)
+            if mem_crit:
+                return job, False, {
+                    "event": "memory_critical",
+                    "watch_profile": profile.to_compact_dict(),
+                    "alert_reason": (
+                        f"主机 RAM {ram_pct:.1f}% 且仅剩 {ram_avail:.1f} GB（未杀死 Vivado）"
+                    ),
+                }
+
+            if await asyncio.to_thread(tracker.evaluate_stall, now, watched_pid):
+                silent_sec = int(max(0.0, now - tracker.last_activity_at))
+                return job, False, {
+                    "event": "stalled",
+                    "watch_profile": profile.to_compact_dict(),
+                    "cpu_pct": tracker.last_cpu_pct,
+                    "alert_reason": (
+                        f"日志连续 {silent_sec}s 无增长且无新阶段（未杀死 Vivado）"
+                    ),
+                }
+
+            elapsed = round(min(float(wait_limit), max(0.0, now - started)), 1)
+            phase_text = cur_phase or tracker.latest_phase
+            heartbeat_due = (now - last_heartbeat_at) >= PROGRESS_HEARTBEAT_SEC
+            if ctx is not None and (
+                not sent_progress or phase_text != last_phase or heartbeat_due
+            ):
+                last_phase = phase_text
+                last_heartbeat_at = now
+                sent_progress = True
+                msg = format_heartbeat_message(
+                    status="Vivado 批处理运行中",
+                    phase=phase_text,
+                    elapsed_sec=elapsed,
+                    ram_pct=ram_pct,
+                    cpu_active_grace=tracker.cpu_active_grace,
+                )
+                await report_mcp_progress(
+                    ctx,
+                    progress=elapsed,
+                    total=float(wait_limit),
+                    message=msg,
+                )
+
+        return job, False, {
+            "event": job.status,
+            "watch_profile": profile.to_compact_dict(),
+        }
+
+    async def wait_job(
+        self,
+        job_id: str,
+        timeout_seconds: int | None = None,
+        *,
+        ctx: Any = None,
+        stall_seconds: int | None = None,
+        fail_fast: bool = True,
+        mem_guard: bool = True,
+    ) -> tuple[BatchJob, bool]:
+        """等待任务结束；超时不杀死 Vivado，返回 ``(job, wait_timed_out)``。"""
+        job, timed_out, _ = await self.wait_job_ex(
+            job_id,
+            timeout_seconds,
+            ctx=ctx,
+            stall_seconds=stall_seconds,
+            fail_fast=fail_fast,
+            mem_guard=mem_guard,
+        )
+        return job, timed_out
 
     def get_job(self, job_id: str, *, log_tail_lines: int = 25) -> BatchJob | None:
         with self._lock:

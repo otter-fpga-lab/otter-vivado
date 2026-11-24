@@ -26,6 +26,11 @@ def main() -> None:
 
         sys.exit(remote_main(sys.argv[2:]))
 
+    if len(sys.argv) > 1 and sys.argv[1] == "watch":
+        from vivado_mcp.watch_cli import watch_main
+
+        sys.exit(watch_main(sys.argv[2:]))
+
     parser = argparse.ArgumentParser(
         prog="vivado-mcp",
         description="Vivado MCP Server — AI 驱动的 FPGA 开发助手。",
@@ -174,8 +179,12 @@ def main() -> None:
     p_local.add_argument("tclargs", nargs=argparse.REMAINDER, help="-- 之后的参数原样作为 -tclargs。")
 
     from vivado_mcp.build_cli import add_arguments
+    from vivado_mcp.watch_cli import add_watch_arguments
 
     add_arguments(sub.add_parser("build", help="共用 Tcl 清单选择本地 batch 或远程 host。"))
+    add_watch_arguments(
+        sub.add_parser("watch", help="零 Token 后台只读观察 Vivado 运行/批处理任务。")
+    )
     p_summary = sub.add_parser(
         "report-summary", help="只读提取目录中的时序、资源和 Critical Warning。"
     )

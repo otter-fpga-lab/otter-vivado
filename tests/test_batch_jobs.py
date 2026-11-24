@@ -14,6 +14,7 @@ from mcp.server.mcpserver import Context
 
 from vivado_mcp import batch_jobs
 from vivado_mcp.server import AppContext, mcp
+from vivado_mcp.tools import batch_tools
 from vivado_mcp.vivado.session_manager import SessionManager
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -221,6 +222,7 @@ async def test_run_ooc_synth_mocked_execution_and_compact_output(monkeypatch, tm
     monkeypatch.setattr(
         batch_jobs, "find_vivado", lambda p=None: "C:/Xilinx/Vivado/2024.2/bin/vivado.bat"
     )
+    monkeypatch.setattr(batch_tools, "_collect_memory_warning", AsyncMock(return_value=""))
 
     timing_sample = "| Design State : Synthesized\n" + (
         FIXTURES / "sample_report_timing.txt"
@@ -345,6 +347,7 @@ async def test_timeout_does_not_kill_vivado_and_resumes_or_cancels(monkeypatch, 
     monkeypatch.setattr(
         batch_jobs, "find_vivado", lambda p=None: "C:/Xilinx/Vivado/2024.2/bin/vivado.bat"
     )
+    monkeypatch.setattr(batch_tools, "_collect_memory_warning", AsyncMock(return_value=""))
 
     slow_proc = _FakeBatchProcess(returncode=0, delay=1.6)
     cancel_proc = _FakeBatchProcess(returncode=0, delay=30.0)
@@ -409,6 +412,7 @@ async def test_failed_job_triggers_silent_exit_forensics(monkeypatch, tmp_path):
     monkeypatch.setattr(
         batch_jobs, "find_vivado", lambda p=None: "C:/Xilinx/Vivado/2024.2/bin/vivado.bat"
     )
+    monkeypatch.setattr(batch_tools, "_collect_memory_warning", AsyncMock(return_value=""))
     monkeypatch.setattr(
         batch_jobs, "query_windows_crash_events", lambda *a, **kw: ("ok", "", "recent", [])
     )
@@ -490,6 +494,7 @@ async def test_registry_persistence_reload_and_shutdown_cleanup(monkeypatch, tmp
     monkeypatch.setattr(
         batch_jobs, "find_vivado", lambda p=None: "C:/Xilinx/Vivado/2024.2/bin/vivado.bat"
     )
+    monkeypatch.setattr(batch_tools, "_collect_memory_warning", AsyncMock(return_value=""))
     monkeypatch.setattr(
         batch_jobs,
         "_terminate_process_tree",
@@ -550,6 +555,7 @@ async def test_start_ooc_synth_creates_nonexistent_output_dir(monkeypatch, tmp_p
     monkeypatch.setattr(
         batch_jobs, "find_vivado", lambda p=None: "C:/Xilinx/Vivado/2024.2/bin/vivado.bat"
     )
+    monkeypatch.setattr(batch_tools, "_collect_memory_warning", AsyncMock(return_value=""))
 
     async def fake_spawn(command, cwd, env):
         assert Path(cwd) == nested_out.resolve()
