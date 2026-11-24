@@ -24,6 +24,7 @@ from vivado_mcp.batch_jobs import BatchJobRegistry
 from vivado_mcp.config import find_vivado
 from vivado_mcp.debug_service import DebugRegistry
 from vivado_mcp.run_monitor import MonitorRegistry
+from vivado_mcp.shared_registry import SharedRegistry
 from vivado_mcp.vivado.session import VivadoSession
 from vivado_mcp.vivado.session_manager import (
     SessionManager,
@@ -62,7 +63,9 @@ class AppContext:
     run_monitors: MonitorRegistry = field(default_factory=MonitorRegistry)
     debug_services: DebugRegistry = field(default_factory=DebugRegistry)
     batch_jobs: BatchJobRegistry = field(default_factory=BatchJobRegistry)
+    shared_registry: SharedRegistry = field(default_factory=SharedRegistry)
     console_http: Any = None
+    console_shared_url: str = ""
 
 
 _app_context_ref: AppContext | None = None
@@ -91,6 +94,58 @@ def get_app_context(ctx=None) -> AppContext:
             session_manager=SessionManager(vivado_path=vp)
         )
     return _fallback_app_context
+
+
+def get_shared_registry(ctx=None) -> SharedRegistry | None:
+    """获取当前 AppContext 中的跨 Agent 共享注册表。"""
+    try:
+        app_ctx = get_app_context(ctx)
+    except Exception:
+        return None
+    reg = getattr(app_ctx, "shared_registry", None)
+    return reg if isinstance(reg, SharedRegistry) else None
+
+
+def sync_shared_session(
+    ctx=None,
+    *,
+    session_id: str = "default",
+    disconnected: bool = False,
+    **fields: Any,
+) -> None:
+    """向共享注册表写入会话状态（失败不干扰主工具路径）。"""
+    reg = get_shared_registry(ctx)
+    if reg is None:
+        return
+    try:
+        if disconnected:
+            reg.mark_session_disconnected(
+                session_id, status=str(fields.pop("status", "ended") or "ended")
+            )
+            return
+        app_ctx = get_app_context(ctx)
+        mgr = getattr(app_ctx, "session_manager", None)
+        if mgr is not None and hasattr(mgr, "get"):
+            sess = mgr.get(session_id)
+            if sess is not None:
+                info = sess.status_dict() if hasattr(sess, "status_dict") else {}
+                if isinstance(info, dict):
+                    mode_val = info.get("mode")
+                    port_val = info.get("port")
+                    pid_val = info.get("pid")
+                else:
+                    mode_val = getattr(sess, "mode", None)
+                    port_val = getattr(sess, "port", None)
+                    pid_val = getattr(sess, "pid", None)
+                if mode_val is not None:
+                    fields.setdefault("mode", str(mode_val))
+                if port_val is not None and "port" not in fields:
+                    fields["port"] = port_val
+                if isinstance(pid_val, int) and pid_val > 0 and "vivado_pid" not in fields:
+                    fields["vivado_pid"] = pid_val
+        reg.upsert_session(session_id, **fields)
+    except Exception:
+        logger.debug("同步共享会话注册表失败 (%s)", session_id, exc_info=True)
 
 
 @asynccontextmanager
@@ -122,10 +177,12 @@ async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
         if app_context.console_http is not None:
             await asyncio.to_thread(app_context.console_http.close)
             app_context.console_http = None
+        app_context.console_shared_url = ""
         await app_context.batch_jobs.close()
         await app_context.debug_services.close()
         await app_context.run_monitors.close()
         await manager.close_all()
+        app_context.shared_registry.close()
 
 
 # 创建 MCPServer 实例

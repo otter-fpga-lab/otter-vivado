@@ -18,15 +18,8 @@ from vivado_mcp.server import _NO_SESSION, _require_session, mcp
 async def get_project_layout(
     project: str = "", session_id: str = "default", ctx: Context = None,
 ) -> str:
-    """只读解析工程目录约定：过程文件、笔记、脚本、交付、Vivado 运行目录与回收站位置。
-
-    project 为 .xpr 路径或工程目录；留空时取 session_id 会话当前打开的工程。
-    返回 project_root/xpr/debug_dir/notes_file/scripts_dir/download_dir/vivado_cwd/
-    trash_dir/config_path/rules 与 hygiene（只读提示残留 .vmcp/.work、误建 script/、
-    超限 debug_dir，附移入 trash_dir 并写清单建议）。工程根下 otter-vivado.toml 的
-    [layout] 可覆盖；配置非法时报错，不静默回退。trash_dir 为 null 表示未找到 99_垃圾堆，
-    不要自动创建。本工具不创建目录；不要在工程内创建 .work/.vmcp 等隐藏目录。
-    """
+    """只读解析工程目录约定（支持 otter-vivado.toml [layout]）及卫生提示；
+    留空取 session_id 当前工程，不创建目录。"""
     try:
         source = "argument"
         if not project.strip():

@@ -4,7 +4,7 @@ import json
 
 from mcp.server.mcpserver import Context
 
-from vivado_mcp.server import _NO_SESSION, _require_session, mcp
+from vivado_mcp.server import _NO_SESSION, _require_session, mcp, sync_shared_session
 
 
 async def _monitor(ctx, session_id, run_name, target_step):
@@ -33,9 +33,24 @@ async def open_run_monitor(
     """
     try:
         monitor = await _monitor(ctx, session_id, run_name, target_step)
+        url = monitor.open_view()
+        snap = monitor.snapshot()
+        run_info = snap.get("run") or {}
+        sync_shared_session(
+            ctx,
+            session_id=session_id,
+            run_name=run_name,
+            target_step=target_step,
+            run_dir=run_info.get("directory") or None,
+            log_path=run_info.get("log_path") or None,
+            monitor_url=url or None,
+            status=run_info.get("state") or None,
+            state=run_info.get("status") or None,
+            phase=run_info.get("phase") or None,
+        )
         return json.dumps({
-            "url": monitor.open_view(), "session_id": session_id, "run_name": run_name,
-            "target_step": target_step, "connection": monitor.snapshot()["connection"],
+            "url": url, "session_id": session_id, "run_name": run_name,
+            "target_step": target_step, "connection": snap["connection"],
         }, ensure_ascii=False)
     except (ValueError, OSError) as exc:
         return f"[ERROR] {exc}"
@@ -49,14 +64,8 @@ async def get_run_snapshot(
     ctx: Context = None,
     include_report_text: bool = False,
 ) -> str:
-    """读取与运行面板同源的 JSON 缓存；首次调用登记后台采样，不阻塞主通道。
-
-    检查 connection/observed_at，不能把旧快照当最新状态。completed 只表示指定
-    run 目标完成，不表示时序/资源通过；报告各自保留来源与新鲜度证据。
-    报告独立采样，另查 reports_status、reports_observed_at、reports_error 和
-    reports_source；loading/error/stale 可能保留此前报告，不能因运行状态
-    connected 而当作本轮新报告。
-    """
+    """读取运行面板 JSON 缓存（不阻塞主通道）；
+    核对 connection/observed_at 与 reports_status 新鲜度。"""
     try:
         snapshot = (await _monitor(ctx, session_id, run_name, target_step)).snapshot()
         if not include_report_text:
@@ -74,11 +83,7 @@ async def close_run_monitor(
     session_id: str = "default",
     ctx: Context = None,
 ) -> str:
-    """关闭匹配面板与采样，释放缓存；不会停止 Vivado、run 或用户 GUI。
-
-    同一 session_id 重连前后匹配的旧观察器也会释放。找不到时直接返回
-    not_found，不创建观察器或连接；其他 run/目标的面板不受影响。
-    """
+    """关闭匹配面板并释放后台采样（不停止 Vivado、run 或 GUI）。"""
     try:
         registry = ctx.request_context.lifespan_context.run_monitors
         count = await registry.release(session_id, run_name, target_step)

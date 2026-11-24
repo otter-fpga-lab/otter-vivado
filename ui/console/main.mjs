@@ -25,6 +25,7 @@ const STATUS_LABELS = {
   completed: "已完成",
   succeeded: "已成功",
   stage_complete: "阶段完成",
+  ended: "已结束",
   failed: "失败",
   error: "异常",
   cancelled: "已取消",
@@ -53,6 +54,7 @@ const ui = {
   lastSelectionSeq: 0,
   activeTab: "overview", // overview | diagnostics | reports | sessions
   statusFilter: "", // "" | running | completed | failed
+  clientFilter: "", // "" | clientSource
   railSearch: "",
   diagSev: "ALL", // ALL | ERROR | CRITICAL WARNING | WARNING
   diagSearch: "",
@@ -60,6 +62,7 @@ const ui = {
   reportPreview: null, // { path, name, total_lines, returned_lines, start_line, truncated, tail, lines, loading, error }
   reportReqId: 0,
   inFlightState: false,
+  inFlightPromise: null,
   autoRefresh: true,
   connState: "connecting",
   autoTimer: null,
@@ -68,6 +71,10 @@ const ui = {
   localCopyTimer: null,
   copiedServiceUrl: "",
   serviceCopyTimer: null,
+  pendingKillPid: null,
+  pendingKillTimer: null,
+  killingPid: null,
+  cleaningRegistry: false,
 };
 
 function byId(id) {
@@ -121,12 +128,66 @@ function fmtTime(epochSec) {
   }
 }
 
+function fmtRssMb(rssMb) {
+  if (typeof rssMb !== "number" || !Number.isFinite(rssMb) || rssMb < 0) return "—";
+  if (rssMb >= 1024) return `${(rssMb / 1024).toFixed(2)} GB`;
+  return `${Math.round(rssMb)} MB`;
+}
+
+function fmtUptime(sec) {
+  if (typeof sec !== "number" || !Number.isFinite(sec) || sec < 0) return "—";
+  const total = Math.floor(sec);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function normPathKey(pathStr) {
+  return String(pathStr || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+}
+
+function normalizeLogLines(lines) {
+  if (!Array.isArray(lines)) return [];
+  return lines.map((entry) =>
+    typeof entry === "string"
+      ? { line: 0, text: entry }
+      : { line: entry?.line ?? entry?.lineno ?? 0, text: String(entry?.text || "") }
+  );
+}
+
+function inferPhasesFromTail(logTail, currentPhase) {
+  const re = /^(?:Phase\s+\d+|Starting\s+|Finished\s+|Running\s+|Command:\s+)/i;
+  const out = [];
+  for (const row of logTail || []) {
+    const txt = String(row?.text || "").trim();
+    if (re.test(txt)) {
+      out.push({ line: row.line || 0, text: txt });
+    }
+  }
+  if (!out.length && currentPhase) {
+    out.push({ line: "—", text: currentPhase });
+  }
+  return out;
+}
+
 function statusBucket(status) {
   const s = String(status || "").toLowerCase();
   if (s === "running" || s === "queued" || s === "busy" || s === "waiting") return "running";
-  if (s === "completed" || s === "succeeded" || s === "connected" || s === "stage_complete") return "completed";
+  if (s === "completed" || s === "succeeded" || s === "connected" || s === "stage_complete" || s === "ended") return "completed";
   if (s === "failed" || s === "error" || s === "disconnected" || s === "cancelled" || s === "timeout") return "failed";
   return "other";
+}
+
+function pickPrimaryIssues(d) {
+  if (!d || typeof d !== "object") return [];
+  if (Array.isArray(d.all_issues) && d.all_issues.length) return d.all_issues;
+  if (Array.isArray(d.top_issues) && d.top_issues.length) return d.top_issues;
+  return [];
 }
 
 function ledClass(status, timing) {
@@ -152,12 +213,15 @@ function showToast(message, kind = "info") {
   }, 5000);
 }
 
-function setConnState(state, text) {
+function setConnState(state, text, detail = "") {
   ui.connState = state;
   const badge = byId("conn-badge");
   if (!badge) return;
   badge.dataset.state = state;
-  badge.textContent = text;
+  badge.title = detail ? `${text} ${detail}` : text;
+  badge.innerHTML = detail
+    ? `<span>${escapeHtml(text)}</span><span class="sb-conn-detail"> ${escapeHtml(detail)}</span>`
+    : escapeHtml(text);
 }
 
 function getThemeMeta(themeId) {
@@ -289,31 +353,50 @@ function extractMonitorUtil(monitor) {
   return chosen || { lut: null, ff: null, bram: null, dsp: null };
 }
 
-function extractMonitorDiagnostics(monitor) {
-  const run = monitor.run || {};
-  const diag = run.diagnostics || {};
-  const tail = Array.isArray(run.tail) ? run.tail : [];
+function extractIssuesFromTail(tailLines) {
   const issues = [];
   const warnItems = [];
-  for (const lineObj of tail) {
-    const lineNo = lineObj?.lineno || 0;
+  let errors = 0;
+  let criticalWarnings = 0;
+  let warnings = 0;
+  for (const lineObj of tailLines || []) {
+    const lineNo = lineObj?.lineno ?? lineObj?.line ?? 0;
     const txt = String(lineObj?.text || "").trim();
     const mId = txt.match(/\[(\w+[\s\-][\w\-]+)\]/);
     const id = mId ? mId[1] : "LOG";
     if (txt.startsWith("ERROR:")) {
+      errors += 1;
       issues.push({ severity: "ERROR", id, count: 1, line: lineNo, message: txt });
     } else if (txt.startsWith("CRITICAL WARNING:")) {
+      criticalWarnings += 1;
       issues.push({ severity: "CRITICAL WARNING", id, count: 1, line: lineNo, message: txt });
     } else if (txt.startsWith("WARNING:")) {
+      warnings += 1;
       warnItems.push({ severity: "WARNING", id, count: 1, line: lineNo, message: txt });
     }
   }
   return {
-    errors: typeof diag.errors === "number" ? diag.errors : 0,
-    critical_warnings: typeof diag.critical_warnings === "number" ? diag.critical_warnings : 0,
-    warnings: typeof diag.warnings === "number" ? diag.warnings : 0,
+    errors,
+    critical_warnings: criticalWarnings,
+    warnings,
     all_issues: issues,
     warning_items: warnItems,
+  };
+}
+
+function extractMonitorDiagnostics(monitor) {
+  const run = monitor.run || {};
+  const diag = run.diagnostics || {};
+  const parsed = extractIssuesFromTail(run.tail || []);
+  return {
+    errors: typeof diag.errors === "number" ? diag.errors : parsed.errors,
+    critical_warnings:
+      typeof diag.critical_warnings === "number"
+        ? diag.critical_warnings
+        : parsed.critical_warnings,
+    warnings: typeof diag.warnings === "number" ? diag.warnings : parsed.warnings,
+    all_issues: parsed.all_issues,
+    warning_items: parsed.warning_items,
     scope: diag.scope || "",
   };
 }
@@ -322,17 +405,39 @@ function buildItems(state) {
   const items = [];
   if (!state) return items;
 
+  const localClient =
+    String(
+      state.client ||
+        (state.batch_jobs || []).find((j) => j.is_local_owner === true && j.client)?.client ||
+        ""
+    ).trim() || "本会话";
+
+  const localRunKeys = new Set();
+  const seenUids = new Set();
+
   for (const mon of state.run_monitors || []) {
     const run = mon.run || {};
     const timing = extractMonitorTiming(mon);
     const utilization = extractMonitorUtil(mon);
     const diagnostics = extractMonitorDiagnostics(mon);
     const status = run.state || mon.connection || "unknown";
+    const runDirKey = normPathKey(run.directory);
+    const runNameKey = String(mon.run_name || "").trim().toLowerCase();
+    if (runDirKey) {
+      localRunKeys.add(`${runDirKey}|${runNameKey}`);
+    }
+    const uid = `run:${mon.session_id}:${mon.run_name}:${mon.target_step}`;
+    seenUids.add(uid);
     items.push({
-      uid: `run:${mon.session_id}:${mon.run_name}:${mon.target_step}`,
+      uid,
       category: "run_monitor",
       categoryLabel: "工程构建",
       kindBadge: mon.target_step || "run",
+      clientSource: mon.client || localClient,
+      isLocalOwner: true,
+      isRemote: false,
+      sessionId: mon.session_id || "",
+      mode: mon.session_mode || "",
       title: `${mon.run_name} · ${run.top || run.project || mon.session_id}`,
       subtitle: `${mon.session_id} · ${run.status || mon.connection || ""}`,
       status,
@@ -353,24 +458,140 @@ function buildItems(state) {
         stage: r.stage,
         freshness: r.freshness,
       })),
-      phases: (run.phases || []).map((p) => ({ line: p.lineno || 0, text: p.text || "" })),
+      phases: (run.phases || []).map((p) => ({
+        line: p.lineno ?? p.line ?? 0,
+        text: p.text || "",
+      })),
       currentPhase: run.current_phase || "",
-      logTail: (run.tail || []).map((t) => ({ line: t.lineno || 0, text: t.text || "" })),
+      logTail: normalizeLogLines(run.tail),
       outputDir: run.directory || "",
       logPath: run.log_path || "",
       xprPath: run.project_file || "",
+      monitorUrl: mon.url || mon.local_url || mon.view_url || "",
       raw: mon,
+    });
+  }
+
+  for (const rr of state.remote_runs || []) {
+    const rrDirKey = normPathKey(rr.run_dir);
+    const rrNameKey = String(rr.run_name || "").trim().toLowerCase();
+    if (rrDirKey && localRunKeys.has(`${rrDirKey}|${rrNameKey}`)) {
+      continue;
+    }
+    const fallbackId = `${rr.owner_pid || 0}:${rr.session_id || ""}:${rr.run_name || rr.run_dir || ""}`;
+    const uid = `remote:${rr.entry_id || fallbackId}`;
+    if (seenUids.has(uid)) continue;
+    seenUids.add(uid);
+
+    const logTail = normalizeLogLines(rr.log_tail);
+    const repTiming = extractMonitorTiming({ reports: rr.reports || [] });
+    const timing =
+      rr.timing && rr.timing.parse_status === "ok"
+        ? rr.timing
+        : repTiming.parse_status === "ok"
+          ? repTiming
+          : rr.timing || { wns: null, tns: null, whs: null, ths: null, met: null, parse_status: "missing" };
+
+    const rawUtil = rr.utilization || {};
+    const hasDirectUtil = Boolean(rawUtil.lut || rawUtil.ff || rawUtil.bram || rawUtil.dsp);
+    const utilization = hasDirectUtil ? rawUtil : extractMonitorUtil({ reports: rr.reports || [] });
+
+    const tailDiag = extractIssuesFromTail(logTail);
+    const d = rr.diagnostics || {};
+    const primaryIssues = pickPrimaryIssues(d);
+    const diagnostics = {
+      errors: typeof d.errors === "number" ? d.errors : tailDiag.errors,
+      critical_warnings:
+        typeof d.critical_warnings === "number" ? d.critical_warnings : tailDiag.critical_warnings,
+      warnings: typeof d.warnings === "number" ? d.warnings : tailDiag.warnings,
+      all_issues: primaryIssues.length ? primaryIssues : tailDiag.all_issues,
+      top_issues: Array.isArray(d.top_issues) ? d.top_issues : [],
+      warning_items:
+        Array.isArray(d.warning_items) && d.warning_items.length
+          ? d.warning_items
+          : tailDiag.warning_items,
+      scope: d.scope || "",
+    };
+
+    const projLabel = rr.project_name || basename(rr.xpr_path) || "";
+    const title =
+      rr.run_name && projLabel
+        ? `${rr.run_name} · ${projLabel}`
+        : rr.run_name || projLabel || rr.session_id || rr.entry_id || "远程工程构建";
+    const status = rr.status || rr.state || (rr.alive ? "connected" : "disconnected");
+    const subtitleParts = [rr.session_id || rr.mode || "session", rr.phase || rr.state || status];
+    const phases =
+      Array.isArray(rr.phases) && rr.phases.length
+        ? rr.phases.map((p) => ({ line: p.lineno ?? p.line ?? 0, text: p.text || "" }))
+        : inferPhasesFromTail(logTail, rr.phase || "");
+
+    items.push({
+      uid,
+      category: "run_monitor",
+      categoryLabel: "工程构建",
+      kindBadge: rr.target_step || rr.mode || "remote",
+      clientSource: rr.client || "外部",
+      isLocalOwner: false,
+      isRemote: true,
+      ownerPid: typeof rr.owner_pid === "number" ? rr.owner_pid : null,
+      vivadoPid: typeof rr.vivado_pid === "number" ? rr.vivado_pid : null,
+      alive: rr.alive !== false,
+      sessionId: rr.session_id || "",
+      mode: rr.mode || "",
+      port: rr.port ?? null,
+      title,
+      subtitle: subtitleParts.filter(Boolean).join(" · "),
+      status,
+      top: rr.top || "",
+      part: rr.part || "",
+      project: rr.project_name || "",
+      version: rr.vivado_version || "",
+      elapsedText:
+        typeof rr.elapsed_sec === "number" && Number.isFinite(rr.elapsed_sec)
+          ? fmtDuration(rr.elapsed_sec)
+          : rr.updated_at
+            ? fmtTime(rr.updated_at)
+            : "—",
+      progressPct:
+        typeof rr.progress === "number" && Number.isFinite(rr.progress) ? rr.progress : null,
+      timing,
+      utilization,
+      diagnostics,
+      reports: (rr.reports || []).map((r) => ({
+        name: r.name || basename(r.path),
+        path: r.path || "",
+        size: r.size || 0,
+        kind: r.kind || "rpt",
+        stage: r.stage || "",
+        freshness: r.freshness || "",
+      })),
+      phases,
+      currentPhase: rr.phase || "",
+      logTail,
+      outputDir: rr.run_dir || "",
+      logPath: rr.log_path || "",
+      xprPath: rr.xpr_path || "",
+      monitorUrl: rr.monitor_url || "",
+      debugUrl: rr.debug_url || "",
+      updatedAt: rr.updated_at || null,
+      raw: rr,
     });
   }
 
   for (const job of state.batch_jobs || []) {
     const isOoc = job.kind === "ooc_synth";
+    const isLocalOwner = job.is_local_owner !== false;
     items.push({
       uid: `job:${job.job_id}`,
       jobId: job.job_id,
       category: "batch_job",
       categoryLabel: "Batch / OOC",
       kindBadge: isOoc ? "OOC 综合" : "Batch Tcl",
+      clientSource: job.client || (isLocalOwner ? localClient : "外部"),
+      isLocalOwner,
+      isRemote: !isLocalOwner,
+      ownerPid: typeof job.owner_pid === "number" ? job.owner_pid : null,
+      vivadoPid: typeof job.pid === "number" ? job.pid : null,
       title: job.top || basename(job.tcl_path) || job.job_id,
       subtitle: `${job.part || "未指定 Part"} · ${job.job_id}`,
       status: job.status || "unknown",
@@ -387,7 +608,7 @@ function buildItems(state) {
       reports: job.reports || [],
       phases: job.phases || [],
       currentPhase: job.current_phase || "",
-      logTail: job.log_tail || [],
+      logTail: normalizeLogLines(job.log_tail),
       outputDir: job.output_dir || "",
       logPath: job.log_path || "",
       tclPath: job.tcl_path || "",
@@ -406,6 +627,7 @@ function buildItems(state) {
       category: "inspected",
       categoryLabel: "离线目录",
       kindBadge: kindLabel,
+      clientSource: insp.client || "",
       title: insp.project || insp.top || basename(insp.target_path),
       subtitle: `${insp.part || "未识别 Part"} · ${basename(insp.target_path)}`,
       status: insp.status || "unknown",
@@ -421,7 +643,7 @@ function buildItems(state) {
       reports: insp.reports || [],
       phases: insp.phases || [],
       currentPhase: insp.current_phase || "",
-      logTail: insp.log_tail || [],
+      logTail: normalizeLogLines(insp.log_tail),
       outputDir: insp.output_dir || "",
       logPath: insp.log_path || "",
       xprPath: insp.xpr_path || "",
@@ -439,6 +661,7 @@ function buildItems(state) {
       category: "debug_session",
       categoryLabel: "硬件调试 / ILA",
       kindBadge: `控制权: ${dbg.control || "manual"}`,
+      clientSource: dbg.client || "",
       title: `${dbg.session_id} · ${dbg.selection?.device || "未选器件"}`,
       subtitle: `ILA ${ilas} · VIO ${vios} · rev ${dbg.revision ?? 0}`,
       status: dbg.connection || "unobserved",
@@ -485,9 +708,11 @@ function updateSummaryAndStatus(items) {
   byId("cnt-completed").textContent = String(completed);
   byId("cnt-failed").textContent = String(failed);
 
-  for (const chip of document.querySelectorAll(".filter-chip")) {
+  for (const chip of document.querySelectorAll("#summary-chips .filter-chip")) {
     chip.dataset.active = ui.statusFilter === chip.dataset.filter ? "true" : "false";
   }
+
+  renderClientFilters(items);
 
   const finishedBatchCount = (ui.state?.batch_jobs || []).filter((j) => j.status !== "running").length;
   const footerActs = byId("sidebar-footer-actions");
@@ -495,13 +720,93 @@ function updateSummaryAndStatus(items) {
 
   const installsCount = (ui.state?.vivado_installs?.installations || []).length;
   const sessionsCount = (ui.state?.sessions || []).length;
-  const sbVivado = byId("sb-vivado");
-  if (sbVivado) {
-    sbVivado.textContent = `${installsCount} 个 Vivado · ${sessionsCount} 个会话`;
-  }
+  renderSystemStatusBar(installsCount, sessionsCount);
 
   renderLocalWebStatus();
   updateDynamicIsland(items, { running, completed, failed, installsCount });
+}
+
+function renderClientFilters(items) {
+  const bar = byId("client-filter-bar");
+  if (!bar) return;
+
+  const counts = new Map();
+  for (const item of items) {
+    if (!item.clientSource) continue;
+    counts.set(item.clientSource, (counts.get(item.clientSource) || 0) + 1);
+  }
+  const clients = [...counts.keys()];
+  if (clients.length <= 1) {
+    ui.clientFilter = "";
+    bar.hidden = true;
+    bar.innerHTML = "";
+    return;
+  }
+
+  if (ui.clientFilter && !counts.has(ui.clientFilter)) {
+    ui.clientFilter = "";
+  }
+
+  const pills = [
+    `<button type="button" class="filter-chip client-chip" data-client="" data-active="${ui.clientFilter === "" ? "true" : "false"}">全部来源</button>`,
+    ...clients.map(
+      (c) =>
+        `<button type="button" class="filter-chip client-chip" data-client="${escapeHtml(c)}" data-active="${ui.clientFilter === c ? "true" : "false"}">${escapeHtml(c)} <strong>${counts.get(c)}</strong></button>`
+    ),
+  ];
+  bar.hidden = false;
+  bar.innerHTML = pills.join("");
+}
+
+function renderSystemStatusBar(installsCount, sessionsCount) {
+  const sys = ui.state?.system;
+  const sysWrap = byId("sb-sys-wrap");
+  const ramFill = byId("sb-ram-fill");
+  const ramText = byId("sb-ram-text");
+  const orphanBtn = byId("btn-sb-orphans");
+  const sbVivado = byId("sb-vivado");
+
+  const hasMem = Boolean(sys && typeof sys.ram_total_gb === "number" && sys.ram_total_gb > 0);
+  if (sysWrap && ramFill && ramText && hasMem) {
+    const used = Number(sys.ram_used_gb || 0);
+    const total = Number(sys.ram_total_gb || 0);
+    const avail = Number(sys.ram_avail_gb || 0);
+    const pct =
+      typeof sys.ram_pct === "number" && Number.isFinite(sys.ram_pct)
+        ? sys.ram_pct
+        : total > 0
+          ? (used / total) * 100
+          : 0;
+    const vivCount = Number(sys.vivado_count || 0);
+    const edaCount = Number(sys.eda_count || 0);
+    const totalFmt = Number.isInteger(total) ? String(total) : total.toFixed(1);
+    const level = pct >= 85 ? "crit" : pct >= 75 ? "warn" : "normal";
+
+    sysWrap.hidden = false;
+    sysWrap.dataset.level = level;
+    ramFill.style.width = `${Math.max(0, Math.min(100, pct)).toFixed(1)}%`;
+    const fullText = `RAM ${used.toFixed(1)}/${totalFmt} GB (${Math.round(pct)}%) · ${vivCount} Vivado`;
+    const compactText = `RAM ${Math.round(pct)}% · ${vivCount}V`;
+    ramText.innerHTML = `<span class="sb-ram-full">${escapeHtml(fullText)}</span><span class="sb-ram-compact">${escapeHtml(compactText)}</span>`;
+    sysWrap.title = `主机内存 ${used.toFixed(1)} / ${total.toFixed(1)} GB (${pct.toFixed(1)}%) · 可用 ${avail.toFixed(1)} GB · ${vivCount} Vivado / ${edaCount} EDA`;
+    if (sbVivado) sbVivado.hidden = true;
+  } else {
+    if (sysWrap) sysWrap.hidden = true;
+    if (sbVivado) {
+      sbVivado.hidden = false;
+      sbVivado.textContent = `${installsCount} 个 Vivado · ${sessionsCount} 个会话`;
+    }
+  }
+
+  if (orphanBtn) {
+    const orphanCount = Number(sys?.orphan_count || 0);
+    if (orphanCount > 0) {
+      orphanBtn.hidden = false;
+      orphanBtn.textContent = `${orphanCount} 残留`;
+    } else {
+      orphanBtn.hidden = true;
+    }
+  }
 }
 
 function getLocalWebInfo() {
@@ -529,27 +834,34 @@ function getLocalWebInfo() {
     running,
     url: running ? url : "",
     hostPort: running ? hostPort : "",
+    sharedHub: Boolean(lw?.shared_hub),
+    preferredPort: lw?.preferred_port || null,
     error: lw?.error || "",
   };
 }
 
 function collectLocalServices() {
   const info = getLocalWebInfo();
+  const seenUrls = new Set();
   const list = [
     {
       id: "console",
       kind: "console",
       title: "Vivado 控制台",
       badge: ui.transportMode === "http" ? "Local Web" : "MCP App",
+      sharedHub: info.sharedHub,
       status: info.running ? "completed" : "idle",
       statusLabel: info.running ? "运行中" : "未启动",
       url: info.url,
       error: info.error,
     },
   ];
+  if (info.url) seenUrls.add(info.url);
+
   for (const mon of ui.state?.run_monitors || []) {
     const url = mon?.url || mon?.local_url || mon?.view_url || "";
-    if (typeof url === "string" && url.startsWith("http://127.0.0.1:")) {
+    if (typeof url === "string" && url.startsWith("http://127.0.0.1:") && !seenUrls.has(url)) {
+      seenUrls.add(url);
       list.push({
         id: `mon:${mon.session_id || ""}:${mon.run_name || ""}:${mon.target_step || ""}`,
         kind: "monitor",
@@ -564,7 +876,8 @@ function collectLocalServices() {
   }
   for (const dbg of ui.state?.debug_sessions || []) {
     const url = dbg?.url || dbg?.local_url || dbg?.view_url || "";
-    if (typeof url === "string" && url.startsWith("http://127.0.0.1:")) {
+    if (typeof url === "string" && url.startsWith("http://127.0.0.1:") && !seenUrls.has(url)) {
+      seenUrls.add(url);
       list.push({
         id: `dbg:${dbg.session_id || ""}`,
         kind: "debug",
@@ -577,6 +890,36 @@ function collectLocalServices() {
       });
     }
   }
+  for (const rr of ui.state?.remote_runs || []) {
+    const monUrl = rr?.monitor_url || "";
+    if (typeof monUrl === "string" && monUrl.startsWith("http://127.0.0.1:") && !seenUrls.has(monUrl)) {
+      seenUrls.add(monUrl);
+      list.push({
+        id: `rmon:${rr.entry_id || rr.session_id || ""}`,
+        kind: "monitor",
+        title: `远程运行观察 · ${rr.run_name || rr.project_name || "run"}`,
+        badge: `${rr.client || "外部"} · ${rr.target_step || "monitor"}`,
+        status: "completed",
+        statusLabel: "运行中",
+        url: monUrl,
+        error: "",
+      });
+    }
+    const dbgUrl = rr?.debug_url || "";
+    if (typeof dbgUrl === "string" && dbgUrl.startsWith("http://127.0.0.1:") && !seenUrls.has(dbgUrl)) {
+      seenUrls.add(dbgUrl);
+      list.push({
+        id: `rdbg:${rr.entry_id || rr.session_id || ""}`,
+        kind: "debug",
+        title: `远程调试面板 · ${rr.session_id || "default"}`,
+        badge: `${rr.client || "外部"} · ILA / VIO`,
+        status: "completed",
+        statusLabel: "运行中",
+        url: dbgUrl,
+        error: "",
+      });
+    }
+  }
   return list;
 }
 
@@ -584,6 +927,7 @@ function renderLocalWebStatus() {
   const wrap = byId("sb-local-wrap");
   const copyBtn = byId("btn-sb-copy-url");
   const addrEl = byId("sb-local-addr");
+  const sharedEl = byId("sb-shared-badge");
   const copiedEl = byId("sb-local-copied");
   const openBtn = byId("btn-sb-open-browser");
   if (!wrap || !copyBtn || !addrEl || !copiedEl || !openBtn) return;
@@ -597,7 +941,15 @@ function renderLocalWebStatus() {
 
   wrap.hidden = false;
   addrEl.textContent = info.hostPort;
-  copyBtn.title = `点击复制 ${info.url}`;
+  if (sharedEl) {
+    sharedEl.hidden = !info.sharedHub;
+    if (info.sharedHub) {
+      sharedEl.title = "当前正共享跨智能体统一本地控制台枢纽";
+    }
+  }
+  copyBtn.title = info.sharedHub
+    ? `点击复制 ${info.url}（多智能体共享控制台枢纽）`
+    : `点击复制 ${info.url}`;
   copyBtn.dataset.copied = ui.localUrlCopied ? "true" : "false";
   copiedEl.hidden = !ui.localUrlCopied;
   openBtn.hidden = ui.transportMode !== "mcp";
@@ -613,8 +965,12 @@ function updateDynamicIsland(items, counts) {
 
   const { running, completed, failed, installsCount } = counts;
   const activeItem = items.find((i) => i.uid === ui.selectedUid) || null;
+  const runningItems = items.filter((i) => statusBucket(i.status) === "running");
 
   island.classList.remove("idle", "online", "running", "alert");
+  island.title = "点击跳转到运行中任务或刷新状态";
+
+  let badgeSource = null;
 
   if (ui.connState === "error") {
     island.classList.add("alert");
@@ -628,24 +984,51 @@ function updateDynamicIsland(items, counts) {
 
   if (running > 0) {
     island.classList.add("running");
-    const runItem = (activeItem && statusBucket(activeItem.status) === "running" ? activeItem : null)
-      || items.find((i) => statusBucket(i.status) === "running");
+    const runningClients = [];
+    for (const r of runningItems) {
+      if (r.clientSource && !runningClients.includes(r.clientSource)) {
+        runningClients.push(r.clientSource);
+      }
+    }
+    const runItem =
+      (activeItem && statusBucket(activeItem.status) === "running" ? activeItem : null) ||
+      runningItems[0];
     titleEl.textContent = `${running} 运行中`;
-    detailEl.textContent = runItem
-      ? `${runItem.title}${runItem.currentPhase ? ` · ${runItem.currentPhase}` : ""}`
-      : `${completed} 完成 · ${failed} 异常`;
+    if (runningClients.length > 1) {
+      detailEl.textContent = runningClients.join("/");
+      island.title = runningItems
+        .map((r) => `${r.clientSource ? `[${r.clientSource}] ` : ""}${r.title}`)
+        .join(" | ");
+      if (activeItem && statusBucket(activeItem.status) === "running") {
+        badgeSource = activeItem;
+      } else {
+        badgeSource =
+          runningItems.find(
+            (r) => r.timing?.parse_status === "ok" && typeof r.timing.wns === "number"
+          ) || null;
+      }
+    } else if (runItem) {
+      const prefix =
+        runItem.clientSource && runItem.clientSource !== "本会话" ? `${runItem.clientSource} · ` : "";
+      detailEl.textContent = `${prefix}${runItem.title}${runItem.currentPhase ? ` · ${runItem.currentPhase}` : ""}`;
+      badgeSource = runItem;
+    } else {
+      detailEl.textContent = `${completed} 完成 · ${failed} 异常`;
+    }
     meterEl.hidden = false;
     meterEl.classList.add("live");
   } else if (failed > 0) {
     island.classList.add("alert");
     titleEl.textContent = `${failed} 异常`;
     detailEl.textContent = completed > 0 ? `${completed} 完成 · 点击刷新` : (activeItem ? activeItem.title : "检查告警与日志");
+    badgeSource = completed > 0 ? null : activeItem;
     meterEl.hidden = true;
     meterEl.classList.remove("live");
   } else if (items.length > 0) {
     island.classList.add("online");
     titleEl.textContent = completed > 0 ? `${completed} 完成` : `${items.length} 目标`;
     detailEl.textContent = activeItem ? activeItem.title : "全部就绪";
+    badgeSource = activeItem;
     meterEl.hidden = true;
     meterEl.classList.remove("live");
   } else {
@@ -658,10 +1041,10 @@ function updateDynamicIsland(items, counts) {
     meterEl.classList.remove("live");
   }
 
-  if (activeItem?.timing?.parse_status === "ok" && typeof activeItem.timing.wns === "number") {
+  if (badgeSource?.timing?.parse_status === "ok" && typeof badgeSource.timing.wns === "number") {
     badgeEl.hidden = false;
-    badgeEl.textContent = `WNS ${fmtSlack(activeItem.timing.wns)}ns`;
-    badgeEl.dataset.tone = activeItem.timing.met ? "ok" : "fail";
+    badgeEl.textContent = `WNS ${fmtSlack(badgeSource.timing.wns)}ns`;
+    badgeEl.dataset.tone = badgeSource.timing.met ? "ok" : "fail";
   } else if (items.length > 0 && running > 0 && completed > 0) {
     badgeEl.hidden = false;
     badgeEl.textContent = `${completed} 完成`;
@@ -678,8 +1061,9 @@ function renderRail(items) {
   const query = ui.railSearch.trim().toLowerCase();
   const filtered = items.filter((item) => {
     if (ui.statusFilter && statusBucket(item.status) !== ui.statusFilter) return false;
+    if (ui.clientFilter && item.clientSource !== ui.clientFilter) return false;
     if (!query) return true;
-    const haystack = `${item.title} ${item.subtitle} ${item.part} ${item.top} ${item.status}`.toLowerCase();
+    const haystack = `${item.title} ${item.subtitle} ${item.part} ${item.top} ${item.project} ${item.clientSource} ${item.status}`.toLowerCase();
     return haystack.includes(query);
   });
 
@@ -708,6 +1092,9 @@ function renderRail(items) {
       const wnsText = hasTiming ? `${fmtSlack(item.timing.wns)}` : "—";
       const metAttr = hasTiming ? (item.timing.met ? "true" : "false") : "na";
       const led = ledClass(item.status, item.timing);
+      const clientPill = item.clientSource
+        ? `<span class="client-pill">${escapeHtml(item.clientSource)}</span>`
+        : "";
       html.push(`
         <button type="button" class="nav-card" data-uid="${escapeHtml(item.uid)}" data-selected="${selected}">
           <div class="nav-card-top">
@@ -718,7 +1105,8 @@ function renderRail(items) {
             <span class="wns-pill" data-met="${metAttr}">${escapeHtml(wnsText)}</span>
           </div>
           <div class="nav-card-meta">
-            <span>${escapeHtml(item.subtitle)}</span>
+            ${clientPill}
+            <span class="nav-card-sub">${escapeHtml(item.subtitle)}</span>
             <span>${escapeHtml(item.elapsedText)}</span>
           </div>
         </button>
@@ -745,6 +1133,8 @@ function renderEmptyState() {
   const installs = ui.state?.vivado_installs?.installations || [];
   const selectedVivado = ui.state?.vivado_installs?.selected_path || "";
   const sessions = ui.state?.sessions || [];
+  const orphanCount = Number(ui.state?.system?.orphan_count || 0);
+  const edaCount = Number(ui.state?.system?.eda_count || 0);
 
   const installRows = installs.length
     ? installs
@@ -759,6 +1149,11 @@ function renderEmptyState() {
         .join("")
     : `<tr><td colspan="3" class="muted">未在默认路径或 PATH 检测到 Vivado 安装。</td></tr>`;
 
+  const procActionBtn =
+    orphanCount > 0
+      ? `<button type="button" class="btn destructive" id="btn-empty-open-proc">检测到 ${orphanCount} 个疑似残留进程 · 前往处理</button>`
+      : `<button type="button" class="btn" id="btn-empty-open-proc">进程与调试面板${edaCount > 0 ? ` (${edaCount} EDA)` : ""}</button>`;
+
   emptyEl.innerHTML = `
     <div class="empty-hero">
       <div class="empty-art" aria-hidden="true">
@@ -769,7 +1164,8 @@ function renderEmptyState() {
       </div>
       <div>
         <h2>Vivado 控制台已就绪</h2>
-        <p>在左下角输入任意 <code>.xpr</code> 工程、<code>.runs</code> 目录或 Batch / OOC 输出目录路径，即可零 Token 查看时序裕量、LUT/FF/BRAM/DSP 资源占用、去重告警和报告原文。AI 发起综合或运行观察时也会实时同步到此处。</p>
+        <p>在左下角输入任意 <code>.xpr</code> 工程、<code>.runs</code> 目录或 Batch / OOC 输出目录路径，即可零 Token 查看时序裕量、LUT/FF/BRAM/DSP 资源占用、去重告警和报告原文。其他智能体（Codex / Antigravity / CLI）发起的运行与调试也会实时聚合到此处。</p>
+        <div class="empty-hero-actions">${procActionBtn}</div>
       </div>
     </div>
 
@@ -788,13 +1184,42 @@ function renderEmptyState() {
       </div>
     </div>
   `;
+
+  byId("btn-empty-open-proc")?.addEventListener("click", () => {
+    ui.activeTab = "sessions";
+    renderAll();
+  });
 }
 
 function renderPaneBar(item) {
   const titleEl = byId("pane-title");
   const pillEl = byId("pane-status-pill");
+  const clientPillEl = byId("pane-client-pill");
   const metaEl = byId("pane-kind-meta");
   const actsEl = byId("pane-actions");
+
+  if (!item) {
+    const orphanCount = Number(ui.state?.system?.orphan_count || 0);
+    const vivCount = Number(ui.state?.system?.vivado_count || 0);
+    if (titleEl) {
+      titleEl.textContent = "主机性能与进程调试";
+      titleEl.title = "主机性能与进程调试";
+    }
+    if (pillEl) {
+      pillEl.dataset.status = orphanCount > 0 ? "busy" : "connected";
+      pillEl.innerHTML = `<span class="led ${orphanCount > 0 ? "led-warn" : "led-ok"}"></span>${escapeHtml(orphanCount > 0 ? `${orphanCount} 疑似残留` : `${vivCount} Vivado`)}`;
+    }
+    if (clientPillEl) {
+      clientPillEl.hidden = true;
+    }
+    if (metaEl) {
+      metaEl.textContent = "无选中构建目标 · 主机进程与本机服务";
+    }
+    if (actsEl) {
+      actsEl.innerHTML = "";
+    }
+    return;
+  }
 
   const statusText = STATUS_LABELS[item.status] || item.status || "未知";
   const led = ledClass(item.status, item.timing);
@@ -806,6 +1231,14 @@ function renderPaneBar(item) {
   if (pillEl) {
     pillEl.dataset.status = item.status || "unknown";
     pillEl.innerHTML = `<span class="led ${led}"></span>${escapeHtml(statusText)}`;
+  }
+  if (clientPillEl) {
+    if (item.clientSource) {
+      clientPillEl.hidden = false;
+      clientPillEl.textContent = item.clientSource;
+    } else {
+      clientPillEl.hidden = true;
+    }
   }
   if (metaEl) {
     const parts = [item.kindBadge];
@@ -992,6 +1425,25 @@ function renderOverview(item) {
        </div>`
     : "";
 
+  const agentParts = [];
+  if (item.clientSource) agentParts.push(item.clientSource);
+  if (item.isLocalOwner === true && item.clientSource !== "本会话") agentParts.push("本会话");
+  if (item.ownerPid) agentParts.push(`宿主 PID ${item.ownerPid}`);
+  if (item.vivadoPid) agentParts.push(`Vivado PID ${item.vivadoPid}`);
+  const agentMetaRow = agentParts.length
+    ? `<div class="meta-row"><span class="meta-k">来源智能体</span><span class="meta-v">${escapeHtml(agentParts.join(" · "))}</span></div>`
+    : "";
+
+  const sessionParts = [item.sessionId, item.mode, item.port ? `port ${item.port}` : ""].filter(Boolean);
+  const sessionMetaRow = sessionParts.length
+    ? `<div class="meta-row"><span class="meta-k">会话 / 模式</span><span class="meta-v">${escapeHtml(sessionParts.join(" · "))}</span></div>`
+    : "";
+
+  const projectMetaRow =
+    item.project && !item.top
+      ? `<div class="meta-row"><span class="meta-k">所属工程</span><span class="meta-v">${escapeHtml(item.project)}</span></div>`
+      : "";
+
   el.innerHTML = `
     <div class="stack">
       ${errNote}
@@ -1018,6 +1470,9 @@ function renderOverview(item) {
       <div>
         <div class="group-head"><span>元数据与路径</span></div>
         <div class="group">
+          ${agentMetaRow}
+          ${sessionMetaRow}
+          ${projectMetaRow}
           <div class="meta-row"><span class="meta-k">Top 模块</span><span class="meta-v">${escapeHtml(item.top || "—")}</span></div>
           <div class="meta-row"><span class="meta-k">器件 Part</span><span class="meta-v">${escapeHtml(item.part || "—")}</span></div>
           <div class="meta-row"><span class="meta-k">Vivado 版本</span><span class="meta-v">${escapeHtml(item.version || "—")}</span></div>
@@ -1049,7 +1504,7 @@ function renderOverview(item) {
 function renderDiagnostics(item) {
   const el = byId("tab-panel-diagnostics");
   const d = item.diagnostics || {};
-  const issues = [...(d.all_issues || d.top_issues || []), ...(d.warning_items || [])];
+  const issues = [...pickPrimaryIssues(d), ...(Array.isArray(d.warning_items) ? d.warning_items : [])];
   const query = ui.diagSearch.trim().toLowerCase();
 
   const filtered = issues.filter((issue) => {
@@ -1269,12 +1724,120 @@ function renderReports(item) {
 
 function renderSessionsTab() {
   const el = byId("tab-panel-sessions");
+  const sys = ui.state?.system || null;
+  const procs = Array.isArray(sys?.eda_processes) ? sys.eda_processes : [];
+  if (ui.pendingKillPid !== null && !procs.some((p) => Number(p.pid) === ui.pendingKillPid)) {
+    ui.pendingKillPid = null;
+    if (ui.pendingKillTimer) {
+      clearTimeout(ui.pendingKillTimer);
+      ui.pendingKillTimer = null;
+    }
+  }
+
   const sessions = ui.state?.sessions || [];
+  const remoteRuns = ui.state?.remote_runs || [];
   const debugs = ui.state?.debug_sessions || [];
   const installs = ui.state?.vivado_installs?.installations || [];
   const selectedVivado = ui.state?.vivado_installs?.selected_path || "";
   const localServices = collectLocalServices();
   const activeServicesCount = localServices.filter((s) => Boolean(s.url)).length;
+
+  const hasSys = Boolean(sys && typeof sys.ram_total_gb === "number" && sys.ram_total_gb > 0);
+  const ramUsed = Number(sys?.ram_used_gb || 0);
+  const ramTotal = Number(sys?.ram_total_gb || 0);
+  const ramAvail = Number(sys?.ram_avail_gb || 0);
+  const ramPct =
+    typeof sys?.ram_pct === "number" && Number.isFinite(sys.ram_pct)
+      ? Math.max(0, Math.min(100, sys.ram_pct))
+      : ramTotal > 0
+        ? Math.max(0, Math.min(100, (ramUsed / ramTotal) * 100))
+        : 0;
+  const ramLevel = ramPct >= 85 ? "crit" : ramPct >= 75 ? "warn" : "ok";
+  const cpuCount = sys?.cpu_count ?? "—";
+  const vivCount = sys?.vivado_count ?? 0;
+  const edaCount = sys?.eda_count ?? procs.length;
+  const orphanCount = sys?.orphan_count ?? 0;
+
+  const sysOverviewHtml = `
+    <div>
+      <div class="group-head">
+        <span>主机资源概览</span>
+        <div class="group-head-actions">
+          <span class="group-head-sub">${hasSys ? `可用 ${ramAvail.toFixed(1)} GB · ${cpuCount} 核` : "等待系统遥测"}</span>
+          <button type="button" class="btn" id="btn-cleanup-registry"${ui.cleaningRegistry ? " disabled" : ""}>${ui.cleaningRegistry ? "清理中…" : "清理已结束记录"}</button>
+        </div>
+      </div>
+      <div class="group">
+        <div class="progress-head-wrap">
+          <div class="util-row-top">
+            <span class="util-name">主机物理内存</span>
+            <span class="util-nums">${hasSys ? `${ramUsed.toFixed(1)} / ${ramTotal.toFixed(1)} GB (${ramPct.toFixed(1)}%) · 可用 ${ramAvail.toFixed(1)} GB` : "—"}</span>
+          </div>
+          <div class="util-bar-track"><div class="util-bar-fill" data-level="${hasSys ? ramLevel : "ok"}" data-pct="${hasSys ? ramPct.toFixed(1) : "0"}"></div></div>
+        </div>
+        <div class="sys-stat-grid">
+          <div class="sys-stat-cell">
+            <span class="sys-stat-k">CPU 逻辑核心</span>
+            <span class="sys-stat-v">${escapeHtml(hasSys ? `${cpuCount} 核` : "—")}</span>
+          </div>
+          <div class="sys-stat-cell">
+            <span class="sys-stat-k">Vivado 进程</span>
+            <span class="sys-stat-v">${escapeHtml(sys ? `${vivCount} 个` : "—")}</span>
+          </div>
+          <div class="sys-stat-cell">
+            <span class="sys-stat-k">EDA 进程总数</span>
+            <span class="sys-stat-v">${escapeHtml(sys ? `${edaCount} 个` : "—")}</span>
+          </div>
+          <div class="sys-stat-cell">
+            <span class="sys-stat-k">疑似残留</span>
+            <span class="sys-stat-v" data-tone="${orphanCount > 0 ? "warn" : "ok"}">${escapeHtml(sys ? `${orphanCount} 个` : "—")}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const procRowsHtml = procs.length
+    ? procs
+        .map((proc) => {
+          const pid = Number(proc.pid);
+          const isOrphan = Boolean(proc.is_orphan);
+          const isPending = ui.pendingKillPid === pid;
+          const isKilling = ui.killingPid === pid;
+          const ownerTag = isOrphan
+            ? `<span class="proc-tag" data-tone="orphan">疑似残留</span>`
+            : proc.owner_client
+              ? `<span class="client-pill">${escapeHtml(proc.owner_client)}</span>`
+              : "";
+          const assocTag =
+            proc.associated_label && proc.associated_label !== proc.owner_client
+              ? `<span class="kind-chip">${escapeHtml(proc.associated_label)}</span>`
+              : "";
+          const killHtml =
+            proc.killable !== false
+              ? `<button type="button" class="btn destructive${isPending || isKilling ? " confirming" : ""} proc-kill-btn" data-kill-pid="${escapeHtml(pid)}"${isKilling ? " disabled" : ""}>${isKilling ? "终止中…" : isPending ? "确认终止?" : "终止进程"}</button>`
+              : `<span class="kind-chip">仅观测</span>`;
+          return `
+            <div class="proc-row" data-orphan="${isOrphan ? "true" : "false"}">
+              <div class="proc-main">
+                <div class="proc-title-line">
+                  <span class="proc-name mono">${escapeHtml(proc.name || "process")} · PID ${escapeHtml(pid)}</span>
+                  ${ownerTag}
+                  ${assocTag}
+                </div>
+                <div class="proc-meta-line">
+                  <span class="mono">内存 ${escapeHtml(fmtRssMb(proc.rss_mb))}</span>
+                  <span class="mono">运行时长 ${escapeHtml(fmtUptime(proc.uptime_sec))}</span>
+                  ${proc.owner_pid ? `<span class="mono">来源 PID ${escapeHtml(proc.owner_pid)}</span>` : ""}
+                  ${proc.command_hint ? `<span class="proc-hint" title="${escapeHtml(proc.command_hint)}">${escapeHtml(proc.command_hint)}</span>` : ""}
+                </div>
+              </div>
+              <div class="proc-actions">${killHtml}</div>
+            </div>
+          `;
+        })
+        .join("")
+    : `<p class="muted group-pad">当前未检测到运行中的 Vivado / EDA 相关进程。</p>`;
 
   const localServiceRows = localServices
     .map((svc) => {
@@ -1293,6 +1856,7 @@ function renderSessionsTab() {
             <div class="service-title-line">
               <span class="service-name">${escapeHtml(svc.title)}</span>
               <span class="kind-chip">${escapeHtml(svc.badge)}</span>
+              ${svc.sharedHub ? `<span class="kind-chip">多 Agent 共享枢纽</span>` : ""}
               <span class="status-badge" data-status="${escapeHtml(svc.status)}">${escapeHtml(svc.statusLabel)}</span>
             </div>
             ${urlHtml}
@@ -1303,21 +1867,63 @@ function renderSessionsTab() {
     })
     .join("");
 
-  const sessRows = sessions.length
-    ? sessions
+  const mergedSessions = [];
+  const seenSessKeys = new Set();
+  const localClient =
+    String(
+      ui.state?.client ||
+        (ui.state?.batch_jobs || []).find((j) => j.is_local_owner === true && j.client)?.client ||
+        ""
+    ).trim() || "本会话";
+
+  for (const s of sessions) {
+    const key = s.port ? `port:${s.port}` : `local:${s.session_id || ""}`;
+    seenSessKeys.add(key);
+    mergedSessions.push({
+      session_id: s.session_id || "",
+      client: localClient,
+      mode: s.mode || "",
+      status: s.is_alive ? s.state || "ready" : "disconnected",
+      statusText: s.state || (s.is_alive ? "ready" : "dead"),
+      port: s.port ?? "—",
+      version: s.runtime_version || "—",
+      detail: s.vivado_path || "—",
+    });
+  }
+  for (const rr of remoteRuns) {
+    if (!rr.session_id && !rr.port) continue;
+    const key = rr.port ? `port:${rr.port}` : `remote:${rr.owner_pid || 0}:${rr.session_id || ""}`;
+    if (seenSessKeys.has(key)) continue;
+    seenSessKeys.add(key);
+    const st = rr.alive ? rr.state || rr.status || "ready" : rr.status || "disconnected";
+    mergedSessions.push({
+      session_id: rr.session_id || rr.entry_id || "",
+      client: rr.client || "外部",
+      mode: rr.mode || "remote",
+      status: rr.alive ? st : "disconnected",
+      statusText: st,
+      port: rr.port ?? "—",
+      version: rr.vivado_version || "—",
+      detail: `${rr.xpr_path || rr.project_name || "—"}${rr.vivado_pid ? ` (PID ${rr.vivado_pid})` : ""}`,
+    });
+  }
+
+  const sessRows = mergedSessions.length
+    ? mergedSessions
         .map(
           (s) => `
           <tr>
-            <td class="mono">${escapeHtml(s.session_id || "")}</td>
-            <td><span class="kind-chip">${escapeHtml(s.mode || "")}</span></td>
-            <td><span class="status-badge" data-status="${escapeHtml(s.is_alive ? (s.state || "ready") : "disconnected")}">${escapeHtml(s.state || (s.is_alive ? "ready" : "dead"))}</span></td>
-            <td class="mono">${escapeHtml(s.port ?? "—")}</td>
-            <td class="mono">${escapeHtml(s.runtime_version || "—")}</td>
-            <td class="mono">${escapeHtml(s.vivado_path || "—")}</td>
+            <td class="mono">${escapeHtml(s.session_id)}</td>
+            <td><span class="client-pill">${escapeHtml(s.client)}</span></td>
+            <td><span class="kind-chip">${escapeHtml(s.mode)}</span></td>
+            <td><span class="status-badge" data-status="${escapeHtml(s.status)}">${escapeHtml(s.statusText)}</span></td>
+            <td class="mono">${escapeHtml(s.port)}</td>
+            <td class="mono">${escapeHtml(s.version)}</td>
+            <td class="mono">${escapeHtml(s.detail)}</td>
           </tr>`
         )
         .join("")
-    : `<tr><td colspan="6" class="muted">当前没有活跃的 Vivado Tcl / GUI 会话。</td></tr>`;
+    : `<tr><td colspan="7" class="muted">当前没有活跃的 Vivado Tcl / GUI 会话。</td></tr>`;
 
   const dbgHtml = debugs.length
     ? debugs
@@ -1363,6 +1969,16 @@ function renderSessionsTab() {
 
   el.innerHTML = `
     <div class="stack">
+      ${sysOverviewHtml}
+
+      <div>
+        <div class="group-head">
+          <span>本机 Vivado / EDA 进程管理</span>
+          <span class="group-head-sub">${procs.length} 个活动进程${orphanCount > 0 ? ` · ${orphanCount} 个疑似残留` : ""}</span>
+        </div>
+        <div class="group">${procRowsHtml}</div>
+      </div>
+
       <div>
         <div class="group-head">
           <span>本机服务地址 (127.0.0.1)</span>
@@ -1374,12 +1990,12 @@ function renderSessionsTab() {
       <div>
         <div class="group-head">
           <span>活跃 Vivado 会话 (Tcl / GUI / External)</span>
-          <span class="group-head-sub">${sessions.length} 个</span>
+          <span class="group-head-sub">${mergedSessions.length} 个</span>
         </div>
         <div class="group">
           <div class="table-wrap">
             <table>
-              <thead><tr><th>会话 ID</th><th>模式</th><th>状态</th><th>端口</th><th>版本</th><th>路径</th></tr></thead>
+              <thead><tr><th>会话 ID</th><th>来源</th><th>模式</th><th>状态</th><th>端口</th><th>版本</th><th>路径 / PID</th></tr></thead>
               <tbody>${sessRows}</tbody>
             </table>
           </div>
@@ -1405,6 +2021,14 @@ function renderSessionsTab() {
     </div>
   `;
 
+  applyProgressWidths(el);
+
+  byId("btn-cleanup-registry")?.addEventListener("click", handleCleanupStaleRegistry);
+  for (const btn of el.querySelectorAll("[data-kill-pid]")) {
+    btn.addEventListener("click", () => {
+      handleProcKillClick(Number(btn.dataset.killPid));
+    });
+  }
   for (const btn of el.querySelectorAll("[data-copy-service-url]")) {
     btn.addEventListener("click", () => {
       handleCopyLocalUrl(btn.dataset.copyServiceUrl, { source: "service" });
@@ -1443,10 +2067,20 @@ function updateTabVisibility(item) {
   rptBadge.hidden = rptCount === 0;
   rptBadge.textContent = String(rptCount);
 
-  const sessCount = (ui.state?.sessions || []).length + (ui.state?.debug_sessions || []).length;
+  const orphanCount = Number(ui.state?.system?.orphan_count || 0);
+  const edaCount = Number(ui.state?.system?.eda_count || 0);
+  const baseCount = (ui.state?.sessions || []).length + (ui.state?.debug_sessions || []).length;
   const sessBadge = byId("tab-sess-badge");
-  sessBadge.hidden = sessCount === 0;
-  sessBadge.textContent = String(sessCount);
+  if (orphanCount > 0) {
+    sessBadge.hidden = false;
+    sessBadge.textContent = String(baseCount + orphanCount);
+    sessBadge.dataset.tone = "warn";
+  } else {
+    const count = baseCount > 0 ? baseCount : edaCount;
+    sessBadge.hidden = count === 0;
+    sessBadge.textContent = String(count);
+    sessBadge.dataset.tone = "normal";
+  }
 }
 
 function captureViewportState() {
@@ -1517,7 +2151,7 @@ function renderAll() {
   renderRail(items);
 
   const activeItem = items.find((i) => i.uid === ui.selectedUid) || null;
-  if (!activeItem) {
+  if (!activeItem && ui.activeTab !== "sessions") {
     renderEmptyState();
     restoreViewportState(snap);
     return;
@@ -1529,10 +2163,10 @@ function renderAll() {
   renderPaneBar(activeItem);
   updateTabVisibility(activeItem);
 
-  if (ui.activeTab === "overview") renderOverview(activeItem);
+  if (!activeItem || ui.activeTab === "sessions") renderSessionsTab();
+  else if (ui.activeTab === "overview") renderOverview(activeItem);
   else if (ui.activeTab === "diagnostics") renderDiagnostics(activeItem);
   else if (ui.activeTab === "reports") renderReports(activeItem);
-  else if (ui.activeTab === "sessions") renderSessionsTab();
 
   restoreViewportState(snap);
 }
@@ -1567,7 +2201,7 @@ function applyIncomingState(payload) {
   if (payload.inspect_error) {
     showToast(`路径检视失败: ${payload.inspect_error}`, "error");
   }
-  setConnState("ready", `已同步 ${fmtTime(payload.server_time)}`);
+  setConnState("ready", "已同步", fmtTime(payload.server_time));
   renderAll();
 }
 
@@ -1615,23 +2249,35 @@ async function transportRunAction(args) {
   return sc;
 }
 
-async function refreshState({ silent = false } = {}) {
-  if (ui.inFlightState) return;
-  ui.inFlightState = true;
-  try {
-    const state = await transportGetState();
-    if (state) {
-      applyIncomingState(state);
+async function refreshState({ silent = false, force = false } = {}) {
+  if (ui.inFlightState) {
+    if (!force) return;
+    try {
+      await ui.inFlightPromise;
+    } catch {
+      // ignore previous failure
     }
-  } catch (err) {
-    if (!silent) {
-      showToast(`刷新失败: ${err?.message || String(err)}`, "error");
-    }
-    setConnState("error", "同步失败");
-    updateSummaryAndStatus(buildItems(ui.state));
-  } finally {
-    ui.inFlightState = false;
   }
+  ui.inFlightState = true;
+  const task = (async () => {
+    try {
+      const state = await transportGetState();
+      if (state) {
+        applyIncomingState(state);
+      }
+    } catch (err) {
+      if (!silent) {
+        showToast(`刷新失败: ${err?.message || String(err)}`, "error");
+      }
+      setConnState("error", "同步失败");
+      updateSummaryAndStatus(buildItems(ui.state));
+    } finally {
+      ui.inFlightState = false;
+      ui.inFlightPromise = null;
+    }
+  })();
+  ui.inFlightPromise = task;
+  await task;
 }
 
 async function handleInspectPath(pathValue) {
@@ -1690,6 +2336,77 @@ async function handleClearFinished() {
     showToast(`已清理 ${sc?.cleared ?? 0} 条已结束任务记录`, "info");
   } catch (err) {
     showToast(`清理失败: ${err?.message || String(err)}`, "error");
+  }
+}
+
+async function handleCleanupStaleRegistry() {
+  if (ui.cleaningRegistry) return;
+  ui.cleaningRegistry = true;
+  if (ui.activeTab === "sessions") renderSessionsTab();
+  try {
+    const sc = await transportRunAction({ action: "cleanup_stale_registry" });
+    const removed = Number(sc?.removed_entries ?? 0);
+    if (sc?.state) {
+      applyIncomingState(sc.state);
+    } else {
+      await refreshState({ silent: true, force: true });
+    }
+    showToast(
+      removed > 0 ? `已清理 ${removed} 条已结束跨智能体记录` : "暂无需要清理的已结束记录",
+      removed > 0 ? "success" : "info"
+    );
+  } catch (err) {
+    showToast(`清理记录失败: ${err?.message || String(err)}`, "error");
+  } finally {
+    ui.cleaningRegistry = false;
+    if (ui.activeTab === "sessions") renderSessionsTab();
+  }
+}
+
+function handleProcKillClick(pid) {
+  if (!Number.isFinite(pid) || pid <= 0 || ui.killingPid === pid) return;
+  if (ui.pendingKillPid !== pid) {
+    if (ui.pendingKillTimer) {
+      clearTimeout(ui.pendingKillTimer);
+      ui.pendingKillTimer = null;
+    }
+    ui.pendingKillPid = pid;
+    ui.pendingKillTimer = setTimeout(() => {
+      if (ui.pendingKillPid === pid) {
+        ui.pendingKillPid = null;
+        ui.pendingKillTimer = null;
+        if (ui.activeTab === "sessions") renderSessionsTab();
+      }
+    }, 4000);
+    if (ui.activeTab === "sessions") renderSessionsTab();
+    return;
+  }
+
+  if (ui.pendingKillTimer) {
+    clearTimeout(ui.pendingKillTimer);
+    ui.pendingKillTimer = null;
+  }
+  ui.pendingKillPid = null;
+  executeKillProcess(pid);
+}
+
+async function executeKillProcess(pid) {
+  ui.killingPid = pid;
+  if (ui.activeTab === "sessions") renderSessionsTab();
+  try {
+    const sc = await transportRunAction({ action: "kill_process", pid });
+    const label = sc?.name ? `${sc.name} (PID ${sc.pid ?? pid})` : `PID ${pid}`;
+    showToast(sc?.message || `已终止进程 ${label}`, "success");
+    if (sc?.state) {
+      applyIncomingState(sc.state);
+    } else {
+      await refreshState({ silent: true, force: true });
+    }
+  } catch (err) {
+    showToast(`终止进程失败: ${err?.message || String(err)}`, "error");
+  } finally {
+    ui.killingPid = null;
+    if (ui.activeTab === "sessions") renderSessionsTab();
   }
 }
 
@@ -1931,6 +2648,10 @@ function bindEvents() {
   byId("btn-clear-finished")?.addEventListener("click", handleClearFinished);
   byId("btn-sb-copy-url")?.addEventListener("click", () => handleCopyLocalUrl("", { source: "status" }));
   byId("btn-sb-open-browser")?.addEventListener("click", () => handleOpenLocalUrl("", { isConsole: true }));
+  byId("btn-sb-orphans")?.addEventListener("click", () => {
+    ui.activeTab = "sessions";
+    renderAll();
+  });
   byId("btn-auto-refresh").addEventListener("click", () => {
     ui.autoRefresh = !ui.autoRefresh;
     syncAutoRefresh();
@@ -1941,6 +2662,7 @@ function bindEvents() {
     const runningItem = items.find((i) => statusBucket(i.status) === "running" && i.uid !== ui.selectedUid);
     if (runningItem) {
       ui.selectedUid = runningItem.uid;
+      if (ui.activeTab === "sessions") ui.activeTab = "overview";
       ui.pendingScrollSelection = true;
       ui.reportPreview = null;
       ui.reportReqId += 1;
@@ -1981,12 +2703,19 @@ function bindEvents() {
     renderRail(buildItems(ui.state));
   });
 
-  for (const chip of document.querySelectorAll(".filter-chip")) {
+  for (const chip of document.querySelectorAll("#summary-chips .filter-chip")) {
     chip.addEventListener("click", () => {
       ui.statusFilter = chip.dataset.filter || "";
       renderAll();
     });
   }
+
+  byId("client-filter-bar")?.addEventListener("click", (ev) => {
+    const chip = ev.target.closest("[data-client]");
+    if (!chip) return;
+    ui.clientFilter = chip.dataset.client || "";
+    renderAll();
+  });
 
   byId("rail-list").addEventListener("click", (ev) => {
     const card = ev.target.closest(".nav-card");

@@ -118,7 +118,10 @@ def main() -> None:
         "--no-browser", action="store_true", help="只输出 URL，不自动打开系统浏览器。"
     )
     p_console.add_argument(
-        "--port", type=int, default=0, help="回环 HTTP 端口（默认 0 自动分配）。"
+        "--port",
+        type=int,
+        default=None,
+        help="回环 HTTP 端口（默认 18765，可通过 OTTER_VIVADO_CONSOLE_PORT 覆盖）。",
     )
     p_debug = sub.add_parser("debug", help="人机共用 ILA/VIO 面板；连接已有 GUI 或显式演示。")
     p_debug.add_argument("--port", type=int, default=9999, help="已有 GUI 的协议端口。")

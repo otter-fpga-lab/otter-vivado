@@ -147,24 +147,8 @@ async def set_wave_zoom(
     session_id: str = "default",
     ctx: Context = None,
 ) -> str:
-    """设置波形时间缩放窗口(改 wcfg XML 后 close -force + open 重载)。
-
-    本地价值(§1.3 条件3 跨命令协议):Vivado 2019.1 无 Tcl zoom 命令，缩放窗存在
-    .wcfg 的 <zoom_setting> 里，要改它再让 XSim 重载。重载顺序极易踩——
-    close 漏 -force 报 [Wavedata 42-26];同名 wcfg 已 open 时直接 open 报 42-52，
-    故必须先 close 再 open。本工具封装这条多步协议。
-
-    ⚠ wcfg 未保存(current_wave_config 的 FILE_PATH 为空)时返回明确错误，要求先
-    save_wave_config——不自动存盘(避免擅自改用户磁盘文件)。
-    ⚠ close_wave_config -force 会丢弃所有未存盘的 live wave prop(含手设的 radix/
-    analog),故先 set_wave_zoom 再 set_wave_analog。
-
-    Args:
-        start_ns: 缩放起始时间(ns)，须 < end_ns。
-        end_ns: 缩放结束时间(ns)。
-        wcfg: 显式 wcfg 磁盘路径；缺省自动解析 current_wave_config。
-        session_id: 目标会话 ID。
-    """
+    """设置已保存 wcfg 波形缩放窗口（ns，须 start_ns < end_ns）并 close -force 后重载。
+    应在 set_wave_analog 前调用。"""
     if start_ns >= end_ns:
         return f"[ERROR] start_ns 须小于 end_ns(收到 start={start_ns}, end={end_ns})。"
 
@@ -221,29 +205,8 @@ async def set_wave_analog(
     session_id: str = "default",
     ctx: Context = None,
 ) -> str:
-    """把信号设为模拟(Analog)波形显示(纯 Tcl 配方,实测 Vivado 2019.1 可渲染)。
-
-    本地价值(§1.3 条件2 本地知识库,三个实测静默坑):
-    1. WaveformStyle 必须传 STYLE_ANALOG(带 STYLE_ 前缀);裸传 ANALOG 时 Vivado 收下
-       不报错但渲染器不认,只显示数字格。推翻早期"Analog 无 Tcl 接口只能 GUI 右键"的误判。
-    2. get_waves 只匹配显示名(y0[15:0])/glob,直接传全路径 /tb/y0 返回空;工具自动按
-       DESIGN_OBJECT(全路径)/FULL_NAME/显示名解析,不命中才报 add_wave。
-    3. set_wave_prop 对空对象 rc=0 静默接受(信号没 add 会伪装成功),工具先判空再 set。
-    wave 属性无 get 接口(get_wave_prop 不存在),无法 Tcl 读回校验,渲染请人眼确认。
-
-    ⚠ 顺序硬约束:必须在 set_wave_zoom 之后调——zoom 重载(close+open wcfg)会冲掉
-    先设的 analog prop。
-    ⚠ AnalogMin/Max 必须成对显式传(贴数据范围:太宽压平、太窄削顶)。从仿真数据
-    自动算幅需 live 采样、数据源未定，本版本不做 auto。
-
-    Args:
-        signals: 信号列表(短名或全路径，须已 add_wave 进波形)。
-        min: AnalogMin(必传，与 max 成对)。
-        max: AnalogMax(必传，与 min 成对)。
-        interp: 插值方式，白名单 LINEAR / HOLD。
-        height: 行高像素(存盘后在 wcfg 里叫 CellHeight)。
-        session_id: 目标会话 ID。
-    """
+    """将波形信号设为模拟显示（自动加 STYLE_ 前缀并按全路径/显示名解析）。
+    必须在 set_wave_zoom 后调用，且成对传 min/max，interp 仅 LINEAR/HOLD。"""
     if not signals:
         return "[ERROR] signals 为空，请至少给一个信号。"
     if interp.upper() not in _INTERP_WHITELIST:

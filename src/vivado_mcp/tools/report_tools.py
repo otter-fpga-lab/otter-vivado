@@ -7,12 +7,14 @@
 
 import json
 import logging
+from pathlib import Path
 
 from mcp.server.mcpserver import Context
 
 from vivado_mcp.analysis.io_parser import parse_report_io
 from vivado_mcp.analysis.ip_status_parser import format_ip_status_report, parse_ip_status
 from vivado_mcp.analysis.project_parser import format_project_info, parse_project_info
+from vivado_mcp.analysis.run_progress_parser import progress_percent
 from vivado_mcp.analysis.suggestion_engine import format_suggestion, suggest_next
 from vivado_mcp.analysis.timing_parser import (
     format_timing_report,
@@ -22,7 +24,7 @@ from vivado_mcp.analysis.timing_parser import (
 from vivado_mcp.analysis.util_parser import format_utilization_report, parse_utilization
 from vivado_mcp.analysis.warning_parser import parse_diag_counts, parse_pre_bitstream
 from vivado_mcp.run_feedback import build_run_progress_report
-from vivado_mcp.server import _NO_SESSION, _require_session, mcp
+from vivado_mcp.server import _NO_SESSION, _require_session, mcp, sync_shared_session
 from vivado_mcp.tcl_scripts import (
     CHECK_PRE_BITSTREAM,
     COUNT_WARNINGS,
@@ -138,25 +140,7 @@ async def check_bitstream_readiness(
     session_id: str = "default",
     ctx: Context = None,
 ) -> str:
-    """烧板前一键检查:综合判断工程是否可以安全生成比特流。
-
-    这个工具是"发车前的最后一瞥":在你打算 generate_bitstream 或 program_device
-    之前,一次性给出 PASS/BLOCK/WARN 的综合结论,避免烧板后才发现问题。
-
-    检查维度:
-    - impl_1 run 是否已到达 route_design Complete(没布线 = 无法生成比特流)
-    - route 后的 CRITICAL WARNING 数量(> 0 通常意味着潜在功能风险)
-    - 时序是否收敛(WNS/WHS 是否 met)
-
-    返回结论:
-    - READY:可以安全烧板
-    - BLOCK:存在阻塞性问题(route 未完成 / 时序违例 / 大量 CW)
-    - WARN:可以生成但有风险(少量 CW 或估算时序偏低)
-
-    Args:
-        impl_run: 实现 run 名称,默认 "impl_1"。
-        session_id: 目标会话 ID。
-    """
+    """烧板/生成比特流前门禁：只读检查实现完成态、时序收敛与 CW 计数，输出 READY / WARN / BLOCK。"""
     try:
         impl_run = validate_identifier(impl_run, "impl_run")
     except ValueError as e:
@@ -301,21 +285,8 @@ async def get_utilization_report(
     session_id: str = "default",
     ctx: Context = None,
 ) -> str:
-    """获取资源占用摘要(LUT/FF/BRAM/DSP/IO)。
-
-    执行 ``report_utilization -return_string`` 并从多个表格里抽取核心资源行,
-    高亮超过 90% 占用的 [CRITICAL] 项和 70-90% 的 [WARN] 项。
-
-    典型用途:
-    - 综合后检查"LUT 够不够 / BRAM 够不够"
-    - 时序收敛困难时先看资源是否超限(> 90% 会导致拥塞)
-    - detail=True 进一步看 BRAM 由 RAMB36 还是 RAMB18 组成(优化位宽/级联时用)
-
-    Args:
-        detail: True 时末尾附加 Block RAM 明细段(RAMB36/FIFO* / RAMB36E1 only /
-            RAMB18 的 used/available)。默认 False,输出与原有格式一致。
-        session_id: 目标会话 ID。
-    """
+    """获取当前打开设计的资源占用摘要（LUT/FF/BRAM/DSP/IO），
+    高亮 >70%/90% 风险；detail=True 附 RAMB36/18 明细。"""
     session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
@@ -365,6 +336,22 @@ async def get_project_info(
                 f"{result.output}"
             )
         info = parse_project_info(result.output)
+        if info.name or info.directory:
+            xpr_cand = (
+                Path(info.directory) / f"{info.name}.xpr"
+                if info.directory and info.name
+                else None
+            )
+            sync_shared_session(
+                ctx,
+                session_id=session_id,
+                project_name=info.name or None,
+                xpr_path=(
+                    str(xpr_cand)
+                    if xpr_cand is not None and xpr_cand.is_file()
+                    else None
+                ),
+            )
         return format_project_info(info)
     except Exception as e:
         return f"[ERROR] 获取项目信息失败: {e}"
@@ -377,25 +364,8 @@ async def get_run_progress(
     session_id: str = "default",
     ctx: Context = None,
 ) -> str:
-    """查看 run 的运行进度(适合长任务等待时看"走到哪一步")。
-
-    综合或实现常跑 10-30 分钟,这个工具让你不用开 GUI 就能看到:
-    - 当前状态(running / complete / error)与 PROGRESS 百分比
-    - runme.log 里最近若干条 Phase 行(Phase 1 → Phase 2.1 → Phase 3 ...)
-    - 日志尾部 N 行(含最新 WARNING / CRITICAL WARNING 原文)
-    - 日志最后更新时间(判断 Vivado 是否还在活跃)
-    - STATUS 失败但 runme.log 无 ERROR 行时,自动识别「某步 completed successfully
-      后子进程静默退出」或非标错误,标题写明真实情况并内联续跑建议
-    - run 的 STEPS.*.TCL.PRE/POST 指向工程外、%TEMP% 或不存在文件时给出告警与
-      清除建议(只建议,不修改工程)
-
-    需要等到某阶段完成时用 ``wait_run``,不要 sleep 后反复调用本工具。
-
-    Args:
-        run_name: run 名称(如 "synth_1" / "impl_1"),默认 "impl_1"。
-        tail_lines: 日志尾部要读多少行,默认 30。
-        session_id: 目标会话 ID。
-    """
+    """查询指定 run 的状态、百分比、Phase 进度、日志尾部及静默退出/钩子告警。
+    等待阶段完成请用 ``wait_run``。"""
     try:
         run_name = validate_identifier(run_name, "run_name")
     except ValueError as e:
@@ -408,7 +378,24 @@ async def get_run_progress(
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
-    _, text = await build_run_progress_report(session, run_name, tail_lines)
+    rp, text = await build_run_progress_report(session, run_name, tail_lines)
+    if rp is not None and rp.found:
+        run_dir = rp.run_dir or (str(Path(rp.log_path).parent) if rp.log_path else "")
+        sync_shared_session(
+            ctx,
+            session_id=session.session_id,
+            vivado_version=rp.vivado_version or None,
+            project_name=rp.project_name or None,
+            xpr_path=rp.xpr_path or None,
+            run_name=rp.run_name or run_name,
+            run_dir=run_dir or None,
+            status=rp.state(),
+            state=rp.status,
+            progress=progress_percent(rp.progress),
+            phase=rp.current_phase(),
+            log_path=rp.log_path or None,
+            log_tail=[{"line": t.lineno, "text": t.text} for t in rp.tail[-20:]],
+        )
     return text
 
 
@@ -417,23 +404,7 @@ async def get_next_suggestion(
     session_id: str = "default",
     ctx: Context = None,
 ) -> str:
-    """根据当前项目状态推断下一步应该做什么。
-
-    适合新手、刚打开老项目、或者不知道从哪下手的场景。规则:
-    - 没项目 → 建议 open_project / create_project
-    - 有项目没源文件 → 建议 add_files
-    - 没顶层 → 建议 set_property TOP
-    - 没 XDC → 建议添加约束
-    - 有 testbench 且没跑过行为仿真 → 先 launch_simulation
-    - 可综合 → xdc_lint + run_synthesis
-    - 综合完成 → run_implementation
-    - 布线完成 → check_bitstream_readiness + generate_bitstream
-    - 比特流就绪 → program_device
-    - 任何阶段失败 → 引导到 get_critical_warnings
-
-    Args:
-        session_id: 目标会话 ID。
-    """
+    """根据当前项目工程与 run 状态推断下一步建议。"""
     session = await _require_session(ctx, session_id)
     if not session:
         return _NO_SESSION.format(sid=session_id)
@@ -495,22 +466,7 @@ async def get_pre_commit_summary(
     session_id: str = "default",
     ctx: Context = None,
 ) -> str:
-    """生成一段可以贴进 git commit body 的工程摘要(时序/资源/CW)。
-
-    典型用途:做完 RTL 改动、跑完 impl 之后,想把关键数字写进 commit body,
-    避免 "改了 UART 模块" 这种无信息量的 commit。本工具一次性采样:
-    - 项目 + part + 顶层
-    - 时序摘要(WNS / WHS / 失败端点数)
-    - 资源占用(LUT / FF / BRAM / DSP / IOB 百分比)
-    - CW / ERROR 计数(若有 impl_run)
-    - 综合生成 READY/WARN/FAIL 门禁标签
-
-    输出为 markdown 片段,直接粘贴到 commit 描述。
-
-    Args:
-        impl_run: 用来查 runme.log 计数的 run(默认 impl_1)。
-        session_id: 目标会话 ID。
-    """
+    """生成含项目/时序/资源/ERROR-CW 与 READY/WARN/BLOCK 门禁的 Markdown 提交摘要。"""
     try:
         impl_run = validate_identifier(impl_run, "impl_run")
     except ValueError as e:

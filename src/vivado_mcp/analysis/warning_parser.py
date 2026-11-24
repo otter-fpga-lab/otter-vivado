@@ -988,6 +988,40 @@ def _format_high_thread_advice_lines(forensics: SilentExitForensics) -> list[str
     return lines
 
 
+_RE_REPORT_POWER_CMD = re.compile(
+    r"(?im)(?:^|\s)(?:Command:|Executing\s*:)\s*report_power\b"
+)
+_RE_REPORT_POWER_DONE = re.compile(r"(?im)\breport_power\s+completed\s+successfully\b")
+
+
+def is_route_power_silent_exit(body: str) -> bool:
+    """判断静默退出是否命中 Vivado 2024.2 route 后自动 report_power 崩溃特征。
+
+    特征：日志中有 ``route_design completed successfully``、之后触发 ``report_power``
+    （且未见 ``report_power completed successfully``），同时在 route 完成之后缺失
+    ``*_routed.dcp`` 写出记录（忽略更早的 ``physopt.dcp``）。
+    """
+    if not body:
+        return False
+    m_route = None
+    for match in re.finditer(r"(?im)\broute_design\s+completed\s+successfully\b", body):
+        m_route = match
+    if m_route is None:
+        return False
+    after_route = body[m_route.end():]
+    if _RE_CHECKPOINT_WRITTEN.search(after_route):
+        return False
+    m_pwr = None
+    for match in _RE_REPORT_POWER_CMD.finditer(after_route):
+        m_pwr = match
+    if m_pwr is None:
+        return False
+    tail_after_pwr = after_route[m_pwr.end():]
+    if _RE_REPORT_POWER_DONE.search(tail_after_pwr):
+        return False
+    return True
+
+
 def detect_silent_run_child_exit(
     status: str,
     body: str,
@@ -1010,7 +1044,13 @@ def detect_silent_run_child_exit(
         f"Vivado STATUS=`{status}`，{counts_note}，但 run 失败。",
         f"日志末尾有 `{step} completed successfully`，没有 `Exiting Vivado`。",
     ]
-    if _RE_CHECKPOINT_WRITTEN.search(body):
+    m_step = None
+    for match in re.finditer(
+        rf"(?im)\b{re.escape(step)}\s+completed\s+successfully\b", body
+    ):
+        m_step = match
+    after_step = body[m_step.end():] if m_step is not None else body
+    if _RE_CHECKPOINT_WRITTEN.search(after_step):
         lines.append(
             "checkpoint 已写出，子进程仍未正常退出；检查该步之后的 report 是否把进程杀掉。"
         )
@@ -1018,6 +1058,18 @@ def detect_silent_run_child_exit(
         lines.append(
             "没有 `The checkpoint ... has been generated`："
             "子进程多半死在该步之后的 report_* 或 write_checkpoint。"
+        )
+    if is_route_power_silent_exit(body):
+        lines.extend(
+            [
+                "",
+                "[命中 Vivado 自动 report_power 静默退出特征]",
+                "  • 日志显示 `route_design completed successfully` 后执行 `report_power` "
+                "(generate_parallel_reports / impl_1_route_report_power_0) 时中断，"
+                "且未生成 `*_routed.dcp`。",
+                "  • 1 行恢复: run_implementation(skip_route_power_report=True) "
+                "或从 physopt.dcp 续跑后再单独调用 report_power。",
+            ]
         )
     if forensics is not None:
         lines.extend(_format_forensics_lines(forensics))

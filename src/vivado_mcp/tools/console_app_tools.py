@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import json
 import logging
@@ -19,7 +20,14 @@ from mcp.types import CallToolResult, TextContent
 
 from vivado_mcp.batch_jobs import _decode_utf8_or_fallback, _is_link_or_junction
 from vivado_mcp.config import list_vivado_installations
+from vivado_mcp.console_http import (
+    ConsoleHttpServer,
+    preferred_console_port,
+    probe_existing_console_hub,
+)
 from vivado_mcp.server import AppContext, get_app_context, mcp
+from vivado_mcp.shared_registry import detect_client_source
+from vivado_mcp.system_telemetry import collect_system_telemetry, kill_eda_process
 
 logger = logging.getLogger(__name__)
 
@@ -85,12 +93,34 @@ def _sanitize_debug_snapshot(snap: dict[str, Any]) -> dict[str, Any]:
 
 
 def _local_web_info(app_ctx: AppContext) -> dict[str, Any]:
+    pref = preferred_console_port()
     srv = getattr(app_ctx, "console_http", None)
     url = getattr(srv, "url", "") if srv is not None else ""
-    if not isinstance(url, str) or not url.startswith("http://127.0.0.1:"):
-        return {"running": False, "url": "", "host_port": ""}
-    host_port = getattr(srv, "host_port", "") or urlsplit(url).netloc
-    return {"running": True, "url": url, "host_port": host_port}
+    if isinstance(url, str) and url.startswith("http://127.0.0.1:"):
+        host_port = getattr(srv, "host_port", "") or urlsplit(url).netloc
+        return {
+            "running": True,
+            "url": url,
+            "host_port": host_port,
+            "preferred_port": pref,
+            "shared_hub": False,
+        }
+    shared_url = getattr(app_ctx, "console_shared_url", "")
+    if isinstance(shared_url, str) and shared_url.startswith("http://127.0.0.1:"):
+        return {
+            "running": True,
+            "url": shared_url,
+            "host_port": urlsplit(shared_url).netloc,
+            "preferred_port": pref,
+            "shared_hub": True,
+        }
+    return {
+        "running": False,
+        "url": "",
+        "host_port": "",
+        "preferred_port": pref,
+        "shared_hub": False,
+    }
 
 
 async def ensure_console_http(
@@ -100,17 +130,43 @@ async def ensure_console_http(
     job_id: str | None = None,
     inspected_path: str | None = None,
 ) -> dict[str, Any]:
-    """确保轻量级本机回环控制台 HTTP 服务已启动，并仅在需要时打开浏览器。"""
-    from vivado_mcp.console_http import ConsoleHttpServer
-
+    """确保轻量级本机回环控制台 HTTP 服务已启动（优先复用/绑定首选 18765 端口）。"""
     loop = asyncio.get_running_loop()
-    if app_ctx.console_http is None:
-        app_ctx.console_http = ConsoleHttpServer(app_ctx, loop=loop)
-    else:
+    if app_ctx.console_http is not None and getattr(app_ctx.console_http, "is_running", False):
         app_ctx.console_http.set_loop(loop)
+        url = await asyncio.to_thread(app_ctx.console_http.start)
+    else:
+        pref = preferred_console_port()
+        existing = (
+            await asyncio.to_thread(probe_existing_console_hub, pref)
+            if pref > 0
+            else None
+        )
+        if existing:
+            app_ctx.console_shared_url = existing
+            url = existing
+        else:
+            app_ctx.console_shared_url = ""
+            if app_ctx.console_http is None:
+                app_ctx.console_http = ConsoleHttpServer(app_ctx, loop=loop, port=pref)
+            else:
+                app_ctx.console_http.set_loop(loop)
+            try:
+                url = await asyncio.to_thread(app_ctx.console_http.start)
+            except OSError:
+                if pref == 0:
+                    raise
+                recheck = await asyncio.to_thread(probe_existing_console_hub, pref)
+                if recheck:
+                    app_ctx.console_http = None
+                    app_ctx.console_shared_url = recheck
+                    url = recheck
+                else:
+                    fallback_srv = ConsoleHttpServer(app_ctx, loop=loop, port=0)
+                    app_ctx.console_http = fallback_srv
+                    url = await asyncio.to_thread(fallback_srv.start)
 
-    url = await asyncio.to_thread(app_ctx.console_http.start)
-    if job_id or inspected_path:
+    if app_ctx.console_http is not None and (job_id or inspected_path):
         app_ctx.console_http.set_selection(
             job_id=job_id,
             inspected_path=inspected_path,
@@ -137,28 +193,32 @@ def _shrink_payload(
         return payload
 
     trimmed = copy.deepcopy(payload)
-    for bucket_key in ("batch_jobs", "inspected_targets"):
+    for bucket_key in ("batch_jobs", "inspected_targets", "remote_runs"):
         for item in trimmed.get(bucket_key) or []:
             if isinstance(item, dict):
                 item["log_tail"] = (item.get("log_tail") or [])[-12:]
-                item["phases"] = (item.get("phases") or [])[-15:]
+                if "phases" in item:
+                    item["phases"] = (item.get("phases") or [])[-15:]
                 diag = item.get("diagnostics") or {}
                 diag.pop("warning_items", None)
-                diag["all_issues"] = (diag.get("all_issues") or [])[:15]
+                if "all_issues" in diag:
+                    diag["all_issues"] = (diag.get("all_issues") or [])[:15]
     if _json_byte_len(trimmed) <= limit_bytes:
         return trimmed
 
-    for bucket_key in ("batch_jobs", "inspected_targets"):
+    for bucket_key in ("batch_jobs", "inspected_targets", "remote_runs"):
         items = trimmed.get(bucket_key) or []
         trimmed[bucket_key] = items[:12]
         for item in trimmed[bucket_key]:
             if isinstance(item, dict):
                 item["log_tail"] = []
-                item["phases"] = []
+                if "phases" in item:
+                    item["phases"] = []
                 item.pop("forensics", None)
                 item["reports"] = (item.get("reports") or [])[:20]
                 diag = item.get("diagnostics") or {}
-                diag["all_issues"] = (diag.get("all_issues") or [])[:8]
+                if "all_issues" in diag:
+                    diag["all_issues"] = (diag.get("all_issues") or [])[:8]
                 diag["top_issues"] = (diag.get("top_issues") or [])[:5]
     for mon in trimmed.get("run_monitors") or []:
         if isinstance(mon, dict):
@@ -174,13 +234,14 @@ def _shrink_payload(
         return trimmed
 
     # 极端场景下逐级削减列表与明文明细，确保绝对满足 <= limit_bytes 硬上限
-    for bucket_key in ("batch_jobs", "inspected_targets"):
+    for bucket_key in ("batch_jobs", "inspected_targets", "remote_runs"):
         for item in trimmed.get(bucket_key) or []:
             if isinstance(item, dict):
                 item["reports"] = []
                 diag = item.get("diagnostics")
                 if isinstance(diag, dict):
-                    diag["all_issues"] = []
+                    if "all_issues" in diag:
+                        diag["all_issues"] = []
                     diag["top_issues"] = (diag.get("top_issues") or [])[:2]
     for mon in trimmed.get("run_monitors") or []:
         if isinstance(mon, dict):
@@ -195,6 +256,7 @@ def _shrink_payload(
         for list_key in (
             "batch_jobs",
             "inspected_targets",
+            "remote_runs",
             "run_monitors",
             "debug_sessions",
             "sessions",
@@ -203,10 +265,89 @@ def _shrink_payload(
             val = trimmed.get(list_key)
             if isinstance(val, list) and len(val) > keep:
                 trimmed[list_key] = val[:keep]
+        sys_obj = trimmed.get("system")
+        if isinstance(sys_obj, dict) and isinstance(sys_obj.get("eda_processes"), list):
+            if len(sys_obj["eda_processes"]) > keep:
+                sys_obj["eda_processes"] = sys_obj["eda_processes"][:keep]
         if _json_byte_len(trimmed) <= limit_bytes:
             return trimmed
 
     return trimmed
+
+
+def _build_known_eda_pids(
+    sessions: list[dict[str, Any]],
+    batch_jobs: list[dict[str, Any]],
+    remote_runs: list[dict[str, Any]],
+    local_client: str,
+) -> tuple[dict[int, dict[str, Any]], bool]:
+    known: dict[int, dict[str, Any]] = {}
+    has_attached_gui = False
+    local_pid = os.getpid()
+
+    for s in sessions:
+        if not isinstance(s, dict):
+            continue
+        mode = str(s.get("mode") or "").lower()
+        owner = str(s.get("owner") or "").lower()
+        is_gui = (
+            mode in {"gui", "attached_gui", "external_gui", "attach", "external"}
+            or bool(s.get("attached"))
+            or bool(s.get("attached_external"))
+            or owner == "external"
+        )
+        if is_gui:
+            has_attached_gui = True
+        pid = s.get("pid")
+        info = {
+            "owner_client": local_client if owner != "external" else "GUI",
+            "owner_pid": local_pid,
+            "owner_alive": True,
+            "label": str(s.get("session_id") or ""),
+            "is_attached_gui": is_gui,
+        }
+        if isinstance(pid, int) and pid > 0:
+            known[pid] = info
+        elif s.get("is_alive") and not is_gui and local_pid not in known:
+            known[local_pid] = info
+
+    for job in batch_jobs:
+        if not isinstance(job, dict) or job.get("status") != "running":
+            continue
+        pid = job.get("pid")
+        if isinstance(pid, int) and pid > 0:
+            known[pid] = {
+                "owner_client": str(job.get("client") or local_client),
+                "owner_pid": int(job.get("owner_pid") or 0) or None,
+                "owner_alive": True,
+                "label": str(job.get("top") or job.get("job_id") or ""),
+                "is_attached_gui": False,
+            }
+
+    for rr in remote_runs:
+        if not isinstance(rr, dict):
+            continue
+        mode = str(rr.get("mode") or "").lower()
+        is_gui = mode in {"gui", "attached_gui", "external_gui", "attach", "external"}
+        alive = bool(rr.get("alive"))
+        if alive and is_gui:
+            has_attached_gui = True
+        label = str(rr.get("project_name") or rr.get("run_name") or rr.get("session_id") or "")
+        info = {
+            "owner_client": str(rr.get("client") or ""),
+            "owner_pid": rr.get("owner_pid") if isinstance(rr.get("owner_pid"), int) else None,
+            "owner_alive": alive,
+            "label": label,
+            "is_attached_gui": is_gui,
+        }
+        vpid = rr.get("vivado_pid")
+        if isinstance(vpid, int) and vpid > 0:
+            known[vpid] = info
+        opid = rr.get("owner_pid")
+        if alive and isinstance(opid, int) and opid > 0 and opid not in known:
+            known[opid] = info
+
+    return known, has_attached_gui
 
 
 async def collect_console_state(
@@ -225,6 +366,25 @@ async def collect_console_state(
         except (ValueError, OSError) as exc:
             inspect_error = str(exc)
 
+    async def _recover_shared_hub() -> None:
+        if app_ctx.console_http is not None:
+            return
+        shared_url = getattr(app_ctx, "console_shared_url", "")
+        if not isinstance(shared_url, str) or not shared_url.startswith("http://127.0.0.1:"):
+            return
+        shared_port = urlsplit(shared_url).port
+        still_alive = (
+            await asyncio.to_thread(
+                probe_existing_console_hub, shared_port, timeout=0.1
+            )
+            if shared_port
+            else None
+        )
+        if not still_alive:
+            app_ctx.console_shared_url = ""
+            with contextlib.suppress(OSError):
+                await ensure_console_http(app_ctx, open_browser=False)
+
     async def _safe_sessions() -> list[dict[str, Any]]:
         try:
             return await app_ctx.session_manager.list_sessions(probe_external=True)
@@ -234,29 +394,58 @@ async def collect_console_state(
             except Exception:
                 return []
 
+    def _safe_remote_runs() -> list[dict[str, Any]]:
+        shared_reg = getattr(app_ctx, "shared_registry", None)
+        if shared_reg is None:
+            return []
+        try:
+            return shared_reg.list_remote_runs(exclude_owner_pid=os.getpid())
+        except Exception:
+            return []
+
+    hub_task = asyncio.create_task(_recover_shared_hub())
     sessions_task = asyncio.create_task(_safe_sessions())
     installs_task = asyncio.to_thread(list_vivado_installations)
     inspected_task = asyncio.to_thread(app_ctx.batch_jobs.list_inspected)
+    jobs_task = asyncio.to_thread(app_ctx.batch_jobs.list_jobs, limit=30)
+    remote_task = asyncio.to_thread(_safe_remote_runs)
 
-    sessions, vivado_installs, inspected_targets = await asyncio.gather(
-        sessions_task, installs_task, inspected_task
+    _, sessions, vivado_installs, inspected_targets, batch_jobs, remote_runs = (
+        await asyncio.gather(
+            hub_task,
+            sessions_task,
+            installs_task,
+            inspected_task,
+            jobs_task,
+            remote_task,
+        )
     )
     run_monitors = [
         _sanitize_monitor_snapshot(s) for s in app_ctx.run_monitors.snapshots()
     ]
-    batch_jobs = app_ctx.batch_jobs.list_jobs(limit=30)
     debug_sessions = [
         _sanitize_debug_snapshot(s) for s in app_ctx.debug_services.snapshots()
     ]
 
+    local_client = detect_client_source()
+    known_pids, has_attached_gui = _build_known_eda_pids(
+        sessions, batch_jobs, remote_runs, local_client
+    )
+    system = await asyncio.to_thread(
+        collect_system_telemetry, known_pids, has_attached_gui=has_attached_gui
+    )
+
     state: dict[str, Any] = {
+        "client": local_client,
         "sessions": sessions,
         "run_monitors": run_monitors,
         "batch_jobs": batch_jobs,
+        "remote_runs": remote_runs,
         "debug_sessions": debug_sessions,
         "inspected_targets": inspected_targets,
         "vivado_installs": vivado_installs,
         "local_web": _local_web_info(app_ctx),
+        "system": system,
         "server_time": time.time(),
     }
     return _shrink_payload(state), inspected_entry, inspect_error
@@ -281,6 +470,14 @@ def _read_guarded_report(
 
     monitor_snaps = app_ctx.run_monitors.snapshots()
     allowed_roots = app_ctx.batch_jobs.allowed_report_roots(monitor_snaps)
+    shared_reg = getattr(app_ctx, "shared_registry", None)
+    if shared_reg is not None:
+        seen_roots = {os.path.normcase(str(r)) for r in allowed_roots}
+        for rr_root in shared_reg.allowed_report_roots():
+            key = os.path.normcase(str(rr_root))
+            if key not in seen_roots:
+                seen_roots.add(key)
+                allowed_roots.append(rr_root)
     if not allowed_roots or not any(resolved.is_relative_to(root) for root in allowed_roots):
         raise ValueError("访问被拒绝：路径不在已知构建任务、运行观察器或已检视工程目录内")
 
@@ -387,6 +584,7 @@ async def execute_console_action(
     job_id: str | None = None,
     report_path: str | None = None,
     max_lines: int = 300,
+    pid: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """执行控制台交互操作并返回 ``(text_summary, structured_payload)``。"""
     act = (action or "").strip()
@@ -451,6 +649,35 @@ async def execute_console_action(
             "local_web": info,
         }
 
+    if act == "kill_process":
+        if pid is None or type(pid) is not int or pid < 1:
+            raise ValueError("kill_process 操作需要传入正整数 pid")
+        res = await asyncio.to_thread(kill_eda_process, pid)
+        state, _, _ = await collect_console_state(app_ctx)
+        return str(res.get("message") or f"killed {pid}"), {
+            "action": act,
+            "ok": bool(res.get("ok", True)),
+            "pid": res.get("pid", pid),
+            "name": res.get("name", ""),
+            "message": res.get("message", ""),
+            "state": state,
+        }
+
+    if act == "cleanup_stale_registry":
+        shared_reg = getattr(app_ctx, "shared_registry", None)
+        removed = (
+            await asyncio.to_thread(shared_reg.cleanup_stale)
+            if shared_reg is not None
+            else 0
+        )
+        state, _, _ = await collect_console_state(app_ctx)
+        return f"cleaned {removed} stale entries", {
+            "action": act,
+            "ok": True,
+            "removed_entries": removed,
+            "state": state,
+        }
+
     raise ValueError(f"不支持的控制台操作: {act!r}")
 
 
@@ -473,13 +700,8 @@ async def open_vivado_console(
     open_browser: bool = False,
     ctx: Context = None,
 ) -> CallToolResult:
-    """打开 Vivado 控制台侧边栏/全局界面，或以 open_browser=True 在本机浏览器打开同款界面。
-
-    Antigravity 客户端默认使用内置 MCP App 侧栏/全局视图（open_browser=False），
-    同时静默启动本机 127.0.0.1 回环服务并在控制台展示可复制与弹出的地址；
-    Codex / Claude Code / Cursor 等无 MCP App 宿主的客户端可传 open_browser=True，
-    直接拉起系统浏览器访问同一控制台并零 Token 查看。
-    """
+    """打开跨 Agent Vivado 控制台（Runs/跨会话构建/Batch/主机内存/EDA 进程与 .xpr 检视）。
+    Antigravity 默认侧栏（open_browser=False），CLI/浏览器宿主演示传 open_browser=True。"""
     app_ctx = get_app_context(ctx)
     local_web_err = ""
     try:
@@ -498,6 +720,8 @@ async def open_vivado_console(
             "running": False,
             "url": "",
             "host_port": "",
+            "preferred_port": preferred_console_port(),
+            "shared_hub": False,
             "error": local_web_err,
         }
     if job_id:
@@ -571,9 +795,11 @@ async def vivado_console_action(
     job_id: str | None = None,
     report_path: str | None = None,
     max_lines: int = 300,
+    pid: int | None = None,
     ctx: Context = None,
 ) -> CallToolResult:
-    """App-only：执行控制台交互操作（离线检视、移除、受限报告预览、取消任务、清理记录、本机服务/浏览器打开）。"""
+    """App-only：执行控制台交互操作（离线检视、移除、受限报告预览、取消任务、
+    清理记录、终止孤儿 EDA 进程、本机服务/浏览器打开）。"""
     app_ctx = get_app_context(ctx)
     try:
         summary, structured = await execute_console_action(
@@ -583,6 +809,7 @@ async def vivado_console_action(
             job_id=job_id,
             report_path=report_path,
             max_lines=max_lines,
+            pid=pid,
         )
         return CallToolResult(
             content=[TextContent(type="text", text=summary)],

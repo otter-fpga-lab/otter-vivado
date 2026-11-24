@@ -50,14 +50,8 @@ async def inspect_debug_design(
 async def prepare_debug_design(
     spec: dict, expected_project: dict, session_id: str = "default", ctx: Context = None,
 ) -> str:
-    """准备已检查的工程；expected_project 必须传 inspect 返回的 name/directory/part。
-
-    IP 路径创建命名 IP、验证配置并生成输出产物；仍需将例化模板接入业务 RTL。
-    约束路径在工程 otter_debug 下只创建新 Tcl 文件，加入指定 run 的 CONSTRSET，
-    返回 affected_runs；不执行该约束或启动构建。禁止覆盖已有文件/同名 IP。
-    created/constraints_added 都不代表 bit/ltx 已构建；partial/结果未知时核对现场，不自动重试。
-    不连接、烧录或采集板卡；下一步复用现有构建和报告入口。
-    """
+    """按已检查的工程身份（expected_project 取自 inspect_debug_design）创建调试 IP 或
+    otter_debug 下新 Tcl 约束；不覆盖既有文件、不自动构建或连板。"""
     try:
         session = await _require_session(ctx, session_id)
         if session is None:
@@ -73,19 +67,8 @@ async def export_debug_bundle(
     source_revision: str | None = None, timeout_seconds: int = 1800,
     session_id: str = "default", ctx: Context = None,
 ) -> str:
-    """在专用空闲会话中从明确的实现 DCP 导出 bit/ltx/报告和来源清单。
-
-    必须使用没有打开工程/设计的独立会话；不关闭已有 GUI，不自动运行综合/实现。
-    checkpoint_path 是已完成实现的 DCP；expected_part 为完整器件名。output_dir 可省略：
-    按工程约定新建 Debug/YYYYMMDD_HHMMSS_bundle（工程由 DCP 向上找 .xpr，其次取会话
-    当前工程，推不出则报错要求显式传入）；显式传入时必须是父目录已存在的新目录。
-    实际目录见返回的 bundle_directory。复制检查点后，同一 execute 中打开该副本，生成 bit、
-    ltx、timing/utilization/DRC 报告；SHA256 清单保存到消费者目录，不提供固定页面。
-    source_revision 仅记录调用方声明；不自动认证检查点源码来源。
-    exported 只表示导出和文件核对完成；不代表时序、板卡配对通过。
-    partial/unknown 保留文件；超时后 Vivado 可能继续运行，先核对状态，禁止直接重放。
-    导出后会话保留检查点。MCP 与 Vivado 必须共享本机文件系统。
-    """
+    """在独立空闲会话中从已完成实现的 DCP 导出 bit/ltx/报告及 SHA256 清单
+    （不阻塞现有 GUI、不认证源码来源、不代表时序或板卡配对通过）。"""
     from vivado_mcp.debug_bundle import export_debug_bundle as export
 
     try:

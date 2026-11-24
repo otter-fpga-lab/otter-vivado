@@ -672,3 +672,256 @@ def test_registry_list_inspected_threadsafe_snapshot_and_removal(tmp_path):
     listed = reg.list_inspected()
     assert len(listed) == 1
     assert Path(listed[0]["target_path"]) == target_b.resolve()
+
+
+def test_batch_registry_hot_syncs_remote_jobs_and_tracks_local_owner(monkeypatch, tmp_path):
+    jobs_dir = tmp_path / "jobs"
+    jobs_dir.mkdir(parents=True)
+    reg = batch_jobs.BatchJobRegistry(jobs_dir=jobs_dir)
+    # 首次加载空目录
+    assert reg.list_jobs() == []
+
+    remote_log = tmp_path / "remote_run" / "vivado.log"
+    remote_log.parent.mkdir()
+    remote_log.write_text(
+        "Vivado v2024.2\nPhase 1.1 Placer Initialization\nPhase 2.1 Global Placement\n",
+        encoding="utf-8",
+    )
+
+    remote_owner_pid = 777111
+    remote_viv_pid = 777222
+    monkeypatch.setattr(
+        batch_jobs,
+        "is_pid_alive",
+        lambda pid: pid in {remote_owner_pid, remote_viv_pid},
+    )
+
+    remote_job_file = jobs_dir / "tcl_remote_1.json"
+    remote_job_file.write_text(
+        json.dumps(
+            {
+                "job_id": "tcl_remote_1",
+                "kind": "batch_tcl",
+                "status": "running",
+                "started_at": 100.0,
+                "pid": remote_viv_pid,
+                "owner_pid": remote_owner_pid,
+                "client": "Codex",
+                "top": "remote_top",
+                "part": "xc7a35tcsg324-1",
+                "log_path": str(remote_log),
+                "output_dir": str(remote_log.parent),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    listed = reg.list_jobs()
+    assert len(listed) == 1
+    rj = listed[0]
+    assert rj["job_id"] == "tcl_remote_1"
+    assert rj["owner_pid"] == remote_owner_pid
+    assert rj["client"] == "Codex"
+    assert rj["is_local_owner"] is False
+    assert rj["status"] == "running"
+    assert "Global Placement" in rj["current_phase"]
+    assert rj["elapsed_sec"] is not None and rj["elapsed_sec"] > 0
+    assert len(rj["log_tail"]) == 3
+    # 跨进程作业输出目录自动进入白名单根目录
+    assert remote_log.parent.resolve() in reg.allowed_report_roots()
+
+    # 未变更的文件不再重复解析 JSON（即使文件仅读 cache）
+    orig_loads = json.loads
+    load_calls = 0
+
+    def counting_loads(text, *args, **kwargs):
+        nonlocal load_calls
+        load_calls += 1
+        return orig_loads(text, *args, **kwargs)
+
+    monkeypatch.setattr(batch_jobs.json, "loads", counting_loads)
+    listed2 = reg.list_jobs()
+    assert len(listed2) == 1
+    assert load_calls == 0
+
+    # 远程属主和 Vivado 均退出且 JSON 未刷新时，自动降级为 failed
+    monkeypatch.setattr(batch_jobs, "is_pid_alive", lambda pid: False)
+    listed3 = reg.list_jobs()
+    assert listed3[0]["status"] == "failed"
+
+
+async def test_get_build_summary_xpr_signoff_and_cross_agent_overview(monkeypatch, tmp_path):
+    ctx, app_ctx = _make_context(monkeypatch, tmp_path)
+
+    proj_dir = tmp_path / "fpga_proj"
+    synth_dir = proj_dir / "fpga.runs" / "synth_1"
+    impl_dir = proj_dir / "fpga.runs" / "impl_1"
+    synth_dir.mkdir(parents=True)
+    impl_dir.mkdir(parents=True)
+
+    xpr_path = proj_dir / "fpga.xpr"
+    xpr_path.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<Project Version="7" Minor="39">\n'
+        '  <DefaultLaunch Dir="$PRUNDIR"/>\n'
+        '  <Configuration><Option Name="Part" Val="xc7k325tffg900-2"/></Configuration>\n'
+        '  <FileSets><FileSet Name="sources_1" Type="DesignSrcs">\n'
+        '    <Config><Option Name="TopModule" Val="signoff_top"/></Config>\n'
+        '  </FileSet></FileSets>\n'
+        '  <Runs>\n'
+        '    <Run Id="synth_1" Type="Ft3:Synth" SrcSet="sources_1"/>\n'
+        '    <Run Id="impl_1" Type="Ft2:EntireDesign" SrcSet="sources_1" SynthRun="synth_1"/>\n'
+        '  </Runs>\n'
+        '</Project>\n',
+        encoding="utf-8",
+    )
+
+    (synth_dir / "runme.log").write_text(
+        "WARNING: [Synth 8-3848] Net foo_undriven in module/entity top does not have driver.\n"
+        "WARNING: [Synth 8-3848] Net bar_undriven in module/entity top does not have driver.\n",
+        encoding="utf-8",
+    )
+    (impl_dir / ".vivado.begin.rst").write_text("b", encoding="utf-8")
+    (impl_dir / ".vivado.end.rst").write_text("e", encoding="utf-8")
+    (impl_dir / "runme.log").write_text(
+        "Vivado v2024.2\n"
+        "CRITICAL WARNING: [Constraints 18-5210] Minor constraint note.\n"
+        "Phase 4.1 Global Routing\n",
+        encoding="utf-8",
+    )
+    (impl_dir / "route_timing_summary.rpt").write_text(
+        "Design State : Routed\n"
+        "-----------------------------------------------------------------------------------\n"
+        "| Design Timing Summary\n"
+        "| ---------------------\n"
+        "-----------------------------------------------------------------------------------\n\n"
+        "    WNS(ns)  TNS(ns)  TNS Failing Endpoints  TNS Total Endpoints"
+        "  WHS(ns)  THS(ns)  THS Failing Endpoints  THS Total Endpoints"
+        "  WPWS(ns)  TPWS(ns)  TPWS Failing Endpoints  TPWS Total Endpoints\n"
+        "    -------  -------  ---------------------  -------------------"
+        "  -------  -------  ---------------------  -------------------"
+        "  --------  --------  ----------------------  --------------------\n"
+        "      0.415    0.000                      0                 4200"
+        "    0.088    0.000                      0                 4200"
+        "     1.750     0.000                       0                  1500\n",
+        encoding="utf-8",
+    )
+    (impl_dir / "route_utilization.rpt").write_text(
+        "+-------------------------+------+-------+-----------+-------+\n"
+        "|        Site Type        | Used | Fixed | Available | Util% |\n"
+        "+-------------------------+------+-------+-----------+-------+\n"
+        "| Slice LUTs              | 4500 |     0 |    203800 |  2.21 |\n"
+        "| Slice Registers         | 6200 |     0 |    407600 |  1.52 |\n"
+        "| Block RAM Tile          |   12 |     0 |       445 |  2.70 |\n"
+        "| URAM                    |    2 |     0 |        16 | 12.50 |\n"
+        "| DSPs                    |    8 |     0 |       840 |  0.95 |\n"
+        "+-------------------------+------+-------+-----------+-------+\n",
+        encoding="utf-8",
+    )
+    (impl_dir / "route_power.rpt").write_text(
+        "| Total On-Chip Power (W)  | 1.842 |\n",
+        encoding="utf-8",
+    )
+    (impl_dir / "route_drc.rpt").write_text(
+        "2. REPORT DETAILS\nERROR: [DRC NSTD-1] Unspecified I/O Standard\n",
+        encoding="utf-8",
+    )
+    (impl_dir / "signoff_top.bit").write_bytes(b"BIT")
+    (impl_dir / "debug_nets.ltx").write_text("{}", encoding="utf-8")
+    (proj_dir / "signoff_top.xsa").write_bytes(b"XSA")
+
+    res = await mcp.call_tool(
+        "get_build_summary",
+        {"target": str(xpr_path), "run_name": "impl_1"},
+        context=ctx,
+    )
+    raw_json = res.content[0].text
+    assert len(raw_json.encode("utf-8")) < 700
+    data = json.loads(raw_json)
+    assert data["status"] == "completed"  # .vivado.end.rst + 日志零 ERROR
+    assert data["top"] == "signoff_top"
+    assert data["part"] == "xc7k325tffg900-2"
+    assert data["timing"]["wns"] == 0.415
+    assert data["timing"]["wpws"] == 1.75
+    assert data["timing"]["met"] is True
+    assert data["utilization"]["lut"]["used"] == 4500
+    assert data["utilization"]["uram"]["used"] == 2
+    assert data["diagnostics"]["cw"] == 1
+    assert data["diagnostics"]["synth_8_3848"] == 2
+    assert data["diagnostics"]["drc_errors"] == 1
+    assert data["power_w"] == 1.842
+    assert data["artifacts"]["bit"] is not None and data["artifacts"]["bit"].endswith(".bit")
+    assert data["artifacts"]["ltx"] is not None and data["artifacts"]["ltx"].endswith(".ltx")
+    assert data["artifacts"]["xsa"] is not None and data["artifacts"]["xsa"].endswith(".xsa")
+
+    # 缺失指标的空目录绝不伪造 0
+    empty_dir = tmp_path / "empty_ooc"
+    empty_dir.mkdir()
+    res_empty = await mcp.call_tool(
+        "get_build_summary", {"target": str(empty_dir)}, context=ctx
+    )
+    empty_data = json.loads(res_empty.content[0].text)
+    assert empty_data["timing"]["wns"] is None
+    assert empty_data["timing"]["wpws"] is None
+    assert empty_data["utilization"]["uram"] is None
+    assert empty_data["diagnostics"]["errors"] is None
+    assert empty_data["diagnostics"]["synth_8_3848"] is None
+    assert empty_data["diagnostics"]["drc_errors"] is None
+    assert empty_data["power_w"] is None
+    assert empty_data["artifacts"] == {"bit": None, "ltx": None, "xsa": None}
+
+    # 无 target 返回 < 1KB 跨 Agent 总览
+    app_ctx.shared_registry.upsert_session(
+        "default",
+        mode="tcl",
+        project_name="signoff_top",
+        run_name="impl_1",
+        status="running",
+        progress=65.0,
+    )
+    overview_res = await mcp.call_tool("get_build_summary", {}, context=ctx)
+    overview_raw = overview_res.content[0].text
+    assert len(overview_raw.encode("utf-8")) < 1024
+    overview = json.loads(overview_raw)
+    assert "ram" in overview and overview["ram"]["pct"] is not None
+    assert "vivado" in overview
+    assert len(overview["runs"]) >= 1
+    assert overview["runs"][0]["proj"] == "signoff_top"
+
+    # get_build_summary() 传入已知 session/job PID，不将活着的受管 Vivado 误判为 orphan
+    import os
+
+    from vivado_mcp import system_telemetry
+
+    fake_raw = [
+        {
+            "pid": 90001,
+            "parent_pid": os.getpid(),
+            "name": "vivado.exe",
+            "rss_mb": 1024.0,
+            "uptime_sec": 30.0,
+            "command_hint": "vivado.exe -mode tcl",
+            "killable": True,
+        }
+    ]
+    monkeypatch.setattr(
+        system_telemetry,
+        "_raw_eda_process_list",
+        lambda: ({90001: os.getpid()}, fake_raw),
+    )
+    app_ctx.session_manager.list_sessions = AsyncMock(
+        return_value=[
+            {
+                "session_id": "s_tcl",
+                "mode": "tcl",
+                "state": "ready",
+                "is_alive": True,
+                "pid": 90001,
+            }
+        ]
+    )
+    overview_no_orphan = json.loads(
+        (await mcp.call_tool("get_build_summary", {}, context=ctx)).content[0].text
+    )
+    assert overview_no_orphan["vivado"] == 1
+    assert overview_no_orphan["orphans"] == 0

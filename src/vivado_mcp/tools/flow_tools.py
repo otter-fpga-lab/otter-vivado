@@ -10,19 +10,33 @@ GUI 模式下 Vivado 界面保持响应。
 """
 
 import asyncio
+import contextlib
 import logging
+import sys
 import time
+from pathlib import Path
 
 from mcp.server.mcpserver import Context
 
 from vivado_mcp.analysis.run_progress_parser import progress_percent, run_state
 from vivado_mcp.analysis.warning_parser import parse_diag_counts, parse_pre_bitstream
+from vivado_mcp.config import get_vivado_version
 from vivado_mcp.run_feedback import (
     WAIT_UNTIL_CHOICES,
     build_run_progress_report,
     evaluate_wait,
 )
-from vivado_mcp.server import _NO_SESSION, _require_session, _safe_execute, mcp
+from vivado_mcp.server import (
+    _NO_SESSION,
+    _require_session,
+    _safe_execute,
+    mcp,
+    sync_shared_session,
+)
+from vivado_mcp.system_telemetry import (
+    collect_system_telemetry,
+    format_memory_guard_warning,
+)
 from vivado_mcp.tcl_scripts import (
     CHECK_PRE_BITSTREAM,
     COUNT_WARNINGS,
@@ -170,6 +184,48 @@ async def _query_fileset_overrides(session) -> list[str]:
 #  内部辅助：综合 / 实现共享的 launch-and-wait 逻辑
 # --------------------------------------------------------------------------- #
 
+def _resolve_session_vivado_version(session) -> str:
+    raw_rt = getattr(session, "runtime_version", None)
+    if isinstance(raw_rt, str):
+        rt = raw_rt.strip()
+        if rt and rt != "unknown":
+            return rt
+    raw_vp = getattr(session, "vivado_path", None)
+    if isinstance(raw_vp, str) and raw_vp.strip():
+        return get_vivado_version(raw_vp.strip())
+    return ""
+
+
+async def _collect_memory_guard_warning() -> str:
+    with contextlib.suppress(Exception):
+        return await asyncio.to_thread(
+            lambda: format_memory_guard_warning(collect_system_telemetry())
+        )
+    return ""
+
+
+def _sync_from_rp(ctx: Context, session_id: str, rp, *, until: str = "") -> None:
+    if rp is None or not getattr(rp, "found", False):
+        return
+    run_dir = rp.run_dir or (str(Path(rp.log_path).parent) if rp.log_path else "")
+    sync_shared_session(
+        ctx,
+        session_id=session_id,
+        vivado_version=rp.vivado_version or None,
+        project_name=rp.project_name or None,
+        xpr_path=rp.xpr_path or None,
+        run_name=rp.run_name or None,
+        target_step=until or None,
+        run_dir=run_dir or None,
+        status=rp.state(),
+        state=rp.status,
+        progress=progress_percent(rp.progress),
+        phase=rp.current_phase(),
+        log_path=rp.log_path or None,
+        log_tail=[{"line": t.lineno, "text": t.text} for t in rp.tail[-20:]],
+    )
+
+
 async def _launch_and_wait(
     session,
     run_name: str,
@@ -179,6 +235,7 @@ async def _launch_and_wait(
     ctx: Context,
     wait: bool = True,
     target_step: str | None = None,
+    extra_notes: list[str] | None = None,
 ) -> str:
     """原子启动 run；按 wait 选择立即返回或轮询、open_run、诊断。
 
@@ -228,6 +285,20 @@ async def _launch_and_wait(
     if launch_state != "started":
         return f"[ERROR] 启动 {label} 失败: 未知启动状态 {launch_state!r}"
 
+    mem_warn = await _collect_memory_guard_warning()
+    extra_lines = list(extra_notes or [])
+    if mem_warn:
+        extra_lines.append(mem_warn)
+
+    sync_shared_session(
+        ctx,
+        session_id=session.session_id,
+        run_name=run_name,
+        target_step=target_step or "",
+        status="running",
+        state=launch_status or "Running",
+    )
+
     if not wait:
         wait_target = target_step or "complete"
         result_parts = [
@@ -244,6 +315,7 @@ async def _launch_and_wait(
             ),
         ]
         result_parts.extend(override_lines)
+        result_parts.extend(extra_lines)
         return "\n".join(result_parts)
 
     # ------------------- 2. 轮询 -------------------
@@ -256,10 +328,22 @@ async def _launch_and_wait(
     except Exception as e:
         return f"[ERROR] 轮询 {label} 状态失败: {e}"
     if outcome == "timeout":
-        return (
+        sync_shared_session(
+            ctx,
+            session_id=session.session_id,
+            run_name=run_name,
+            target_step=target_step or "",
+            status="running",
+            state=final_status,
+            progress=progress_percent(final_progress),
+        )
+        msg = (
             f"[ERROR] 等待{label}超时（{timeout_minutes} 分钟），最后状态: {final_status}。"
             "run 未取消，可继续查询。"
         )
+        if extra_lines:
+            msg += "\n" + "\n".join(extra_lines)
+        return msg
 
     # ------------------- 3. B4 修复：自动 open_run -------------------
     # 综合/实现完成后自动打开设计，让紧随其后的 report_* / report_io 能工作。
@@ -268,6 +352,15 @@ async def _launch_and_wait(
     # 必须把 $__open_err 的内容 puts 出来,Python 侧检测 VMCP_OPEN_ERR: 前缀。
     open_note = ""
     final_state = run_state(final_status, target_step)
+    sync_shared_session(
+        ctx,
+        session_id=session.session_id,
+        run_name=run_name,
+        target_step=target_step or "",
+        status=final_state,
+        state=final_status,
+        progress=progress_percent(final_progress),
+    )
     if final_state == "completed":
         try:
             open_result = await session.execute(
@@ -299,6 +392,7 @@ async def _launch_and_wait(
         f"耗时: {final_elapsed}",
     ]
     result_parts.extend(override_lines)
+    result_parts.extend(extra_lines)
     if final_state in {"failed", "cancelled"}:
         state_label = "已取消" if final_state == "cancelled" else "失败"
         result_parts.insert(0, f"[ERROR] {label}{state_label}。")
@@ -359,22 +453,8 @@ async def run_synthesis(
     ctx: Context = None,
     wait: bool = True,
 ) -> str:
-    """启动综合；默认等待完成，也可异步提交后查询状态。
-
-    在 ``session_id`` 已有的那一个 Vivado 里 ``launch_runs``，不另开进程。
-    GUI 开着就是综合宿主，不是占掉编译名额。
-
-    不调用 Tcl wait_on_run(会阻塞 Vivado event loop,GUI 模式冻住界面);
-    wait=True 时 Python 每 2 秒查一次状态并上报进度；wait=False 时立即
-    返回 job_id，随后用 get_run_progress 查询。
-
-    Args:
-        run_name: 综合 run 名称，默认 "synth_1"。
-        jobs: 并行任务数，默认 4。
-        timeout_minutes: 超时分钟数，默认 30。
-        session_id: 目标会话 ID。
-        wait: True 等待完成并诊断；False 启动后立即返回 job_id。
-    """
+    """在已有会话中 ``launch_runs`` 综合（不另开进程，不阻塞 GUI）。
+    wait=False 立即返回 job_id 供 wait_run/get_run_progress。"""
     try:
         run_name = validate_identifier(run_name, "run_name")
     except ValueError as e:
@@ -398,23 +478,13 @@ async def run_implementation(
     session_id: str = "default",
     ctx: Context = None,
     wait: bool = True,
+    skip_route_power_report: bool = False,
 ) -> str:
-    """启动实现（布局布线）；默认等待完成，也可异步提交。
+    """启动实现（布局布线）；在 ``session_id`` 已有会话内 ``launch_runs``，不阻塞 GUI。
 
-    在 ``session_id`` 已有的那一个 Vivado 里 ``launch_runs``，不另开进程。
-
-    不调用 Tcl wait_on_run(会阻塞 Vivado event loop,GUI 模式冻住界面);
-    wait=True 时 Python 每 2 秒查一次 STATUS/PROGRESS；wait=False 时立即
-    返回 job_id，随后用 get_run_progress 查询。
-    若 ``impl_1`` 当前 STATUS 含 ERROR（例如 route 后子进程在 write_checkpoint
-    被杀），只 ``reset_run -prev_step`` 再 launch，不清掉已完成的 place/physopt。
-
-    Args:
-        run_name: 实现 run 名称，默认 "impl_1"。
-        jobs: 并行任务数，默认 4。
-        timeout_minutes: 超时分钟数，默认 60。
-        session_id: 目标会话 ID。
-        wait: True 等待完成并诊断；False 启动后立即返回 job_id。
+    STATUS 含 ERROR 时只 ``reset_run -prev_step`` 续跑，保留已完成的 place/physopt。
+    Windows Vivado 2024.x 若在 route 后自动 ``report_power`` 处静默退出，
+    设 ``skip_route_power_report=True``。
     """
     try:
         run_name = validate_identifier(run_name, "run_name")
@@ -425,9 +495,64 @@ async def run_implementation(
     if not session:
         return _NO_SESSION.format(sid=session_id)
 
+    extra_notes: list[str] = []
+    if skip_route_power_report:
+        try:
+            pwr_res = await session.execute(
+                f"set __r [get_runs -quiet {run_name}]\n"
+                "if {[llength $__r] > 0} {\n"
+                f"    set __rcfg [get_report_configs -quiet "
+                f"{run_name}_route_report_power_0 -of_objects $__r]\n"
+                "    if {[llength $__rcfg] > 0} {\n"
+                "        set_property IS_ENABLED false $__rcfg\n"
+                '        puts "VMCP_RPWR_DISABLED"\n'
+                "    }\n"
+                "}",
+                timeout=15.0,
+            )
+            if "VMCP_RPWR_DISABLED" in (getattr(pwr_res, "output", "") or ""):
+                extra_notes.append(
+                    f"已禁用 {run_name}_route_report_power_0（跳过 route 后自动功耗报告，"
+                    "完成后可从 routed/physopt.dcp 单独运行 report_power）。"
+                )
+            elif not getattr(pwr_res, "is_error", False):
+                extra_notes.append(
+                    f"未找到 {run_name}_route_report_power_0，无需额外禁用。"
+                )
+        except Exception as exc:
+            extra_notes.append(
+                f"[WARN] 禁用 {run_name}_route_report_power_0 失败: {exc}"
+            )
+    else:
+        ver = _resolve_session_vivado_version(session)
+        if sys.platform == "win32" and ver.startswith("2024."):
+            try:
+                chk_res = await session.execute(
+                    f"set __r [get_runs -quiet {run_name}]\n"
+                    "if {[llength $__r] > 0} {\n"
+                    f"    set __rcfg [get_report_configs -quiet "
+                    f"{run_name}_route_report_power_0 -of_objects $__r]\n"
+                    "    if {[llength $__rcfg] > 0} {\n"
+                    "        set __en [get_property IS_ENABLED $__rcfg]\n"
+                    "        if {[string length $__en] && $__en} {\n"
+                    '            puts "VMCP_RPWR_ENABLED"\n'
+                    "        }\n"
+                    "    }\n"
+                    "}",
+                    timeout=10.0,
+                )
+                if "VMCP_RPWR_ENABLED" in (getattr(chk_res, "output", "") or ""):
+                    extra_notes.append(
+                        f"[WARN] Windows Vivado {ver} 的 {run_name}_route_report_power_0 "
+                        "已启用，route 后自动 report_power 存在静默退出风险；"
+                        "建议传 skip_route_power_report=True，需要功耗再单独运行 report_power。"
+                    )
+            except Exception:
+                pass
+
     return await _launch_and_wait(
         session, run_name, jobs, timeout_minutes, "实现", ctx,
-        wait=wait, target_step="route_design",
+        wait=wait, target_step="route_design", extra_notes=extra_notes,
     )
 
 
@@ -441,23 +566,8 @@ async def generate_bitstream(
     ctx: Context = None,
     wait: bool = True,
 ) -> str:
-    """生成比特流文件。在实现完成后执行。
-
-    默认启用前置安全检查：检测 CRITICAL WARNING 后阻止生成，
-    需确认无风险后使用 force=True 跳过检查。
-
-    比特流常需 10 分钟以上。``wait=False`` 时完成前置检查并 launch 后立即返回 run 名，
-    再用 ``wait_run(run_name=impl_run, until="write_bitstream")`` 在服务端等待，
-    或 ``get_run_progress`` 单次查看；不要 sleep 轮询。
-
-    Args:
-        impl_run: 实现 run 名称，默认 "impl_1"。
-        jobs: 并行任务数，默认 4。
-        timeout_minutes: 超时分钟数，默认 30（仅 wait=True 时使用）。
-        force: 跳过 CRITICAL WARNING 安全检查，默认 False。
-        session_id: 目标会话 ID。
-        wait: True 等待完成并返回比特流目录；False 启动后立即返回 job_id。
-    """
+    """生成比特流（不重置 route）。默认发现 CW 时拦截，confirm 无风险传 force=True；
+    wait=False 配合 wait_run(until='write_bitstream')。"""
     try:
         impl_run = validate_identifier(impl_run, "impl_run")
     except ValueError as e:
@@ -535,6 +645,15 @@ async def generate_bitstream(
     except Exception as e:
         return f"[ERROR] 启动比特流生成失败: {e}"
 
+    sync_shared_session(
+        ctx,
+        session_id=session.session_id,
+        run_name=impl_run,
+        target_step="write_bitstream",
+        status="running",
+        state="write_bitstream Running",
+    )
+
     if not wait:
         lines = [
             "比特流生成已异步启动。",
@@ -562,6 +681,15 @@ async def generate_bitstream(
     except Exception as e:
         return f"[ERROR] 轮询比特流状态失败: {e}"
     if outcome == "timeout":
+        sync_shared_session(
+            ctx,
+            session_id=session.session_id,
+            run_name=impl_run,
+            target_step="write_bitstream",
+            status="running",
+            state=final_status,
+            progress=progress_percent(final_progress),
+        )
         return (
             f"[ERROR] 等待比特流生成超时({timeout_minutes} 分钟)。"
             f"最后状态: {final_status},进度: {final_progress or '(未知)'}。"
@@ -569,6 +697,15 @@ async def generate_bitstream(
         )
 
     if run_state(final_status, "write_bitstream") != "completed":
+        sync_shared_session(
+            ctx,
+            session_id=session.session_id,
+            run_name=impl_run,
+            target_step="write_bitstream",
+            status=run_state(final_status, "write_bitstream"),
+            state=final_status,
+            progress=progress_percent(final_progress),
+        )
         return (
             f"[ERROR] 生成比特流未完成。\n状态: {final_status}\n"
             f"进度: {final_progress or '(未知)'}\n耗时: {final_elapsed}\n"
@@ -590,6 +727,17 @@ async def generate_bitstream(
         )
     except Exception as e:
         bit_dir = f"(查询失败: {e})"
+
+    sync_shared_session(
+        ctx,
+        session_id=session.session_id,
+        run_name=impl_run,
+        target_step="write_bitstream",
+        run_dir=bit_dir if bit_dir and not bit_dir.startswith("(") else None,
+        status="completed",
+        state=final_status,
+        progress=progress_percent(final_progress),
+    )
 
     result_text = (
         f"--- 比特流生成结果 ---\n"
@@ -626,28 +774,15 @@ async def wait_run(
     timeout_seconds: int = 600,
     poll_seconds: int = 15,
     session_id: str = "default",
+    compact: bool = True,
     ctx: Context = None,
 ) -> str:
-    """在服务端等待 run 完成、失败、到达指定阶段或超时，再返回一次完整进度。
+    """在服务端只读轮询 run 直到目标步骤/完成/失败/超时，替代 sleep 循环，不占用 session 锁。
 
-    用来替代"sleep 45 秒 → get_run_progress"的循环。只读轮询 STATUS，不启动、
-    重置或取消 run；每次查询之间不占用 session 锁，其他工具可以穿插执行。
-    结束时返回与 ``get_run_progress`` 相同的进度报告（含静默退出诊断与钩子告警）。
-
-    **客户端超时风险**：很多 MCP 客户端对单次工具调用有自己的超时（常见 1~10 分钟），
-    超过后客户端会放弃等待而本工具仍在服务端轮询。``timeout_seconds`` 请设得比
-    客户端上限小；返回"等待超时"时 run 仍在运行，可直接再次调用 ``wait_run``。
-    有实际百分比时通过 MCP progress 通知上报，但不能保证每个客户端都据此延长超时。
-
-    Args:
-        run_name: run 名称，默认 "impl_1"。
-        until: ``"complete"``（run 走到流程终点或停止）或某个步骤名：
-            synth_design / opt_design / power_opt_design / place_design /
-            post_place_power_opt_design / phys_opt_design / route_design /
-            post_route_phys_opt_design / write_bitstream。已越过该步骤也算到达。
-        timeout_seconds: 最长等待秒数，1~1800，默认 600。
-        poll_seconds: 查询间隔秒数，2~300，默认 15。
-        session_id: 目标会话 ID。
+    ``until`` 支持 ``"complete"`` 或 ``synth_design/opt_design/power_opt_design/place_design/
+    post_place_power_opt_design/phys_opt_design/route_design/post_route_phys_opt_design/write_bitstream``；
+    ``timeout_seconds`` 限 1~1800（建议小于宿主单次调用超时），``poll_seconds`` 限 2~300。
+    ``compact=True`` 时对正常/超时结果返回 4~6 行精简摘要，失败时仍保留完整静默退出取证。
     """
     try:
         run_name = validate_identifier(run_name, "run_name")
@@ -755,7 +890,14 @@ async def wait_run(
             f"run 已不在运行，但停在 {status}，未到达 {until}；"
             "确认是否用 -to_step 提前结束，或需要继续 launch。"
         )
-    _, report = await build_run_progress_report(session, run_name)
+    use_compact = bool(compact) and outcome != "failed"
+    rp, report = await build_run_progress_report(
+        session,
+        run_name,
+        tail_lines=5 if use_compact else 30,
+        compact=use_compact,
+    )
+    _sync_from_rp(ctx, session.session_id, rp, until=until)
     return "\n".join(header) + "\n\n" + report
 
 
@@ -767,29 +909,8 @@ async def program_device(
     session_id: str = "default",
     ctx: Context = None,
 ) -> str:
-    """编程 FPGA 设备。封装 open_hw_manager → connect → program 多步操作。
-
-    只烧 .bit 进 FPGA(掉电即丢)。要掉电自启动须烧 SPI flash,见下面配方。
-
-    **烧 flash 配方(2019.1,run_tcl 逐步执行)**:
-    1. 查 flash 型号: ``get_cfgmem_parts -of [lindex [get_hw_devices] 0]``
-       (或按板上 flash 用 -filter 选,如 mt25ql128-spi-x1_x2_x4)
-    2. 生成 .mcs: ``write_cfgmem -format mcs -size 16 -interface SPIx4
-       -loadbit {up 0x0 <top>.bit} -force out.mcs``
-    3. 建 cfgmem 对象: ``create_hw_cfgmem -hw_device [current_hw_device]
-       [lindex [get_cfgmem_parts <part>] 0]``
-    4. 设属性四件套: ``set_property PROGRAM.FILES {out.mcs} [current_hw_cfgmem]``
-       + PROGRAM.ERASE 1 / PROGRAM.CFG_PROGRAM 1 / PROGRAM.VERIFY 1
-    5. 烧写: ``program_hw_cfgmem``
-    6. 烧后 ``boot_hw_device [current_hw_device]`` 或断电重启从 flash 加载。
-    (Zynq 用 .bin: ``write_cfgmem -format bin -interface SMAPx32 ...``)
-
-    Args:
-        bitstream_path: 比特流文件路径（.bit 文件）。
-        target: 目标设备过滤器，默认 "*"（第一个可用设备）。
-        hw_server_url: 硬件服务器地址，默认 "localhost:3121"。
-        session_id: 目标会话 ID。
-    """
+    """将 ``.bit`` 比特流烧录到 FPGA（掉电不保存，SPI flash/QSPI 须用
+    write_cfgmem 写 .mcs/.bin）；封装 hw_manager 连接与预检。"""
     # 路径预检:避免半路 program_hw_devices 才报 "file not found",
     # 此时 hw_server / hw_target 已连上,留下脏状态。
     import os

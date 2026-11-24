@@ -415,34 +415,12 @@ async def get_critical_warnings(
     session_id: str = "default",
     ctx: Context = None,
 ) -> str:
-    """提取并分类 CRITICAL WARNING / ERROR / 非标错误,统一失败诊断入口。
+    """提取并分类 ERROR / CRITICAL WARNING / 非标错误，是失败统一诊断入口。
 
-    解析指定 run 的 runme.log,按 warning ID 聚合分类,返回中文诊断报告。
-    包含已知 warning 的分类标签和修复建议。
-
-    **三种诊断模式根据 run_name 自动选择**:
-
-    1. ``synth_*`` / ``impl_*`` 等综合实现 run:走原流程(``runme.log`` 解析
-       ERROR/CRITICAL WARNING)。**额外**:errors=0 且 cw=0 但 STATUS 含 ERROR 时,
-       自动 tail ``runme.log`` 最后 N 行扫非标错误关键词(TclStackFree / segfault /
-       FATAL 等不带 ERROR: 前缀的内部异常)。关键词未命中时再认
-       ``<step> completed successfully`` 且没有 ``Exiting Vivado`` 的子进程静默退出
-       (report_power / bus_skew / unconstrained timing / write_checkpoint 把子 Vivado 杀掉)。
-    2. ``sim_*`` simulation fileset:改去 tail ``<proj>.sim/<sim_fs>/*/xsim/*.log``
-       (Vivado launch_simulation 的真错误位置,**不在** runme.log),扫非标
-       关键词,自动暴露 xvlog 未找到等子进程错误。
-    3. 任何 run:无论结果如何,都会静默把本次 CW 列表写快照到用户缓存(Windows
-       ``%LOCALAPPDATA%\\otter-vivado\\cw_snapshots\\``,其它平台 XDG cache),
-       **不在工程里创建 .vmcp**;旧工程内 ``.vmcp`` 快照只读兼容。启用 ``compare_with_last=True`` 时,
-       读上次快照与本次对比,报告消除/新增/仍存在的条目。(sim 模式不写快照)
-
-    Args:
-        run_name: run / fileset 名称(如 ``synth_1`` / ``impl_1`` / ``sim_1``),
-            默认 ``impl_1``。``sim_*`` 走 simulation 日志诊断路径。
-        compare_with_last: True 时追加一段与上次快照的差分报告(仅对综合/实现有效)。
-        tail_n: 非标错误扫描时每个日志 tail 的末尾行数,默认 50,范围 1~500。
-            仿真模式适用于每个 xsim 子日志。
-        session_id: 目标会话 ID。
+    - ``synth_*`` / ``impl_*``：解析 runme.log；无 ERROR 行但 STATUS 含 ERROR 时
+      扫最后 ``tail_n``（1~500）行非标/静默退出。快照存用户缓存（不建 .vmcp），
+      ``compare_with_last=True`` 输出差分。
+    - ``sim_*``：扫描 ``<proj>.sim/<sim_fs>/*/xsim/*.log``。
     """
     try:
         run_name = validate_identifier(run_name, "run_name")
@@ -658,21 +636,8 @@ async def xdc_lint(
     session_id: str = "default",
     ctx: Context = None,
 ) -> str:
-    """对 XDC 约束文件做静态检查(pure Python,不依赖 Vivado 综合)。
-
-    综合前就能捕到这些常见错误,省掉 30+ 秒的跑综合等待:
-    - PIN_CONFLICT:同一物理引脚被多个 port 占用
-    - MISSING_IOSTANDARD:有 PACKAGE_PIN 却没配 IOSTANDARD(NSTD-1 / BIVC-1 隐患)
-    - DUPLICATE_PORT:同 port 被多次约束不同引脚(后者覆盖)
-    - CLOCK_NO_PERIOD:create_clock 缺 -period
-    - PIN_CONFLICT_CROSS_FILE:多个 XDC 文件间的引脚冲突
-    - TCL_CONTROL_FLOW:XDC 中禁止使用 if/for/foreach/while/proc/switch 等 Tcl 控制流或过程(UG903)
-
-    Args:
-        xdc_paths: 要检查的 XDC 文件路径列表。若不传,则从当前 session 的项目里
-            自动抓取所有 constrs_1 下的 XDC 文件。
-        session_id: 目标会话 ID(仅在不传 xdc_paths 时使用)。
-    """
+    """纯 Python 静态检查 XDC（PIN_CONFLICT / MISSING_IOSTANDARD / DUPLICATE_PORT /
+    CLOCK_NO_PERIOD / TCL_CONTROL_FLOW）；xdc_paths 留空从 session 拉取。"""
     # 路径来源:显式传入 > 从 session 拉取
     if xdc_paths is None or len(xdc_paths) == 0:
         session = await _require_session(ctx, session_id)
@@ -700,26 +665,8 @@ async def xdc_auto_fix(
     session_id: str = "default",
     ctx: Context = None,
 ) -> str:
-    """自动修复 XDC 文件中能安全自修的问题(MISSING_IOSTANDARD / CLOCK_NO_PERIOD)。
-
-    默认 dry_run=True 只预览补丁,确认无误后调用 dry_run=False 实际写回。
-    写回前会为每个被修改文件生成同名 .bak 备份;注意 **.bak 只保留最近一次
-    修改前的版本**(再次写回会覆盖上一次的 .bak,与 ``sed -i.bak`` 同语义)。
-
-    **只修**这两类问题(其他需要人工判断):
-    - MISSING_IOSTANDARD —— 在 PACKAGE_PIN 行之后插入 IOSTANDARD 语句
-    - CLOCK_NO_PERIOD    —— 仅当 board 已知时补 -period;未知板跳过
-
-    **绝对不碰**:
-    - PIN_CONFLICT / DUPLICATE_PORT / PIN_CONFLICT_CROSS_FILE(冲突问题必须人改)
-
-    Args:
-        xdc_paths: XDC 文件路径列表。不传则从当前 session 的项目里抓。
-        board: 板卡名,影响默认 IOSTANDARD 和时钟周期。支持:
-            basys3 / nexys-a7 / arty-a7 / zybo / kc705。留空用 LVCMOS33 兜底。
-        dry_run: True(默认)只输出补丁预览不改文件;False 实际写回。
-        session_id: 目标会话 ID(仅在不传 xdc_paths 时使用)。
-    """
+    """仅安全自动修复 XDC 的 MISSING_IOSTANDARD 与 CLOCK_NO_PERIOD（不碰引脚冲突）；
+    默认 dry_run=True 预览，写回保留单份 .bak，board 支持 basys3/nexys-a7/arty-a7/zybo/kc705。"""
     # 校验 board
     if board and board.lower() not in BOARD_PROFILES:
         known = ", ".join(sorted(BOARD_PROFILES.keys()))
@@ -755,26 +702,8 @@ async def verilog_compile_check(
     tool: str = "auto",
     timeout: float = 30.0,
 ) -> str:
-    """用 iverilog / verilator 做 Verilog 语法 + 连接性检查(比 Vivado 综合快 50 倍)。
-
-    典型用途:写完或改完 RTL 想在几秒内确认"能不能过综合",不用等 30-60s Vivado。
-    需要机器上装 iverilog 或 verilator:
-        Windows: scoop install iverilog / choco install verilator
-        Linux:   apt install iverilog / apt install verilator
-        macOS:   brew install icarus-verilog / brew install verilator
-
-    检查模式:
-    - iverilog -t null:只做 parse + elaboration,不产物
-    - verilator --lint-only -Wall:静态检查,风格警告也给(更严格)
-
-    未装任何工具时返回 SKIP 并附安装指引,不报错。
-
-    Args:
-        files: Verilog / SystemVerilog 文件路径列表(.v / .sv)。
-            .vhd/.vhdl 不支持,返回 SKIP 并附替代方案指引(check_syntax)。
-        tool: "auto"(默认,优先 iverilog) / "iverilog" / "verilator"。
-        timeout: 子进程超时秒数,默认 30。
-    """
+    """调用本地 iverilog / verilator 快速检查 .v/.sv 语法与连接（未安装或传 .vhd 时返回 SKIP）；
+    tool 为 auto / iverilog / verilator。"""
     if not files:
         return "[ERROR] 至少需要一个文件路径"
     if tool not in ("auto", "iverilog", "verilator"):

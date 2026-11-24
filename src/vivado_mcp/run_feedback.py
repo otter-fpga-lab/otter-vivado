@@ -31,6 +31,7 @@ from vivado_mcp.analysis.warning_parser import (
     detect_silent_run_child_exit,
     format_nonstandard_section,
     is_high_thread_route_heap_risk,
+    is_route_power_silent_exit,
     match_silent_run_child_exit,
     parse_diag_counts,
     parse_silent_exit_tcl_output,
@@ -245,6 +246,7 @@ class FailureInsight:
     section: str
     step: str = ""
     high_thread_risk: bool = False
+    route_power_risk: bool = False
 
 
 @dataclass
@@ -255,6 +257,7 @@ class SilentExitDiagnosis:
     step: str = ""
     section: str = ""
     high_thread_risk: bool = False
+    route_power_risk: bool = False
     forensics: SilentExitForensics | None = None
 
 
@@ -530,11 +533,13 @@ async def diagnose_silent_run_child_exit(
         forensics=forensics,
     )
     risk = is_high_thread_route_heap_risk(status, step, forensics)
+    power_risk = is_route_power_silent_exit(body)
     return SilentExitDiagnosis(
         matched=True,
         step=step.lower(),
         section=section,
         high_thread_risk=risk,
+        route_power_risk=power_risk,
         forensics=forensics,
     )
 
@@ -593,6 +598,7 @@ async def diagnose_failed_run(session, rp: RunProgress) -> FailureInsight | None
         section=silent.section,
         step=_last_completed_step(body) or silent.step,
         high_thread_risk=silent.high_thread_risk,
+        route_power_risk=silent.route_power_risk,
     )
 
 
@@ -606,13 +612,26 @@ def failure_advice(rp: RunProgress, insight: FailureInsight, session_id: str) ->
             f"run_implementation(run_name='{run}', session_id='{session_id}', wait=False)"
         )
         until = "synth_design" if run.startswith("synth") else "route_design"
-        step1 = (
-            "  1. 按上面「高线程 route 堆损坏风险提示」处理（工程内 scripts/ 挂 PRE=1/POST 恢复钩子"
-            "或调低全局 maxThreads；亦排查 ROUTE 后 report_* / 双开 Vivado）。"
-            if insight.high_thread_risk
-            else "  1. 按上面原因排查：ROUTE 后 report_power / report_bus_skew / "
-            "report_timing_summary -report_unconstrained，或同一 .xpr 开了第二份 Vivado。"
-        )
+        if insight.route_power_risk and not run.startswith("synth"):
+            step1 = (
+                "  1. 命中 Vivado 2024.2 route 后自动 report_power 静默退出"
+                "（*_routed.dcp 未写出）；"
+                f"建议传 skip_route_power_report=True 续跑："
+                f"run_implementation(run_name='{run}', session_id='{session_id}', "
+                "skip_route_power_report=True, wait=False)，"
+                "需要功耗可从 physopt.dcp 单独运行 report_power。"
+            )
+        elif insight.high_thread_risk:
+            step1 = (
+                "  1. 按上面「高线程 route 堆损坏风险提示」处理"
+                "（工程内 scripts/ 挂 PRE=1/POST 恢复钩子"
+                "或调低全局 maxThreads；亦排查 ROUTE 后 report_* / 双开 Vivado）。"
+            )
+        else:
+            step1 = (
+                "  1. 按上面原因排查：ROUTE 后 report_power / report_bus_skew / "
+                "report_timing_summary -report_unconstrained，或同一 .xpr 开了第二份 Vivado。"
+            )
         return [
             "推荐动作（日志显示该步已成功，这不是 RTL/时序 ERROR）：",
             step1,
@@ -633,7 +652,11 @@ def failure_advice(rp: RunProgress, insight: FailureInsight, session_id: str) ->
 
 
 async def build_run_progress_report(
-    session, run_name: str, tail_lines: int = 30,
+    session,
+    run_name: str,
+    tail_lines: int = 30,
+    *,
+    compact: bool = False,
 ) -> tuple[RunProgress | None, str]:
     """查询 run 进度并附加失败诊断与钩子告警，返回 (快照, 文本)。
 
@@ -652,7 +675,7 @@ async def build_run_progress_report(
         )
     rp = parse_run_progress(result.output, run_name=run_name)
     if rp.error or not rp.found:
-        return rp, format_run_progress(rp)
+        return rp, format_run_progress(rp, compact=compact)
 
     state_note = ""
     advice: list[str] | None = None
@@ -673,7 +696,11 @@ async def build_run_progress_report(
     if hook_section:
         sections.append(hook_section)
     return rp, format_run_progress(
-        rp, state_note=state_note, advice=advice, extra_sections=sections,
+        rp,
+        state_note=state_note,
+        advice=advice,
+        extra_sections=sections,
+        compact=compact,
     )
 
 

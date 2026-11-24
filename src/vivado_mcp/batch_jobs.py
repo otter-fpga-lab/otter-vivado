@@ -43,6 +43,7 @@ from vivado_mcp.config import find_vivado, get_vivado_version
 from vivado_mcp.local_batch import build_command, validate_batch_paths
 from vivado_mcp.project_layout import user_cache_root
 from vivado_mcp.run_feedback import inspect_vivado_init_files, query_windows_crash_events
+from vivado_mcp.shared_registry import detect_client_source, is_pid_alive
 from vivado_mcp.vivado.child_env import sanitize_vivado_child_env
 from vivado_mcp.vivado.tcl_utils import (
     decode_vivado_output,
@@ -67,6 +68,7 @@ _RESOURCE_NAMES: dict[str, tuple[str, ...]] = {
     "ff": ("Slice Registers", "CLB Registers", "Register as Flip Flop"),
     "bram": ("Block RAM Tile",),
     "dsp": ("DSPs",),
+    "uram": ("URAM", "UltraRAM"),
 }
 
 _STAGE_RANK = {
@@ -85,6 +87,12 @@ _PHASE_RE = re.compile(
 _RE_DESIGN_HDR = re.compile(r"^\|\s*Design\s*:\s*(\S+)", re.MULTILINE)
 _RE_DEVICE_HDR = re.compile(r"^\|\s*Device\s*:\s*(\S+)", re.MULTILINE)
 _RE_VIVADO_VER = re.compile(r"\bVivado\s+v(20\d{2}\.\d+(?:\.\d+)?)\b")
+_RE_POWER_W = re.compile(
+    r"Total\s+On-Chip\s+Power\s*\(\s*W\s*\)\s*[|:\s]+([+-]?(?:\d+(?:\.\d*)?|\.\d+))",
+    re.IGNORECASE,
+)
+_RE_DRC_ERR_ROW = re.compile(r"^\|\s*[^|]+\|\s*Error\s*\|", re.MULTILINE | re.IGNORECASE)
+_RE_DRC_VIOLATIONS = re.compile(r"Violations\s+found:\s*(\d+)", re.IGNORECASE)
 _RE_CLOCK_PORT = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.\[\]]*$")
 _RE_SYNTH_ARG_TOKEN = re.compile(r"^[a-zA-Z0-9_.:/\\+\-=]+$")
 _RE_FILE_LINE_NOISE = re.compile(r"\[(\S+?\.\w+):\d+\]")
@@ -101,6 +109,126 @@ def _is_link_or_junction(path: Path) -> bool:
         except OSError:
             return False
     return False
+
+
+def _atomic_write_json(tmp: Path, target: Path, payload: str) -> None:
+    """原子落盘 JSON；在 Windows 短暂并发读写冲突时重试 os.replace，并清理残留 tmp。"""
+    try:
+        tmp.write_text(payload, encoding="utf-8")
+        delay = 0.02
+        for attempt in range(5):
+            try:
+                os.replace(tmp, target)
+                return
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(delay)
+                delay = min(0.05, delay + 0.01)
+    finally:
+        if tmp.exists():
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+
+
+def _dir_report_signature(
+    target_path: Path, *, max_depth: int = 3
+) -> tuple[int, int, int] | None:
+    """采集目录（或 .xpr 及其 .runs）报告与状态标记的轻量指纹，跳过符号链接/junction。"""
+    if _is_link_or_junction(target_path):
+        return None
+    try:
+        resolved = target_path.resolve(strict=True)
+    except OSError:
+        return None
+    if _is_link_or_junction(resolved):
+        return None
+    if resolved.is_file():
+        try:
+            st = resolved.stat()
+            xpr_sig = (1, int(st.st_mtime_ns), int(st.st_size))
+        except OSError:
+            return None
+        runs_dir = resolved.parent / f"{resolved.stem}.runs"
+        if not runs_dir.is_dir() or _is_link_or_junction(runs_dir):
+            return xpr_sig
+        sub = _dir_report_signature(runs_dir, max_depth=max_depth)
+        if sub is None:
+            return xpr_sig
+        return (xpr_sig[0] + sub[0], max(xpr_sig[1], sub[1]), xpr_sig[2] + sub[2])
+
+    if not resolved.is_dir():
+        return None
+    count = 0
+    max_mtime_ns = 0
+    total_size = 0
+    stack: list[tuple[Path, int]] = [(resolved, 0)]
+    exts = {".rpt", ".log", ".txt", ".rst"}
+    while stack:
+        cur, depth = stack.pop()
+        if _is_link_or_junction(cur):
+            continue
+        try:
+            with os.scandir(cur) as it:
+                for entry in it:
+                    if entry.is_symlink():
+                        continue
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if depth < max_depth:
+                                stack.append((Path(entry.path), depth + 1))
+                        elif entry.is_file(follow_symlinks=False):
+                            name_low = entry.name.lower()
+                            if (
+                                Path(name_low).suffix in exts
+                                or name_low.endswith(".xpr")
+                                or name_low == "ooc_synth.tcl"
+                            ):
+                                st = entry.stat(follow_symlinks=False)
+                                count += 1
+                                mns = int(st.st_mtime_ns)
+                                if mns > max_mtime_ns:
+                                    max_mtime_ns = mns
+                                total_size += int(st.st_size)
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return (count, max_mtime_ns, total_size)
+
+
+def _resolve_safe_report_root(
+    candidate: str | Path | None,
+    *,
+    is_file_hint: bool = False,
+) -> Path | None:
+    """严格校验允许读取报告的绝对目录根（拒绝相对路径与任意层级符号链接/junction）。"""
+    if not candidate:
+        return None
+    raw_str = str(candidate).strip()
+    if not raw_str or "\x00" in raw_str:
+        return None
+    raw = Path(raw_str)
+    if not raw.is_absolute():
+        return None
+    if is_file_hint:
+        raw = raw.parent
+    cur = Path(raw.anchor) if raw.anchor else None
+    if cur is None:
+        return None
+    for part in raw.parts[1:]:
+        cur = cur / part
+        if _is_link_or_junction(cur):
+            return None
+    try:
+        resolved = raw.resolve(strict=True)
+    except OSError:
+        return None
+    if resolved.is_file():
+        resolved = resolved.parent
+    if _is_link_or_junction(resolved) or not resolved.is_dir():
+        return None
+    return resolved
 
 
 def _decode_utf8_or_fallback(
@@ -304,6 +432,7 @@ def _empty_timing(parse_status: str = "missing") -> dict[str, Any]:
         "tns": None,
         "whs": None,
         "ths": None,
+        "wpws": None,
         "met": None,
         "failing_endpoints": None,
         "total_endpoints": None,
@@ -314,7 +443,7 @@ def _empty_timing(parse_status: str = "missing") -> dict[str, Any]:
 
 
 def _empty_utilization() -> dict[str, Any]:
-    return {"lut": None, "ff": None, "bram": None, "dsp": None}
+    return {"lut": None, "ff": None, "bram": None, "dsp": None, "uram": None}
 
 
 _RE_OOC_IP_RUN = re.compile(r"^.+_synth_\d+$")
@@ -448,6 +577,7 @@ def parse_directory_reports(
     log_timing_fallback: tuple[float, dict[str, Any]] | None = None
 
     best_util: tuple[tuple[int, float], dict[str, Any], str] | None = None
+    best_power: tuple[tuple[int, float], float] | None = None
 
     all_errors: list[CriticalWarning] = []
     all_cws: list[CriticalWarning] = []
@@ -455,6 +585,10 @@ def parse_directory_reports(
     all_warnings: list[CriticalWarning] = []
     nonstandard_items: list[dict[str, Any]] = []
     issue_files: dict[str, set[str]] = {}
+    synth_8_3848_count = 0
+    drc_log_errors = 0
+    drc_rpt_errors = 0
+    saw_drc_rpt = False
 
     inferred_top = ""
     inferred_part = ""
@@ -510,6 +644,7 @@ def parse_directory_reports(
                     "tns": tr.summary.tns,
                     "whs": tr.summary.whs,
                     "ths": tr.summary.ths,
+                    "wpws": tr.summary.wpws,
                     "met": tr.summary.timing_met,
                     "failing_endpoints": tr.summary.failing_endpoints,
                     "total_endpoints": tr.summary.total_endpoints,
@@ -521,6 +656,31 @@ def parse_directory_reports(
                     best_timing = (rank, candidate)
             elif tr.summary.parse_status == "no_timing_data":
                 saw_no_timing_data = True
+
+            if "power" in path.name.lower() or "Total On-Chip Power" in text[:8192]:
+                pm_pwr = _RE_POWER_W.search(text)
+                if pm_pwr:
+                    with contextlib.suppress(ValueError):
+                        pwr_val = float(pm_pwr.group(1))
+                        if math.isfinite(pwr_val) and pwr_val >= 0.0:
+                            p_rank = _util_rank(path)
+                            if best_power is None or p_rank > best_power[0]:
+                                best_power = (p_rank, round(pwr_val, 4))
+
+            if "drc" in path.name.lower():
+                saw_drc_rpt = True
+                err_rows = len(_RE_DRC_ERR_ROW.findall(text))
+                if err_rows == 0:
+                    err_rows = sum(
+                        1
+                        for ln in text.splitlines()
+                        if ln.lstrip().startswith("ERROR:") and "[DRC" in ln
+                    )
+                if err_rows == 0:
+                    vm_drc = _RE_DRC_VIOLATIONS.search(text)
+                    if vm_drc and int(vm_drc.group(1)) > 0 and "Error" in text:
+                        err_rows = int(vm_drc.group(1))
+                drc_rpt_errors = max(drc_rpt_errors, err_rows)
 
             if "power" not in path.name.lower():
                 util = parse_utilization(text)
@@ -578,9 +738,13 @@ def parse_directory_reports(
                 cw_lines: list[str] = []
                 warn_pairs: list[tuple[int, str]] = []
                 for lineno, line in enumerate(text.splitlines(), 1):
+                    if "[Synth 8-3848]" in line:
+                        synth_8_3848_count += 1
                     stripped = line.lstrip()
                     if stripped.startswith("ERROR:"):
                         err_lines.append(f"VMCP_RUNLOG_ERR:{lineno}|{stripped}")
+                        if "[DRC" in stripped:
+                            drc_log_errors += 1
                     elif stripped.startswith("CRITICAL WARNING:"):
                         cw_lines.append(f"VMCP_CW:{lineno}|{stripped}")
                     elif stripped.startswith("WARNING:"):
@@ -629,6 +793,7 @@ def parse_directory_reports(
                         "tns": snap["tns_ns"],
                         "whs": whs_val,
                         "ths": snap["ths_ns"],
+                        "wpws": None,
                         "met": met_val,
                         "failing_endpoints": None,
                         "total_endpoints": None,
@@ -690,10 +855,19 @@ def parse_directory_reports(
     utilization = best_util[1] if best_util is not None else _empty_utilization()
     utilization_source = best_util[2] if best_util is not None else ""
 
+    has_log_evidence = bool(primary_log is not None or log_candidates)
+    drc_errors: int | None = (
+        max(drc_log_errors, drc_rpt_errors) if (has_log_evidence or saw_drc_rpt) else None
+    )
+
     return {
         "timing": timing,
         "utilization": utilization,
         "utilization_source": utilization_source,
+        "power_w": best_power[1] if best_power is not None else None,
+        "synth_8_3848": synth_8_3848_count if has_log_evidence else None,
+        "drc_errors": drc_errors,
+        "has_log_evidence": has_log_evidence,
         "diagnostics": {
             "errors": len(all_errors),
             "critical_warnings": len(all_cws),
@@ -972,6 +1146,242 @@ def compact_summary_from_record(
     return result
 
 
+def _find_build_artifact(
+    search_dirs: list[Path],
+    suffix: str,
+    *,
+    top: str = "",
+) -> str | None:
+    """在指定目录中查找最新构建产物（.bit / .ltx / .xsa），不存在返回 None。"""
+    candidates: list[tuple[int, float, Path]] = []
+    seen: set[str] = set()
+    top_low = top.lower().strip()
+    for base in search_dirs:
+        if not base.is_dir() or _is_link_or_junction(base):
+            continue
+        try:
+            items = list(base.iterdir())
+        except OSError:
+            continue
+        for item in items:
+            if not item.is_file() or _is_link_or_junction(item):
+                continue
+            if item.suffix.lower() != suffix:
+                continue
+            norm = os.path.normcase(str(item))
+            if norm in seen:
+                continue
+            seen.add(norm)
+            name_low = item.stem.lower()
+            prio = 2 if (top_low and name_low == top_low) else (
+                0 if name_low == "debug_nets" else 1
+            )
+            try:
+                mtime = item.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            candidates.append((prio, mtime, item))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda row: (row[0], row[1], row[2].name), reverse=True)
+    return str(candidates[0][2])
+
+
+def summarize_build_target(
+    target: str | Path,
+    *,
+    run_name: str = "impl_1",
+) -> dict[str, Any]:
+    """提取 .xpr / .runs / OOC 或批处理输出目录的超紧凑签核摘要（< 700B JSON）。"""
+    if target is None or not str(target).strip():
+        raise ValueError("请提供 .xpr 工程路径、.runs 目录或批处理/OOC 输出目录")
+    raw = Path(str(target).strip()).expanduser()
+    if not raw.exists():
+        raise FileNotFoundError(f"路径不存在: {raw}")
+    resolved = raw.resolve(strict=True)
+
+    xpr_path: Path | None = None
+    runs_dir: Path | None = None
+    scan_dir: Path = resolved
+    requested_run = (run_name or "impl_1").strip() or "impl_1"
+    top = ""
+    part = ""
+    status = "unknown"
+
+    if resolved.is_file():
+        if resolved.suffix.lower() != ".xpr":
+            raise ValueError(f"不支持的文件类型: {resolved.name}；请传入 .xpr 文件或目录")
+        xpr_path = resolved
+    elif resolved.is_dir():
+        xpr_candidates = sorted(
+            p for p in resolved.iterdir()
+            if p.is_file() and not _is_link_or_junction(p) and p.suffix.lower() == ".xpr"
+        )
+        if len(xpr_candidates) == 1 and not (resolved / "ooc_synth.tcl").is_file():
+            xpr_path = xpr_candidates[0]
+    else:
+        raise ValueError(f"路径既不是文件也不是目录: {resolved}")
+
+    if xpr_path is not None:
+        cfg = parse_xpr(str(xpr_path))
+        top = cfg.top
+        part = cfg.part
+        cand_runs = xpr_path.parent / f"{xpr_path.stem}.runs"
+        if cand_runs.is_dir():
+            runs_dir = cand_runs
+    elif resolved.name.lower().endswith(".runs"):
+        runs_dir = resolved
+
+    parsed: dict[str, Any] | None = None
+    synth_8_3848_extra: int | None = None
+
+    if runs_dir is not None:
+        run_dir = runs_dir / requested_run
+        if run_dir.is_dir() and not _is_link_or_junction(run_dir):
+            scan_dir = run_dir
+            status, _ = _infer_runs_status(runs_dir, [requested_run])
+            parsed = parse_directory_reports(
+                scan_dir,
+                is_failed=(status == "failed"),
+                scan_nonstandard=(status != "running"),
+                max_issues=5,
+                log_tail_lines=5,
+            )
+        else:
+            scan_dir = runs_dir
+            status = "idle"
+        if requested_run != "synth_1":
+            synth_log = runs_dir / "synth_1" / "runme.log"
+            if synth_log.is_file() and not _is_link_or_junction(synth_log):
+                try:
+                    synth_text, _ = _read_text_bounded(synth_log, 2 * 1024 * 1024)
+                    synth_8_3848_extra = sum(
+                        1 for ln in synth_text.splitlines() if "[Synth 8-3848]" in ln
+                    )
+                except OSError:
+                    pass
+    else:
+        if (
+            (resolved / ".vivado.begin.rst").is_file()
+            or (resolved / ".vivado.error.rst").is_file()
+            or (resolved / ".vivado.end.rst").is_file()
+        ):
+            _, entries = _infer_runs_status(resolved.parent, [resolved.name])
+            if entries:
+                status = entries[0]["status"]
+        tcl_top, tcl_part = _infer_ooc_metadata_from_tcl(resolved)
+        top = top or tcl_top
+        part = part or tcl_part
+        parsed = parse_directory_reports(
+            scan_dir,
+            is_failed=(status == "failed"),
+            scan_nonstandard=(status != "running"),
+            max_issues=5,
+            log_tail_lines=5,
+        )
+
+    if parsed is None:
+        timing_raw = _empty_timing()
+        util_raw = _empty_utilization()
+        has_log = False
+        err_cnt: int | None = None
+        cw_cnt: int | None = None
+        drc_errors: int | None = None
+        synth_8_3848: int | None = synth_8_3848_extra
+        power_w: float | None = None
+    else:
+        timing_raw = parsed["timing"]
+        util_raw = parsed["utilization"]
+        has_log = bool(parsed.get("has_log_evidence"))
+        diag_raw = parsed["diagnostics"]
+        err_cnt = diag_raw["errors"] if has_log else None
+        cw_cnt = diag_raw["critical_warnings"] if has_log else None
+        drc_errors = parsed.get("drc_errors")
+        synth_8_3848 = parsed.get("synth_8_3848")
+        if synth_8_3848_extra is not None:
+            synth_8_3848 = (synth_8_3848 or 0) + synth_8_3848_extra
+        power_w = parsed.get("power_w")
+        top = top or parsed.get("inferred_top", "")
+        part = part or parsed.get("inferred_part", "")
+
+        if status == "unknown":
+            if diag_raw["errors"] > 0 or diag_raw["nonstandard_count"] > 0:
+                status = "failed"
+            elif parsed["reports"] or parsed["primary_log"]:
+                status = "completed"
+            else:
+                status = "idle"
+        elif status == "completed" and (
+            diag_raw["errors"] > 0 or diag_raw["nonstandard_count"] > 0
+        ):
+            status = "failed"
+
+    search_dirs: list[Path] = []
+    if scan_dir.is_dir():
+        search_dirs.append(scan_dir)
+    if xpr_path is not None and xpr_path.parent not in search_dirs:
+        search_dirs.append(xpr_path.parent)
+    elif resolved != scan_dir and resolved.is_dir() and resolved not in search_dirs:
+        search_dirs.append(resolved)
+
+    artifacts: dict[str, str | None] = {
+        "bit": _find_build_artifact(search_dirs, ".bit", top=top),
+        "ltx": _find_build_artifact(search_dirs, ".ltx", top=top),
+        "xsa": _find_build_artifact(search_dirs, ".xsa", top=top),
+    }
+
+    summary: dict[str, Any] = {
+        "status": status,
+        "top": top or None,
+        "part": part or None,
+        "timing": {
+            "wns": timing_raw.get("wns"),
+            "tns": timing_raw.get("tns"),
+            "whs": timing_raw.get("whs"),
+            "ths": timing_raw.get("ths"),
+            "wpws": timing_raw.get("wpws"),
+            "met": timing_raw.get("met"),
+        },
+        "utilization": {
+            k: util_raw.get(k) for k in ("lut", "ff", "dsp", "bram", "uram")
+        },
+        "diagnostics": {
+            "errors": err_cnt,
+            "cw": cw_cnt,
+            "synth_8_3848": synth_8_3848,
+            "drc_errors": drc_errors,
+        },
+        "power_w": power_w,
+        "artifacts": artifacts,
+    }
+
+    def _encoded_len(obj: dict[str, Any]) -> int:
+        return len(
+            json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+
+    if _encoded_len(summary) >= 700:
+        base_root = xpr_path.parent if xpr_path is not None else scan_dir
+        for key, val in list(artifacts.items()):
+            if val:
+                try:
+                    artifacts[key] = str(Path(val).relative_to(base_root))
+                except ValueError:
+                    artifacts[key] = Path(val).name
+        if _encoded_len(summary) >= 700:
+            for key, val in list(artifacts.items()):
+                if val:
+                    artifacts[key] = Path(val).name
+        if _encoded_len(summary) >= 700:
+            for rk, rv in list(summary["utilization"].items()):
+                if isinstance(rv, dict) and "avail" in rv:
+                    summary["utilization"][rk] = {
+                        "used": rv.get("used"),
+                        "pct": rv.get("pct"),
+                    }
+    return summary
+
+
 def _normalize_kv_items(
     raw: dict[str, Any] | list[str] | None,
     *,
@@ -1171,6 +1581,8 @@ class BatchJob:
     log_tail: list[dict[str, Any]] = field(default_factory=list)
     error_message: str = ""
     forensics: dict[str, Any] | None = None
+    owner_pid: int = 0
+    client: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1182,6 +1594,9 @@ class BatchJob:
             "elapsed_sec": self.elapsed_sec,
             "exit_code": self.exit_code,
             "pid": self.pid,
+            "owner_pid": self.owner_pid,
+            "client": self.client,
+            "is_local_owner": (self.owner_pid == os.getpid()),
             "top": self.top,
             "part": self.part,
             "project": self.project,
@@ -1243,6 +1658,8 @@ class BatchJob:
             log_tail=list(data.get("log_tail") or []),
             error_message=str(data.get("error_message", "")),
             forensics=data.get("forensics"),
+            owner_pid=int(data.get("owner_pid") or 0),
+            client=str(data.get("client") or ""),
         )
 
 
@@ -1304,9 +1721,12 @@ class BatchJobRegistry:
         self._lock = threading.RLock()
         self._jobs: dict[str, BatchJob] = {}
         self._inspected: dict[str, dict[str, Any]] = {}
+        self._inspected_sigs: dict[str, tuple[int, int, int] | None] = {}
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._processes: dict[str, asyncio.subprocess.Process] = {}
         self._events: dict[str, asyncio.Event] = {}
+        self._file_cache: dict[str, tuple[int, int]] = {}
+        self._job_filenames: dict[str, str] = {}
         self._loaded_root: Path | None = None
         self._closed = False
 
@@ -1316,31 +1736,113 @@ class BatchJobRegistry:
             return self._jobs_dir_override
         return user_cache_root() / "jobs"
 
+    def _is_remote_job_alive(self, job: BatchJob) -> bool:
+        if job.job_id in self._processes:
+            return True
+        pid_alive = bool(
+            job.pid is not None and int(job.pid) > 0 and is_pid_alive(int(job.pid))
+        )
+        owner_alive = bool(
+            job.owner_pid > 0
+            and job.owner_pid != os.getpid()
+            and is_pid_alive(int(job.owner_pid))
+        )
+        return pid_alive or owner_alive
+
+    def _mark_orphaned_job(self, job: BatchJob) -> None:
+        job.status = "failed"
+        job.finished_at = job.finished_at or time.time()
+        job.elapsed_sec = round(max(0.0, job.finished_at - job.started_at), 2)
+        if not job.error_message:
+            job.error_message = "MCP 服务重启后历史进程已脱离托管，结果未确认"
+
+    def _sync_external_jobs(self, root: Path) -> None:
+        """热同步其他进程写入的 *.json 任务文件（按 (mtime_ns, size) 跳过未变更文件）。"""
+        if not root.is_dir():
+            return
+        seen_names: set[str] = set()
+        for meta_file in sorted(root.glob("*.json")):
+            if meta_file.name == "inspected.json" or _is_link_or_junction(meta_file):
+                continue
+            try:
+                st = meta_file.stat()
+            except OSError:
+                continue
+            sig = (int(st.st_mtime_ns), int(st.st_size))
+            seen_names.add(meta_file.name)
+            if self._file_cache.get(meta_file.name) == sig:
+                continue
+            try:
+                data = json.loads(meta_file.read_text(encoding="utf-8"))
+                job = BatchJob.from_dict(data)
+            except (OSError, ValueError, TypeError):
+                continue
+            self._file_cache[meta_file.name] = sig
+            if not job.job_id:
+                continue
+            self._job_filenames[job.job_id] = meta_file.name
+            if job.job_id in self._processes:
+                continue
+            if job.status == "running" and not self._is_remote_job_alive(job):
+                self._mark_orphaned_job(job)
+            self._jobs[job.job_id] = job
+
+        for fname in list(self._file_cache):
+            if fname not in seen_names:
+                self._file_cache.pop(fname, None)
+
+        for jid in list(self._jobs):
+            if jid in self._processes or jid in self._tasks:
+                continue
+            fname = self._job_filenames.get(jid, f"{jid}.json")
+            if fname not in seen_names:
+                self._jobs.pop(jid, None)
+                self._job_filenames.pop(jid, None)
+                continue
+            job = self._jobs[jid]
+            if job.status == "running" and not self._is_remote_job_alive(job):
+                self._mark_orphaned_job(job)
+
+        if len(self._jobs) > _MAX_PERSISTED_JOBS:
+            ordered = sorted(
+                self._jobs.values(),
+                key=lambda j: (j.job_id in self._processes, j.started_at),
+                reverse=True,
+            )
+            keep_ids = {j.job_id for j in ordered[:_MAX_PERSISTED_JOBS]}
+            for jid in list(self._jobs):
+                if jid not in keep_ids and jid not in self._processes:
+                    self._jobs.pop(jid, None)
+                    self._job_filenames.pop(jid, None)
+
     def _ensure_loaded(self) -> None:
         with self._lock:
             root = self.jobs_dir
             if self._loaded_root == root:
+                self._sync_external_jobs(root)
                 return
             self._jobs.clear()
             self._inspected.clear()
+            self._inspected_sigs.clear()
+            self._file_cache.clear()
+            self._job_filenames.clear()
             if root.is_dir():
                 loaded: list[BatchJob] = []
                 for meta_file in sorted(root.glob("*.json")):
                     if meta_file.name == "inspected.json" or _is_link_or_junction(meta_file):
                         continue
                     try:
+                        st = meta_file.stat()
                         data = json.loads(meta_file.read_text(encoding="utf-8"))
                         job = BatchJob.from_dict(data)
                     except (OSError, ValueError, TypeError):
                         continue
+                    self._file_cache[meta_file.name] = (int(st.st_mtime_ns), int(st.st_size))
                     if not job.job_id:
                         continue
-                    if job.status == "running" and job.job_id not in self._processes:
-                        job.status = "failed"
-                        job.finished_at = job.finished_at or time.time()
-                        job.elapsed_sec = round(max(0.0, job.finished_at - job.started_at), 2)
-                        if not job.error_message:
-                            job.error_message = "MCP 服务重启后历史进程已脱离托管，结果未确认"
+                    self._job_filenames[job.job_id] = meta_file.name
+                    if job.status == "running" and not self._is_remote_job_alive(job):
+                        self._mark_orphaned_job(job)
                     loaded.append(job)
                 loaded.sort(key=lambda j: j.started_at, reverse=True)
                 for job in loaded[:_MAX_PERSISTED_JOBS]:
@@ -1365,8 +1867,11 @@ class BatchJobRegistry:
             target = root / f"{job.job_id}.json"
             tmp = root / f".{job.job_id}.{uuid.uuid4().hex[:6]}.tmp"
             payload = json.dumps(job.to_dict(), ensure_ascii=False, indent=2)
-            tmp.write_text(payload, encoding="utf-8")
-            os.replace(tmp, target)
+            _atomic_write_json(tmp, target, payload)
+            with contextlib.suppress(OSError):
+                st = target.stat()
+                self._file_cache[target.name] = (int(st.st_mtime_ns), int(st.st_size))
+                self._job_filenames[job.job_id] = target.name
 
     def _persist_inspected(self) -> None:
         with self._lock:
@@ -1376,8 +1881,7 @@ class BatchJobRegistry:
             tmp = root / f".inspected.{uuid.uuid4().hex[:6]}.tmp"
             entries = list(self._inspected.values())
             payload = json.dumps(entries, ensure_ascii=False, indent=2)
-            tmp.write_text(payload, encoding="utf-8")
-            os.replace(tmp, target)
+            _atomic_write_json(tmp, target, payload)
 
     def _new_job_id(self, prefix: str) -> str:
         stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
@@ -1763,6 +2267,8 @@ class BatchJobRegistry:
             kind=kind,
             status="running",
             started_at=now,
+            owner_pid=os.getpid(),
+            client=detect_client_source(),
             top=top,
             part=part,
             tcl_path=str(script_path),
@@ -1959,7 +2465,9 @@ class BatchJobRegistry:
                 self._jobs.pop(jid, None)
                 self._events.pop(jid, None)
                 self._tasks.pop(jid, None)
-                meta = self.jobs_dir / f"{jid}.json"
+                fname = self._job_filenames.pop(jid, f"{jid}.json")
+                self._file_cache.pop(fname, None)
+                meta = self.jobs_dir / fname
                 with contextlib.suppress(OSError):
                     if meta.is_file():
                         meta.unlink()
@@ -1968,12 +2476,15 @@ class BatchJobRegistry:
     def inspect_and_remember(self, path: str) -> dict[str, Any]:
         entry = inspect_offline_dir(path, max_cw_items=8, log_tail_lines=40)
         key = entry["target_path"]
+        sig = _dir_report_signature(Path(key))
         with self._lock:
             self._ensure_loaded()
             self._inspected[key] = entry
+            self._inspected_sigs[key] = sig
             if len(self._inspected) > 30:
                 oldest = next(iter(self._inspected))
                 self._inspected.pop(oldest, None)
+                self._inspected_sigs.pop(oldest, None)
             with contextlib.suppress(OSError):
                 self._persist_inspected()
             return copy.deepcopy(entry)
@@ -1984,6 +2495,7 @@ class BatchJobRegistry:
             removed = False
             if path in self._inspected:
                 self._inspected.pop(path, None)
+                self._inspected_sigs.pop(path, None)
                 removed = True
             else:
                 norm = os.path.normcase(os.path.normpath(path))
@@ -1992,6 +2504,7 @@ class BatchJobRegistry:
                 ]
                 for k in matches:
                     self._inspected.pop(k, None)
+                    self._inspected_sigs.pop(k, None)
                     removed = True
             if removed:
                 with contextlib.suppress(OSError):
@@ -2001,21 +2514,29 @@ class BatchJobRegistry:
     def list_inspected(self) -> list[dict[str, Any]]:
         with self._lock:
             self._ensure_loaded()
-            snapshot = [(k, copy.deepcopy(v)) for k, v in self._inspected.items()]
+            snapshot = [
+                (k, copy.deepcopy(v), self._inspected_sigs.get(k))
+                for k, v in self._inspected.items()
+            ]
 
-        updates: dict[str, dict[str, Any]] = {}
-        for target_path, _cached in snapshot:
+        updates: dict[str, tuple[dict[str, Any], tuple[int, int, int] | None]] = {}
+        for target_path, _cached, prev_sig in snapshot:
+            cur_sig = _dir_report_signature(Path(target_path))
+            if prev_sig is not None and cur_sig is not None and prev_sig == cur_sig:
+                continue
             try:
-                updates[target_path] = inspect_offline_dir(
+                updated = inspect_offline_dir(
                     target_path, max_cw_items=8, log_tail_lines=40
                 )
+                updates[target_path] = (updated, cur_sig)
             except (OSError, ValueError):
                 pass
 
         with self._lock:
-            for target_path, updated in updates.items():
+            for target_path, (updated, cur_sig) in updates.items():
                 if target_path in self._inspected:
                     self._inspected[target_path] = updated
+                    self._inspected_sigs[target_path] = cur_sig
             ordered = [copy.deepcopy(v) for v in self._inspected.values()]
         ordered.sort(key=lambda item: float(item.get("inspected_at", 0.0)), reverse=True)
         return ordered
@@ -2033,38 +2554,31 @@ class BatchJobRegistry:
         roots: list[Path] = []
         seen: set[str] = set()
 
-        def add_root(candidate: str | Path | None) -> None:
-            if not candidate:
+        def add_root(candidate: str | Path | None, *, is_file_hint: bool = False) -> None:
+            resolved = _resolve_safe_report_root(candidate, is_file_hint=is_file_hint)
+            if resolved is None:
                 return
-            try:
-                p = Path(candidate).expanduser().resolve(strict=True)
-            except OSError:
-                return
-            if p.is_file():
-                p = p.parent
-            if not p.is_dir():
-                return
-            key = os.path.normcase(str(p))
+            key = os.path.normcase(str(resolved))
             if key not in seen:
                 seen.add(key)
-                roots.append(p)
+                roots.append(resolved)
 
         for out_dir, log_path in job_paths:
             add_root(out_dir)
             if log_path:
-                add_root(Path(log_path).parent)
+                add_root(log_path, is_file_hint=True)
         for out_dir, log_path in inspected_paths:
             add_root(out_dir)
             if log_path:
-                add_root(Path(str(log_path)).parent)
+                add_root(str(log_path), is_file_hint=True)
         for snap in run_monitors_snapshots or []:
             run = snap.get("run") or {}
             add_root(run.get("directory"))
             if run.get("log_path"):
-                add_root(Path(str(run["log_path"])).parent)
+                add_root(str(run["log_path"]), is_file_hint=True)
             for rep in snap.get("reports") or []:
                 if rep.get("path"):
-                    add_root(Path(str(rep["path"])).parent)
+                    add_root(str(rep["path"]), is_file_hint=True)
         return roots
 
     def known_tcl_paths(self) -> set[str]:

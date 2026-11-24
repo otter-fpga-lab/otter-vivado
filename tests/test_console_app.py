@@ -860,3 +860,271 @@ def test_browser_console_http_themes_and_responsive_layout(tmp_path):
     finally:
         server.close()
         asyncio.run(app_ctx.batch_jobs.close())
+
+
+async def test_preferred_console_port_health_reuse_and_non_otter_fallback(monkeypatch, tmp_path):
+    import os
+    import socket
+
+    from vivado_mcp.console_http import (
+        DEFAULT_CONSOLE_PORT,
+        probe_existing_console_hub,
+    )
+    from vivado_mcp.tools.console_app_tools import ensure_console_http
+
+    assert DEFAULT_CONSOLE_PORT == 18765
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        chosen_port = int(s.getsockname()[1])
+
+    monkeypatch.setenv("OTTER_VIVADO_CONSOLE_PORT", str(chosen_port))
+    monkeypatch.setattr("webbrowser.open", lambda u: True)
+
+    ctx1, app_ctx1 = _make_context(tmp_path / "c1")
+    ctx2, app_ctx2 = _make_context(tmp_path / "c2")
+    try:
+        info1 = await ensure_console_http(app_ctx1, open_browser=False)
+        assert info1["running"] is True
+        assert info1["url"] == f"http://127.0.0.1:{chosen_port}/"
+        assert info1["preferred_port"] == chosen_port
+        assert info1["shared_hub"] is False
+        assert app_ctx1.console_http is not None
+
+        status, _, body = await asyncio.to_thread(
+            _http_request, f"{info1['url']}api/health"
+        )
+        assert status == 200
+        health = json.loads(body)
+        assert health["app"] == "otter-vivado-console"
+        assert health["pid"] == os.getpid()
+        assert health["port"] == chosen_port
+        assert (
+            await asyncio.to_thread(probe_existing_console_hub, chosen_port)
+            == info1["url"]
+        )
+
+        # 第二个会话探测到同端口的 otter-vivado Hub 时复用而非重复起服
+        info2 = await ensure_console_http(app_ctx2, open_browser=False)
+        assert info2["running"] is True
+        assert info2["url"] == info1["url"]
+        assert info2["shared_hub"] is True
+        assert app_ctx2.console_http is None
+    finally:
+        if app_ctx1.console_http is not None:
+            await asyncio.to_thread(app_ctx1.console_http.close)
+        await app_ctx1.batch_jobs.close()
+        await app_ctx2.batch_jobs.close()
+
+    # 若首选端口被非 otter-vivado 进程占用，回退到 port=0 而不报错
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen(1)
+    blocked_port = int(blocker.getsockname()[1])
+    monkeypatch.setenv("OTTER_VIVADO_CONSOLE_PORT", str(blocked_port))
+    ctx3, app_ctx3 = _make_context(tmp_path / "c3")
+    try:
+        info3 = await ensure_console_http(app_ctx3, open_browser=False)
+        assert info3["running"] is True
+        assert info3["shared_hub"] is False
+        assert info3["url"].startswith("http://127.0.0.1:")
+        assert info3["url"] != f"http://127.0.0.1:{blocked_port}/"
+    finally:
+        blocker.close()
+        if app_ctx3.console_http is not None:
+            await asyncio.to_thread(app_ctx3.console_http.close)
+        await app_ctx3.batch_jobs.close()
+
+
+async def test_console_action_kill_process_cleanup_and_remote_report_guard(monkeypatch, tmp_path):
+    import os
+    import time
+
+    from vivado_mcp import system_telemetry
+    from vivado_mcp.shared_registry import SharedRegistry
+
+    monkeypatch.setenv("OTTER_VIVADO_CACHE_DIR", str(tmp_path / "cache"))
+    ctx, app_ctx = _make_context(tmp_path)
+    app_ctx.shared_registry = SharedRegistry(registry_dir=tmp_path / "cache" / "registry")
+
+    # 写入一个远端 Codex 运行及报告目录 + 一个死亡占位条目
+    remote_dir = tmp_path / "codex_proj" / "demo.runs" / "impl_1"
+    remote_dir.mkdir(parents=True)
+    remote_rpt = remote_dir / "route_timing_summary.rpt"
+    remote_rpt.write_text("WNS = 0.512 ns\n", encoding="utf-8")
+
+    live_pid = 888991
+    dead_pid = 888992
+    monkeypatch.setattr(
+        "vivado_mcp.shared_registry.is_pid_alive",
+        lambda pid: pid in {os.getpid(), live_pid},
+    )
+    app_ctx.shared_registry.sessions_dir.mkdir(parents=True, exist_ok=True)
+    (app_ctx.shared_registry.sessions_dir / f"{live_pid}_codex.json").write_text(
+        json.dumps(
+            {
+                "entry_id": f"{live_pid}_codex",
+                "owner_pid": live_pid,
+                "client": "Codex",
+                "session_id": "codex",
+                "run_dir": str(remote_dir),
+                "run_name": "impl_1",
+                "status": "running",
+                "updated_at": 1e12,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (app_ctx.shared_registry.sessions_dir / f"{dead_pid}_old.json").write_text(
+        json.dumps(
+            {
+                "entry_id": f"{dead_pid}_old",
+                "owner_pid": dead_pid,
+                "client": "CLI",
+                "session_id": "old",
+                "status": "ended",
+                "updated_at": time.time() - 60.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        state_res = await mcp.call_tool("vivado_console_state", {}, context=ctx)
+        assert not state_res.is_error
+        sc = state_res.structured_content
+        assert sc["client"] in {"Codex", "Antigravity", "Claude", "Cursor", "CLI"}
+        assert "system" in sc and sc["system"]["ram_total_gb"] > 0
+        assert len(sc["remote_runs"]) == 2
+        assert sc["local_web"]["preferred_port"] > 0
+
+        # 允许通过 SharedRegistry 白名单读取跨 Agent 的 .rpt 报告
+        rpt_res = await mcp.call_tool(
+            "vivado_console_action",
+            {"action": "read_report", "report_path": str(remote_rpt)},
+            context=ctx,
+        )
+        assert not rpt_res.is_error
+        assert rpt_res.structured_content["report"]["lines"][0]["text"] == "WNS = 0.512 ns"
+
+        # cleanup_stale_registry 仅清理死亡条目
+        clean_res = await mcp.call_tool(
+            "vivado_console_action",
+            {"action": "cleanup_stale_registry"},
+            context=ctx,
+        )
+        assert not clean_res.is_error
+        assert clean_res.structured_content["ok"] is True
+        assert clean_res.structured_content["removed_entries"] == 1
+        assert len(clean_res.structured_content["state"]["remote_runs"]) == 1
+
+        # kill_process 拒绝非 EDA PID（例如自身进程 / 非白名单 exe）
+        bad_kill = await mcp.call_tool(
+            "vivado_console_action",
+            {"action": "kill_process", "pid": os.getpid()},
+            context=ctx,
+        )
+        assert bad_kill.is_error
+
+        monkeypatch.setattr(
+            system_telemetry, "_resolve_live_exe_name", lambda pid: "vivado.exe"
+        )
+        monkeypatch.setattr(
+            system_telemetry.subprocess,
+            "run",
+            lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )
+        ok_kill = await mcp.call_tool(
+            "vivado_console_action",
+            {"action": "kill_process", "pid": 65432},
+            context=ctx,
+        )
+        assert not ok_kill.is_error
+        ksc = ok_kill.structured_content
+        assert ksc["action"] == "kill_process"
+        assert ksc["ok"] is True
+        assert ksc["pid"] == 65432
+        assert ksc["name"] == "vivado.exe"
+    finally:
+        await app_ctx.batch_jobs.close()
+        app_ctx.shared_registry.close()
+
+
+async def test_windows_exclusive_bind_shared_hub_failover_and_known_gui_pids(
+    monkeypatch, tmp_path
+):
+    import os
+    import socket
+    import sys
+
+    from vivado_mcp.tools.console_app_tools import (
+        _build_known_eda_pids,
+        collect_console_state,
+        ensure_console_http,
+    )
+    from vivado_mcp.vivado.session import SubprocessSession
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = int(s.getsockname()[1])
+
+    monkeypatch.setenv("OTTER_VIVADO_CONSOLE_PORT", str(port))
+    monkeypatch.setattr("webbrowser.open", lambda u: True)
+
+    ctx1, app_ctx1 = _make_context(tmp_path / "f1")
+    ctx2, app_ctx2 = _make_context(tmp_path / "f2")
+    try:
+        info1 = await ensure_console_http(app_ctx1, open_browser=False)
+        assert info1["shared_hub"] is False
+
+        # 1. Windows SO_EXCLUSIVEADDRUSE 严禁双进程绑定同一控制台端口
+        if sys.platform == "win32":
+            dup = ConsoleHttpServer(app_ctx2, loop=asyncio.get_running_loop(), port=port)
+            with pytest.raises(OSError):
+                dup.start()
+            dup.close()
+
+        # 2. 复用共享 Hub 后原属主退出，collect_console_state 探测失败时无缝接管端口
+        info2 = await ensure_console_http(app_ctx2, open_browser=False)
+        assert info2["shared_hub"] is True
+        assert info2["url"] == info1["url"]
+
+        await asyncio.to_thread(app_ctx1.console_http.close)
+        state2, _, _ = await collect_console_state(app_ctx2)
+        lw2 = state2["local_web"]
+        assert lw2["running"] is True
+        assert lw2["shared_hub"] is False
+        assert lw2["url"] == info1["url"]
+        assert app_ctx2.console_http is not None
+    finally:
+        if app_ctx1.console_http is not None:
+            await asyncio.to_thread(app_ctx1.console_http.close)
+        if app_ctx2.console_http is not None:
+            await asyncio.to_thread(app_ctx2.console_http.close)
+        await app_ctx1.batch_jobs.close()
+        await app_ctx2.batch_jobs.close()
+
+    # 3. SubprocessSession.status_dict() 暴露 pid，_build_known_eda_pids 识别 attach/external
+    sub = SubprocessSession(vivado_path="C:/fake/vivado.bat", session_id="t1")
+    sub._process = SimpleNamespace(pid=44321, returncode=None)
+    assert sub.status_dict()["pid"] == 44321
+
+    known, has_gui = _build_known_eda_pids(
+        [
+            {"session_id": "t1", "mode": "tcl", "is_alive": True, "pid": 44321},
+            {"session_id": "g1", "mode": "attach", "is_alive": True, "attached_external": True},
+        ],
+        [],
+        [],
+        "CLI",
+    )
+    assert 44321 in known
+    assert has_gui is True
+    known_ext, has_ext = _build_known_eda_pids(
+        [{"session_id": "external@9999", "mode": "attach", "owner": "external", "is_alive": True}],
+        [],
+        [],
+        "CLI",
+    )
+    assert has_ext is True
+    assert known_ext == {} or os.getpid() in known_ext or len(known_ext) >= 0

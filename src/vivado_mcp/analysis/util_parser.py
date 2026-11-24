@@ -75,6 +75,8 @@ _CORE_RESOURCES = (
     "CLB Registers",
     "Register as Flip Flop",
     "Block RAM Tile",
+    "URAM",
+    "UltraRAM",
     "DSPs",
     "Bonded IOB",
     "BUFGCTRL",

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
+import os
 import re
 import secrets
+import socket
+import sys
 import threading
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,6 +18,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from vivado_mcp.server import AppContext
 
+DEFAULT_CONSOLE_PORT = 18765
+_CONSOLE_APP_ID = "otter-vivado-console"
 _MAX_BODY = 64 * 1024
 _ALLOWED_ACTIONS = frozenset(
     {
@@ -23,9 +29,52 @@ _ALLOWED_ACTIONS = frozenset(
         "cancel_job",
         "clear_finished",
         "ensure_local_web",
+        "kill_process",
+        "cleanup_stale_registry",
     }
 )
-_ALLOWED_KEYS = frozenset({"action", "path", "job_id", "report_path", "max_lines"})
+_ALLOWED_KEYS = frozenset(
+    {"action", "path", "job_id", "report_path", "max_lines", "pid"}
+)
+
+
+def preferred_console_port() -> int:
+    """返回首选控制台端口（默认 18765，可通过 OTTER_VIVADO_CONSOLE_PORT 覆盖）。"""
+    raw = os.environ.get("OTTER_VIVADO_CONSOLE_PORT", "").strip()
+    if raw:
+        try:
+            port = int(raw)
+            if 0 <= port <= 65535:
+                return port
+        except ValueError:
+            pass
+    return DEFAULT_CONSOLE_PORT
+
+
+def probe_existing_console_hub(port: int, *, timeout: float = 0.25) -> str | None:
+    """快速探测 127.0.0.1:<port>/api/health 是否已有 otter-vivado 控制台在运行。"""
+    if type(port) is not int or port <= 0 or port > 65535:
+        return None
+    conn: http.client.HTTPConnection | None = None
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+        conn.request("GET", "/api/health", headers={"Host": f"127.0.0.1:{port}"})
+        resp = conn.getresponse()
+        if resp.status != 200:
+            return None
+        body = resp.read(2048)
+        data = json.loads(body.decode("utf-8"))
+        if isinstance(data, dict) and data.get("app") == _CONSOLE_APP_ID:
+            return f"http://127.0.0.1:{port}/"
+    except (OSError, ValueError, UnicodeError, TimeoutError, http.client.HTTPException):
+        return None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except OSError:
+                pass
+    return None
 
 
 def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -87,6 +136,11 @@ def _validate_action_payload(payload: Any) -> dict[str, Any]:
         if type(max_lines) is not int or max_lines < 1:
             raise ValueError("max_lines 必须是正整数")
         clean["max_lines"] = max_lines
+    pid = payload.get("pid")
+    if pid is not None:
+        if type(pid) is not int or pid < 1:
+            raise ValueError("pid 必须是正整数")
+        clean["pid"] = pid
     return clean
 
 
@@ -95,7 +149,12 @@ class _ConsoleServer(ThreadingHTTPServer):
 
     daemon_threads = True
     block_on_close = False
-    allow_reuse_address = True
+    allow_reuse_address = sys.platform != "win32"
+
+    def server_bind(self) -> None:
+        if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
     def get_request(self):
         connection, address = super().get_request()
@@ -286,6 +345,16 @@ class ConsoleHttpServer:
                     if self.path == "/favicon.ico":
                         self._respond(204, b"")
                         return
+                    if self.path == "/api/health":
+                        self._json(
+                            200,
+                            {
+                                "app": _CONSOLE_APP_ID,
+                                "pid": os.getpid(),
+                                "port": int(self.server.server_address[1]),
+                            },
+                        )
+                        return
                     if self.path == "/api/state":
                         try:
                             state, _, _ = parent._run_coro(
@@ -353,6 +422,7 @@ class ConsoleHttpServer:
                                 job_id=req.get("job_id"),
                                 report_path=req.get("report_path"),
                                 max_lines=req.get("max_lines", 300),
+                                pid=req.get("pid"),
                             )
                         )
                         self._json(200, structured)

@@ -73,6 +73,11 @@ class RunProgress:
     progress: str = ""        # 如 "50%"
 
     # log 元信息
+    run_dir: str = ""
+    project_name: str = ""
+    xpr_path: str = ""
+    vivado_version: str = ""
+    elapsed: str = ""
     log_path: str = ""
     log_exists: bool = False
     log_size: int = 0
@@ -140,7 +145,16 @@ def parse_run_progress(raw: str, run_name: str = "") -> RunProgress:
             elif key == "progress":
                 rp.progress = value
             elif key == "dir":
+                rp.run_dir = value
                 rp.log_path = f"{value}/runme.log" if value else ""
+            elif key == "project":
+                rp.project_name = value
+            elif key == "project_file":
+                rp.xpr_path = value
+            elif key == "version":
+                rp.vivado_version = value
+            elif key == "elapsed":
+                rp.elapsed = value
             elif key == "log_exists":
                 rp.log_exists = value == "1"
             elif key == "log_size":
@@ -212,11 +226,13 @@ def format_run_progress(
     state_note: str = "",
     advice: list[str] | None = None,
     extra_sections: list[str] | None = None,
+    compact: bool = False,
 ) -> str:
     """人类可读报告。phase_window = 显示最近几条 Phase 行。
 
     ``state_note`` 补充在标题状态后（如子进程静默退出的真实情况）；``advice`` 非空时
     替换默认建议；``extra_sections`` 追加在日志之后、建议之前（诊断、钩子告警等）。
+    ``compact=True`` 仅在非失败状态输出精简 4~6 行摘要，省掉冗余日志路径与样板提示。
     """
     if rp.error:
         return f"[ERROR] {rp.error}"
@@ -224,6 +240,7 @@ def format_run_progress(
         return f"[ERROR] Run '{rp.run_name}' 未找到或无状态数据。"
 
     # 状态标签
+    state_val = rp.state()
     label = {
         "failed": "失败",
         "cancelled": "已取消",
@@ -232,11 +249,37 @@ def format_run_progress(
         "running": "运行中",
         "idle": "未启动",
         "unknown": "未知",
-    }[rp.state()]
+    }[state_val]
     if state_note:
         label = f"{label}（{state_note}）"
 
     out: list[str] = [f"=== {rp.run_name} 运行进度: {label} ==="]
+    if compact and state_val != "failed":
+        status_line = f"状态:   {rp.status or '(无)'}"
+        if rp.progress:
+            status_line += f" | 进度: {rp.progress}"
+        if rp.elapsed:
+            status_line += f" | 耗时: {rp.elapsed}"
+        out.append(status_line)
+        if not rp.log_exists:
+            out.append("日志:   runme.log 不存在(run 可能未启动)")
+        else:
+            age = rp.elapsed_since_last_update()
+            if rp.phases:
+                latest = rp.phases[-1]
+                out.append(f"最新阶段: L{latest.lineno}: {latest.text}")
+            if rp.tail:
+                out.append("日志尾部(最后 {} 行):".format(min(3, len(rp.tail))))
+                for t in rp.tail[-3:]:
+                    out.append(f"  {t.text}")
+            if rp.is_running() and age > 120:
+                out.append(f"[!] 注意: log 最近 {_fmt_age(age)}才更新。")
+        for section in extra_sections or []:
+            out.extend(["", section])
+        if advice:
+            out.extend(["", *advice])
+        return "\n".join(out)
+
     out.append(f"状态:   {rp.status or '(无)'}")
     if rp.progress:
         out.append(f"进度:   {rp.progress}")

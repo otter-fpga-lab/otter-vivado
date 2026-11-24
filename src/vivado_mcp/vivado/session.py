@@ -68,6 +68,20 @@ class SubprocessSession(BaseSession):
             and self._process.returncode is None
         )
 
+    @property
+    def pid(self) -> int | None:
+        if self._process is not None and self._process.returncode is None:
+            proc_pid = getattr(self._process, "pid", None)
+            return proc_pid if isinstance(proc_pid, int) and proc_pid > 0 else None
+        return None
+
+    def status_dict(self) -> dict:
+        d = super().status_dict()
+        proc_pid = self.pid
+        if isinstance(proc_pid, int) and proc_pid > 0:
+            d["pid"] = proc_pid
+        return d
+
     async def start(self, timeout: float = 60.0) -> str:
         """启动 Vivado TCL 子进程。
 

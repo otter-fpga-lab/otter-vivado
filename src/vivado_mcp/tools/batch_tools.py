@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 from typing import Any
 
 from mcp.server.mcpserver import Context
+from mcp.types import ToolAnnotations
 
 from vivado_mcp.batch_jobs import (
     BatchJobRegistry,
     compact_summary_from_record,
+    summarize_build_target,
 )
 from vivado_mcp.server import get_app_context, mcp
+from vivado_mcp.system_telemetry import (
+    collect_system_telemetry,
+    format_memory_guard_warning,
+)
 
 
 def _registry(ctx: Context | None) -> BatchJobRegistry:
@@ -24,6 +32,14 @@ def _json_compact(payload: dict[str, Any]) -> str:
 
 def _error_json(exc: Exception) -> str:
     return _json_compact({"error": str(exc)})
+
+
+async def _collect_memory_warning() -> str:
+    with contextlib.suppress(Exception):
+        return await asyncio.to_thread(
+            lambda: format_memory_guard_warning(collect_system_telemetry())
+        )
+    return ""
 
 
 @mcp.tool()
@@ -40,15 +56,11 @@ async def run_batch_tcl(
     notrace: bool = True,
     ctx: Context = None,
 ) -> str:
-    """在服务端托管运行 ``vivado -mode batch`` 并返回紧凑结构化摘要（取代 shell sleep 轮询）。
+    """在服务端托管运行 ``vivado -mode batch`` 并返回紧凑结构化摘要。
 
-    ``tcl_file`` 与 ``tcl_content`` 必须且只能提供一个。省略 ``output_dir`` 时自动在
-    ``%LOCALAPPDATA%\\otter-vivado\\jobs\\<job_id>\\`` 下分配隔离工作目录，绝不在用户
-    工程内建隐藏目录。
-
-    ``wait=True``（限幅 1~1800s）在服务端等待完成并周期上报 progress；若等待超时，
-    不会杀死 Vivado，而是返回 ``status="running", wait_timed_out=True, job_id=...``，
-    可用 ``get_batch_job`` 继续等待或在 Vivado 控制台查看实时进度。
+    ``tcl_file`` 与 ``tcl_content`` 必须且只能提供一个；省略 ``output_dir`` 时落盘到
+    ``%LOCALAPPDATA%\\otter-vivado\\jobs\\<job_id>\\``。``wait=True`` 限 1~1800s，
+    超时不终止 Vivado，返回 ``job_id`` 供 ``get_batch_job`` 续查。
     """
     try:
         cw_limit = max(0, min(int(max_cw_items), 50))
@@ -69,7 +81,11 @@ async def run_batch_tcl(
         record = job.to_dict()
         if timed_out:
             record["wait_timed_out"] = True
-        return _json_compact(compact_summary_from_record(record, max_cw_items=cw_limit))
+        summary = compact_summary_from_record(record, max_cw_items=cw_limit)
+        mem_warn = await _collect_memory_warning()
+        if mem_warn:
+            summary["memory_warning"] = mem_warn
+        return _json_compact(summary)
     except (ValueError, FileNotFoundError, RuntimeError, OSError) as exc:
         return _error_json(exc)
 
@@ -91,13 +107,8 @@ async def run_ooc_synth(
     wait: bool = True,
     ctx: Context = None,
 ) -> str:
-    """一键独立 Out-of-Context 综合（无需 .xpr 工程），自动生成 Tcl/时钟约束并解析时序/资源/诊断。
-
-    支持读取 ``.sv`` / ``.v`` / ``.vhd`` / ``.xci`` / ``.xdc``，配置 ``include_dirs``、
-    ``defines``、``generics`` 及可选 ``clock_port`` + ``clock_period_ns``，执行
-    ``synth_design -top <top> -part <part> -mode out_of_context`` 并写出
-    ``timing_summary.rpt`` 与 ``utilization.rpt``。返回紧凑 JSON 摘要（不含长报告全文）。
-    """
+    """独立 Out-of-Context 综合（无需 .xpr），支持 SV/V/VHD/XCI/XDC 与可选单时钟，
+    返回紧凑 JSON 摘要。"""
     try:
         wait_limit = max(1, min(int(timeout_seconds), 1800))
         registry = _registry(ctx)
@@ -120,7 +131,11 @@ async def run_ooc_synth(
         record = job.to_dict()
         if timed_out:
             record["wait_timed_out"] = True
-        return _json_compact(compact_summary_from_record(record, max_cw_items=8))
+        summary = compact_summary_from_record(record, max_cw_items=8)
+        mem_warn = await _collect_memory_warning()
+        if mem_warn:
+            summary["memory_warning"] = mem_warn
+        return _json_compact(summary)
     except (ValueError, FileNotFoundError, RuntimeError, OSError) as exc:
         return _error_json(exc)
 
@@ -133,12 +148,7 @@ async def get_batch_job(
     cancel: bool = False,
     ctx: Context = None,
 ) -> str:
-    """查询、服务端等待或取消托管批处理 / OOC 综合任务。
-
-    - ``job_id=None``：返回活跃及近期任务紧凑列表。
-    - ``job_id=<id>``：可选 ``wait_seconds``（0~1800）在服务端阻塞等待或 ``cancel=True`` 终止，
-      并返回当前状态、日志尾及已解析时序/资源/诊断摘要。
-    """
+    """查询、等待（wait_seconds 0~1800）或取消批处理/OOC 任务；job_id=None 返回最近任务列表。"""
     try:
         registry = _registry(ctx)
         tail_limit = max(0, min(int(log_tail_lines), 200))
@@ -198,4 +208,112 @@ async def get_batch_job(
     except KeyError:
         return _json_compact({"error": f"未找到批处理任务: {job_id}"})
     except (ValueError, RuntimeError, OSError) as exc:
+        return _error_json(exc)
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
+async def get_build_summary(
+    target: str | None = None,
+    run_name: str = "impl_1",
+    ctx: Context = None,
+) -> str:
+    """跨 Agent 构建总览（target=None，<1KB JSON）或单目标签核指标提取
+    （.xpr/.runs/OOC，<700B JSON）。"""
+    try:
+        if target is not None and str(target).strip():
+            summary = await asyncio.to_thread(
+                summarize_build_target,
+                str(target).strip(),
+                run_name=run_name,
+            )
+            return _json_compact(summary)
+
+        app_ctx = get_app_context(ctx)
+        registry = app_ctx.batch_jobs
+        shared_reg = getattr(app_ctx, "shared_registry", None)
+
+        from vivado_mcp.shared_registry import detect_client_source
+        from vivado_mcp.tools.console_app_tools import _build_known_eda_pids
+
+        async def _safe_local_sessions() -> list[dict[str, Any]]:
+            try:
+                return await app_ctx.session_manager.list_sessions(probe_external=False)
+            except Exception:
+                return []
+
+        sessions_task = asyncio.create_task(_safe_local_sessions())
+        jobs_task = asyncio.to_thread(registry.list_jobs, limit=12)
+        remote_task = (
+            asyncio.to_thread(shared_reg.list_remote_runs, exclude_owner_pid=None)
+            if shared_reg is not None
+            else asyncio.sleep(0, result=[])
+        )
+        sessions, jobs, remote_runs = await asyncio.gather(
+            sessions_task, jobs_task, remote_task
+        )
+        known_pids, has_attached_gui = _build_known_eda_pids(
+            sessions, jobs, remote_runs, detect_client_source()
+        )
+        telemetry = await asyncio.to_thread(
+            collect_system_telemetry,
+            known_pids,
+            has_attached_gui=has_attached_gui,
+        )
+
+        compact_runs = [
+            {
+                "client": r.get("client") or "",
+                "owner": r.get("owner_pid"),
+                "alive": bool(r.get("alive")),
+                "sid": r.get("session_id") or "",
+                "proj": r.get("project_name") or "",
+                "run": r.get("run_name") or "",
+                "status": r.get("status") or "",
+                "prog": r.get("progress"),
+                "wns": (r.get("timing") or {}).get("wns"),
+            }
+            for r in (remote_runs or [])[:8]
+        ]
+        compact_jobs = [
+            {
+                "id": j.get("job_id") or "",
+                "client": j.get("client") or "",
+                "owner": j.get("owner_pid") or 0,
+                "local": bool(j.get("is_local_owner")),
+                "status": j.get("status") or "",
+                "top": j.get("top") or "",
+                "wns": (j.get("timing") or {}).get("wns"),
+                "err": (j.get("diagnostics") or {}).get("errors"),
+            }
+            for j in (jobs or [])[:8]
+        ]
+        overview: dict[str, Any] = {
+            "ram": {
+                "used_gb": telemetry.get("ram_used_gb"),
+                "avail_gb": telemetry.get("ram_avail_gb"),
+                "pct": telemetry.get("ram_pct"),
+            },
+            "vivado": telemetry.get("vivado_count", 0),
+            "orphans": telemetry.get("orphan_count", 0),
+            "runs": compact_runs,
+            "jobs": compact_jobs,
+        }
+
+        def _bytes(obj: dict[str, Any]) -> int:
+            return len(_json_compact(obj).encode("utf-8"))
+
+        while _bytes(overview) >= 1000 and (overview["runs"] or overview["jobs"]):
+            if len(overview["jobs"]) >= len(overview["runs"]) and overview["jobs"]:
+                overview["jobs"].pop()
+            elif overview["runs"]:
+                overview["runs"].pop()
+        return _json_compact(overview)
+    except (ValueError, FileNotFoundError, RuntimeError, OSError) as exc:
         return _error_json(exc)

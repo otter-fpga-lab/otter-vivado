@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import asdict, dataclass, field
 
@@ -86,6 +87,7 @@ class TimingSummary:
     # 非 "ok" 时数值全零、timing_met 取保守值 False,消费方必须先看本字段,
     # 绝不能把"没解析到数据"当成 PASS。
     parse_status: str = "ok"
+    wpws: float | None = None
 
 
 @dataclass(frozen=True)
@@ -211,6 +213,19 @@ def _parse_summary_table(text: str) -> TimingSummary:
         # 数据行 token 不是数值(未知格式变体):显式标记格式不识别,不抛异常
         return _degraded_summary("unrecognized")
 
+    wpws: float | None = None
+    if (
+        len(tokens) >= 9
+        and "WPWS" in lines[header_idx].upper()
+        and tokens[8].upper() != "NA"
+    ):
+        try:
+            wpws_val = float(tokens[8])
+            if math.isfinite(wpws_val):
+                wpws = wpws_val
+        except ValueError:
+            wpws = None
+
     return TimingSummary(
         wns=wns,
         tns=tns,
@@ -218,7 +233,8 @@ def _parse_summary_table(text: str) -> TimingSummary:
         ths=ths,
         failing_endpoints=failing_setup,
         total_endpoints=total_setup,
-        timing_met=(wns >= 0 and whs >= 0),
+        timing_met=(wns >= 0 and whs >= 0 and (wpws is None or wpws >= 0)),
+        wpws=wpws,
     )
 
 

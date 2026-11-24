@@ -100,6 +100,8 @@
             <button type="button" class="filter-chip" data-filter="completed" id="chip-completed"><span class="led led-ok"></span>完成 <strong id="cnt-completed">0</strong></button>
             <button type="button" class="filter-chip" data-filter="failed" id="chip-failed"><span class="led led-fail"></span>异常 <strong id="cnt-failed">0</strong></button>
           </div>
+
+          <div class="filter-bar client-filter-bar" id="client-filter-bar" aria-label="按来源智能体过滤" hidden></div>
         </div>
 
         <div id="rail-list" class="sidebar-scroll"></div>
@@ -132,6 +134,7 @@
             <div class="pane-bar-left">
               <span id="pane-title" class="pane-title"></span>
               <span id="pane-status-pill" class="status-badge"></span>
+              <span id="pane-client-pill" class="client-pill" hidden></span>
               <span id="pane-kind-meta" class="pane-meta-text"></span>
             </div>
 
@@ -139,7 +142,7 @@
               <button type="button" class="tab-btn active" role="tab" data-tab="overview" aria-selected="true">总览</button>
               <button type="button" class="tab-btn" role="tab" data-tab="diagnostics" aria-selected="false">告警 <span id="tab-diag-badge" class="seg-badge" hidden>0</span></button>
               <button type="button" class="tab-btn" role="tab" data-tab="reports" aria-selected="false">报告 <span id="tab-rpt-badge" class="seg-badge" hidden>0</span></button>
-              <button type="button" class="tab-btn" role="tab" data-tab="sessions" aria-selected="false">调试 <span id="tab-sess-badge" class="seg-badge" hidden>0</span></button>
+              <button type="button" class="tab-btn" role="tab" data-tab="sessions" aria-selected="false">进程与调试 <span id="tab-sess-badge" class="seg-badge" hidden>0</span></button>
             </div>
 
             <div id="pane-actions" class="pane-actions"></div>
@@ -167,6 +170,7 @@
         >
           <span class="sb-local-dot" aria-hidden="true"></span>
           <span id="sb-local-addr" class="sb-local-addr">127.0.0.1:0</span>
+          <span id="sb-shared-badge" class="sb-shared-badge" hidden>共享</span>
           <span id="sb-local-copied" class="sb-local-copied" hidden>已复制</span>
         </button>
         <button
@@ -180,6 +184,17 @@
       </span>
       <span id="conn-badge" class="sb-item sb-conn" data-state="connecting">连接中</span>
       <div class="right">
+        <span id="sb-sys-wrap" class="sb-sys-wrap" data-level="normal" hidden>
+          <span class="sb-ram-bar" aria-hidden="true"><span id="sb-ram-fill" class="sb-ram-fill"></span></span>
+          <span id="sb-ram-text" class="sb-item sb-ram-text mono"></span>
+        </span>
+        <button
+          type="button"
+          id="btn-sb-orphans"
+          class="sb-orphan-pill"
+          title="点击查看并处理疑似残留 EDA 进程"
+          hidden
+        ></button>
         <span id="sb-vivado" class="sb-item sb-vivado">0 个 Vivado</span>
         <span class="sb-sep sb-hint" aria-hidden="true">·</span>
         <span class="sb-item sb-hint">零 Token 本地查看</span>

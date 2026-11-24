@@ -590,3 +590,96 @@ async def test_silent_exit_forensics_degrades_gracefully_on_tcl_and_ps_failure(
     assert "会话生效 general.maxThreads: 未取得" in result
     assert "Windows 事件日志" in result and "未取得" in result
     assert not result.startswith("[ERROR]")
+
+
+async def test_silent_exit_route_power_forensics_mentions_skip_route_power_report():
+    session = _session()
+    with patch("vivado_mcp.tools.report_tools._require_session", return_value=session):
+        result = await get_run_progress(ctx=_ctx())
+    assert "命中 Vivado 自动 report_power 静默退出特征" in result
+    assert "skip_route_power_report=True" in result
+    assert "physopt.dcp" in result
+
+
+async def test_run_implementation_skip_route_power_report_and_win2024_warning(monkeypatch):
+    from vivado_mcp.tools.flow_tools import run_implementation
+
+    # 1. skip_route_power_report=True 时在启动前禁用 impl_1_route_report_power_0
+    sess_skip = AsyncMock()
+    sess_skip.session_id = "s1"
+    sess_skip.execute = AsyncMock(
+        side_effect=[
+            _result("VMCP_RPWR_DISABLED"),
+            _result("VMCP_FS_OVERRIDE:generic=\nVMCP_FS_OVERRIDE:verilog_define="),
+            _result("VMCP_RUN_LAUNCH|started|Running"),
+        ]
+    )
+    with patch("vivado_mcp.tools.flow_tools._require_session", return_value=sess_skip):
+        out_skip = await run_implementation(
+            run_name="impl_1", session_id="s1", wait=False, skip_route_power_report=True, ctx=_ctx()
+        )
+    assert "已禁用 impl_1_route_report_power_0" in out_skip
+    assert "IS_ENABLED false" in sess_skip.execute.await_args_list[0].args[0]
+
+    # 2. Windows Vivado 2024.2 未禁用时发出 1 行风险提醒
+    monkeypatch.setattr(sys, "platform", "win32")
+    sess_warn = AsyncMock()
+    sess_warn.session_id = "s2"
+    sess_warn.runtime_version = "2024.2"
+    sess_warn.execute = AsyncMock(
+        side_effect=[
+            _result("VMCP_RPWR_ENABLED"),
+            _result("VMCP_FS_OVERRIDE:generic=\nVMCP_FS_OVERRIDE:verilog_define="),
+            _result("VMCP_RUN_LAUNCH|started|Running"),
+        ]
+    )
+    with patch("vivado_mcp.tools.flow_tools._require_session", return_value=sess_warn):
+        out_warn = await run_implementation(
+            run_name="impl_1", session_id="s2", wait=False, ctx=_ctx()
+        )
+    assert "skip_route_power_report=True" in out_warn
+    assert "2024.2" in out_warn
+
+
+async def test_wait_run_compact_saves_tokens_and_preserves_failure_forensics():
+    long_tail = [f"Phase log line {i}" for i in range(1, 26)]
+    session_c = _session(status="route_design Complete!", tail=long_tail, polls=[
+        "route_design Running...", "route_design Complete!",
+    ])
+    res_compact, _ = await _call_wait(session_c, until="route_design", compact=True)
+
+    session_f = _session(status="route_design Complete!", tail=long_tail, polls=[
+        "route_design Running...", "route_design Complete!",
+    ])
+    res_full, _ = await _call_wait(session_f, until="route_design", compact=False)
+
+    assert "=== wait_run: impl_1 until=route_design → 已到达 route_design ===" in res_compact
+    assert "=== impl_1 运行进度: 已完成 ===" in res_compact
+    assert len(res_compact) < len(res_full) * 0.65
+
+    # 失败时即使 compact=True 也保留完整静默退出取证
+    session_fail = _session(polls=["route_design ERROR"])
+    res_fail, _ = await _call_wait(session_fail, compact=True)
+    assert "→ 失败 ===" in res_fail
+    assert "子进程静默退出" in res_fail
+    assert "skip_route_power_report=True" in res_fail
+
+
+def test_physopt_checkpoint_before_route_does_not_mask_route_power_silent_exit():
+    from vivado_mcp.analysis.warning_parser import (
+        detect_silent_run_child_exit,
+        is_route_power_silent_exit,
+    )
+
+    body = "\n".join(
+        [
+            "The checkpoint 'C:/proj/impl_1/top_physopt.dcp' has been generated.",
+            "route_design completed successfully",
+            "Command: report_power -file top_power_routed.rpt",
+        ]
+    )
+    assert is_route_power_silent_exit(body) is True
+    diag = detect_silent_run_child_exit("route_design ERROR", body)
+    assert "[命中 Vivado 自动 report_power 静默退出特征]" in diag
+    assert "checkpoint 已写出" not in diag
+    assert "没有 `The checkpoint ... has been generated`" in diag

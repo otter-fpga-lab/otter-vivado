@@ -48,7 +48,7 @@ GUI 使用已有 `start_session` 的 `gui`/`attach` 模式和 Vivado 工程命�
 
 ## 进度与报告
 
-需要可视化总览（Runs、Batch/OOC 任务、离线 `.xpr`/`.runs` 与 ILA 会话）时，Antigravity 使用原生侧栏「Vivado 控制台」（`open_vivado_console()`），Codex / 浏览器客户端传 `open_vivado_console(open_browser=True)` 在本机浏览器打开同款控制台；界面实时展示本机 `127.0.0.1` 地址供一键复制或浏览器打开，完整 `.rpt` 与长日志由控制台按需零 Token 预览（不在对话中倾倒原始报告正文）。需要单 run 独立本机 HTTP 面板时，`open_run_monitor` 返回本机 URL；`get_run_snapshot` 读取同一缓存。两者只登记/读取观察器，不启动构建。首次 `waiting` 允许等待采样；`busy`、失联或错误时先看最后成功采样时间，保留原始原因。
+需要跨 Agent 可视化总览（本地 Runs、跨客户端线程、Batch/OOC 任务、主机内存/孤儿进程与离线 `.xpr`/`.runs` 检视）时，Antigravity 使用原生侧栏「Vivado 控制台」（`open_vivado_console()`），Codex / 浏览器客户端传 `open_vivado_console(open_browser=True)` 在本机共享端口 `http://127.0.0.1:18765/` 打开同款控制台；模型侧快速查跨 Agent 状态或单目标签核指标优先用 `get_build_summary()`（`<1KB` / `<700B` JSON），Windows Vivado 2024.2 如遇 route 后自动 `report_power` 静默退出可用 `run_implementation(..., skip_route_power_report=True)`。需要单 run 独立本机 HTTP 面板时，`open_run_monitor` 返回本机 URL；`get_run_snapshot` 读取同一缓存。两者只登记/读取观察器，不启动构建。首次 `waiting` 允许等待采样；`busy`、失联或错误时先看最后成功采样时间，保留原始原因。
 
 判断顺序：
 
