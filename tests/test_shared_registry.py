@@ -81,6 +81,29 @@ def test_detect_client_source_env_precedence_and_fallback(monkeypatch):
         monkeypatch.setenv("CURSOR_TRACE_ID", "cur-1")
         detect_client_source.cache_clear()
         assert detect_client_source() == "Cursor"
+
+        # 祖先链优先匹配 AI 客户端（Code.exe -> codex.exe -> python 归属 Codex，而非 VS Code）
+        _clear_client_env(monkeypatch)
+        monkeypatch.setattr(
+            "vivado_mcp.shared_registry._ancestor_process_names",
+            lambda: ["python.exe", "python.exe", "codex.exe", "code.exe"],
+        )
+        detect_client_source.cache_clear()
+        assert detect_client_source() == "Codex"
+
+        monkeypatch.setattr(
+            "vivado_mcp.shared_registry._ancestor_process_names",
+            lambda: ["python.exe", "language_server_windows_x64.exe", "code.exe"],
+        )
+        detect_client_source.cache_clear()
+        assert detect_client_source() == "Antigravity"
+
+        monkeypatch.setattr(
+            "vivado_mcp.shared_registry._ancestor_process_names",
+            lambda: ["pwsh.exe", "code.exe"],
+        )
+        detect_client_source.cache_clear()
+        assert detect_client_source() == "VS Code"
     finally:
         detect_client_source.cache_clear()
 

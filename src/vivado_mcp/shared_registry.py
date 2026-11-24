@@ -93,7 +93,7 @@ def is_pid_alive(pid: int) -> bool:
         return False
 
 
-def _ancestor_process_names(max_depth: int = 12) -> list[str]:
+def _ancestor_process_names(max_depth: int = 16) -> list[str]:
     """沿父进程链收集祖先进程可执行文件名（小写），用于客户端来源识别。"""
     names: list[str] = []
     if sys.platform == "win32":
@@ -196,9 +196,10 @@ def detect_client_source() -> str:
     ):
         return "Antigravity"
 
-    # 2. 父进程链匹配
-    for proc_name in _ancestor_process_names():
-        stem = proc_name.removesuffix(".exe")
+    # 2. 父进程链优先匹配 AI 客户端（跨完整 16 跳链，确保 Code.exe -> codex.exe 归属 Codex）
+    ancestors = list(_ancestor_process_names())
+    for proc_name in ancestors:
+        stem = str(proc_name).replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
         if stem == "codex" or stem.startswith("codex-"):
             return "Codex"
         if stem == "claude" or stem.startswith("claude-"):
@@ -222,6 +223,12 @@ def detect_client_source() -> str:
         return "Cursor"
     if "CODEX_SESSION_ID" in env_upper:
         return "Codex"
+
+    # 4. 编辑器宿主兜底（仅当整条祖先链和环境变量均未识别出 AI 客户端时）
+    for proc_name in ancestors:
+        stem = str(proc_name).replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+        if stem in {"code", "code-insiders", "codium"}:
+            return "VS Code"
 
     return "CLI"
 

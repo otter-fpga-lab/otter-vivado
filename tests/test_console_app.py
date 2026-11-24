@@ -1128,3 +1128,244 @@ async def test_windows_exclusive_bind_shared_hub_failover_and_known_gui_pids(
     )
     assert has_ext is True
     assert known_ext == {} or os.getpid() in known_ext or len(known_ext) >= 0
+
+    # 4. 非本进程 batch_job 缺失 client 时绝不甩锅给 local_client，且真实校验 owner 存活
+    known_batch, _ = _build_known_eda_pids(
+        [],
+        [
+            {
+                "job_id": "pre_update_codex",
+                "status": "running",
+                "pid": 55501,
+                "owner_pid": 0,
+                "client": "",
+                "is_local_owner": False,
+                "top": "isp_top",
+            },
+            {
+                "job_id": "local_antigravity",
+                "status": "running",
+                "pid": 55502,
+                "owner_pid": os.getpid(),
+                "client": "",
+                "is_local_owner": True,
+                "top": "local_top",
+            },
+            {
+                "job_id": "remote_live_codex",
+                "status": "running",
+                "pid": 55503,
+                "owner_pid": os.getpid(),
+                "client": "Codex",
+                "is_local_owner": False,
+                "top": "remote_live",
+            },
+        ],
+        [],
+        "Antigravity",
+    )
+    assert known_batch[55501]["owner_client"] == ""
+    assert known_batch[55501]["owner_alive"] is False
+    assert known_batch[55502]["owner_client"] == "Antigravity"
+    assert known_batch[55502]["owner_alive"] is True
+    assert known_batch[55503]["owner_client"] == "Codex"
+    assert known_batch[55503]["owner_alive"] is True
+
+
+async def test_console_state_backfills_client_attribution_enriches_eta_and_shrinks_budget(
+    monkeypatch, tmp_path
+):
+    from vivado_mcp import system_telemetry
+    from vivado_mcp.shared_registry import SharedRegistry
+    from vivado_mcp.tools import console_app_tools
+
+    monkeypatch.setattr(
+        "vivado_mcp.shared_registry.detect_client_source", lambda: "Antigravity"
+    )
+    monkeypatch.setattr(
+        console_app_tools, "detect_client_source", lambda: "Antigravity"
+    )
+
+    ctx, app_ctx = _make_context(tmp_path)
+    app_ctx.shared_registry = SharedRegistry(registry_dir=tmp_path / "registry")
+
+    # 1. Pre-update Codex job (client="", owner_pid=0, is_local_owner=False)
+    ooc_dir = tmp_path / "ooc_run"
+    ooc_dir.mkdir()
+    ooc_log = ooc_dir / "vivado.log"
+    ooc_log.write_text(
+        "Command: synth_design -top fft_core -part xc7a35tcpg236-1 -mode out_of_context\n"
+        "Finished RTL Elaboration : Time (s): cpu = 00:00:05 ; elapsed = 00:00:08 .\n"
+        "Start Technology Mapping\n",
+        encoding="utf-8",
+    )
+    pre_job = batch_jobs.BatchJob(
+        job_id="20261124_ooc_pre",
+        kind="ooc_synth",
+        status="running",
+        started_at=1000.0,
+        elapsed_sec=22.0,
+        pid=55555,
+        owner_pid=0,
+        client="",
+        top="fft_core",
+        part="xc7a35tcpg236-1",
+        output_dir=str(ooc_dir),
+        log_path=str(ooc_log),
+    )
+    app_ctx.batch_jobs._ensure_loaded()
+    app_ctx.batch_jobs._jobs[pre_job.job_id] = pre_job
+    app_ctx.batch_jobs._processes[pre_job.job_id] = SimpleNamespace(returncode=None)  # type: ignore[assignment]
+
+    # 2. Remote run with generic client="CLI"
+    impl_dir = tmp_path / "proj" / "demo.runs" / "impl_1"
+    impl_dir.mkdir(parents=True)
+    (impl_dir / ".vivado.begin.rst").write_text("<ProcessHandle/>", encoding="utf-8")
+    (impl_dir / "runme.log").write_text(
+        "Command: init_design\n"
+        "init_design: Time (s): cpu = 00:00:08 ; elapsed = 00:00:12 .\n"
+        "init_design completed successfully\n"
+        "Command: place_design\n"
+        "Phase 4.1 Global Placement\n",
+        encoding="utf-8",
+    )
+    live_remote_pid = 66666
+    monkeypatch.setattr(
+        "vivado_mcp.shared_registry.is_pid_alive",
+        lambda pid: pid in {live_remote_pid, 44444},
+    )
+    monkeypatch.setattr(
+        console_app_tools,
+        "is_pid_alive",
+        lambda pid: pid in {live_remote_pid, 44444},
+    )
+    app_ctx.shared_registry.sessions_dir.mkdir(parents=True, exist_ok=True)
+    (app_ctx.shared_registry.sessions_dir / f"{live_remote_pid}_s1.json").write_text(
+        json.dumps(
+            {
+                "entry_id": f"{live_remote_pid}_s1",
+                "owner_pid": live_remote_pid,
+                "client": "CLI",
+                "session_id": "s1",
+                "vivado_pid": 77777,
+                "project_name": "demo",
+                "run_name": "impl_1",
+                "target_step": "route_design",
+                "run_dir": str(impl_dir),
+                "status": "running",
+                "updated_at": 1e12,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        console_app_tools,
+        "infer_pids_clients",
+        lambda pids: {
+            pid: ("Codex", 44444)
+            for pid in pids
+            if pid in {55555, live_remote_pid, 77777}
+        },
+    )
+    seen_known: list[dict[int, dict]] = []
+
+    def _fake_telemetry(known_pids, *, has_attached_gui=False):
+        seen_known.append(dict(known_pids))
+        return {
+            "ram_used_gb": 16.0,
+            "ram_total_gb": 64.0,
+            "ram_avail_gb": 48.0,
+            "ram_pct": 25.0,
+            "cpu_count": 16,
+            "vivado_count": 2,
+            "eda_count": 2,
+            "orphan_count": 0,
+            "eda_processes": [],
+        }
+
+    monkeypatch.setattr(console_app_tools, "collect_system_telemetry", _fake_telemetry)
+
+    try:
+        tools_before = {t.name: t.input_schema for t in await mcp.list_tools()}
+        assert set(tools_before["open_vivado_console"]["properties"]) == {
+            "inspect_path",
+            "job_id",
+            "open_browser",
+        }
+
+        state_res = await mcp.call_tool("vivado_console_state", {}, context=ctx)
+        assert not state_res.is_error
+        sc = state_res.structured_content
+        assert sc["client"] == "Antigravity"
+
+        job_out = next(j for j in sc["batch_jobs"] if j["job_id"] == "20261124_ooc_pre")
+        assert job_out["client"] == "Codex"
+        assert job_out["owner_pid"] == 44444
+        assert job_out["eta"]["flow"] == "synth"
+        assert job_out["eta"]["active_step_id"] == "tech_map"
+        assert job_out["eta"]["has_history"] is False
+        assert job_out["eta"]["estimated_pct"] is None
+
+        rr_out = sc["remote_runs"][0]
+        assert rr_out["client"] == "Codex"
+        assert rr_out["eta"]["flow"] == "impl"
+        assert rr_out["eta"]["active_step_id"] == "place_design"
+
+        # _build_known_eda_pids received Codex (never blamed Antigravity) & accurate owner_alive
+        assert seen_known[0][55555]["owner_client"] == "Codex"
+        assert seen_known[0][55555]["owner_alive"] is True
+        assert seen_known[0][77777]["owner_client"] == "Codex"
+        assert seen_known[0][77777]["owner_alive"] is True
+
+        # Dead owner_pid on remote batch_job marks owner_alive=False -> is_orphan=True
+        dead_known, _ = console_app_tools._build_known_eda_pids(
+            [],
+            [
+                {
+                    "job_id": "dead_codex_job",
+                    "status": "running",
+                    "pid": 88881,
+                    "owner_pid": 999991,
+                    "client": "Codex",
+                    "is_local_owner": False,
+                }
+            ],
+            [],
+            "Antigravity",
+        )
+        assert dead_known[88881]["owner_alive"] is False
+
+        # _shrink_payload pops eta only in extreme fallback and stays <= _MAX_STRUCTURED_BYTES
+        huge_state = {
+            "batch_jobs": [
+                {
+                    "job_id": f"j{i}",
+                    "reports": [{"name": f"r{k}.rpt"} for k in range(30)],
+                    "eta": {
+                        "flow": "impl",
+                        "steps": [{"id": f"s{k}", "label": "X" * 4000} for k in range(10)],
+                    },
+                    "diagnostics": {
+                        "top_issues": [{"message": "M" * 4000}],
+                        "all_issues": [{"message": "M" * 4000} for _ in range(10)],
+                    },
+                }
+                for i in range(10)
+            ],
+            "remote_runs": [],
+            "inspected_targets": [],
+            "run_monitors": [],
+            "debug_sessions": [],
+            "sessions": [],
+            "vivado_installs": [],
+        }
+        shrunk = _shrink_payload(huge_state, limit_bytes=_MAX_STRUCTURED_BYTES)
+        encoded = json.dumps(shrunk, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        assert len(encoded) <= _MAX_STRUCTURED_BYTES
+        assert all("eta" not in item for item in shrunk["batch_jobs"])
+        assert system_telemetry is not None
+    finally:
+        app_ctx.batch_jobs._processes.clear()
+        await app_ctx.batch_jobs.close()
+        app_ctx.shared_registry.close()

@@ -232,3 +232,230 @@ def test_kill_eda_process_rejects_dword_overflow_ppid_and_pid_reuse(monkeypatch)
     )
     with pytest.raises(ValueError, match="身份已变化"):
         st.kill_eda_process(54321)
+
+
+def test_infer_client_from_ancestors_pass1_ai_before_editors_and_no_cmd_terminal():
+    # 1. Codex Desktop: explorer -> codex -> python(.venv) -> python -> cmd -> vivado
+    parent_map = {
+        600: 500,  # vivado -> cmd
+        500: 400,  # cmd -> python
+        400: 300,  # python -> python
+        300: 200,  # python -> codex
+        200: 100,  # codex -> explorer
+    }
+    proc_names = {
+        600: "vivado.exe",
+        500: "cmd.exe",
+        400: "python.exe",
+        300: "python.exe",
+        200: "codex.exe",
+        100: "explorer.exe",
+    }
+    assert st.infer_client_from_ancestors(600, parent_map, proc_names) == ("Codex", 200)
+
+    # 2. VS Code Codex Ext: Code.exe -> codex.exe -> ... ALWAYS yields Codex, NEVER VS Code
+    proc_names_vscode_codex = {**proc_names, 100: "Code.exe"}
+    assert st.infer_client_from_ancestors(600, parent_map, proc_names_vscode_codex) == (
+        "Codex",
+        200,
+    )
+
+    # 3. Antigravity via language_server_* and Claude / Cursor
+    assert st.infer_client_from_ancestors(
+        30,
+        {30: 20, 20: 10},
+        {30: "vivado.exe", 20: "python.exe", 10: "language_server_windows_x64.exe"},
+    ) == ("Antigravity", 10)
+    assert st.infer_client_from_ancestors(
+        30, {30: 20, 20: 10}, {30: "vivado.exe", 20: "bash", 10: "claude.exe"}
+    ) == ("Claude", 10)
+    assert st.infer_client_from_ancestors(
+        30, {30: 20, 20: 10}, {30: "vivado.exe", 20: "zsh", 10: "cursor.exe"}
+    ) == ("Cursor", 10)
+
+    # 4. Interpreter cmdline matching (max 4 interpreters, ignores vivado_mcp codex path!)
+    calls: list[int] = []
+    pm_interp = {90: 80, 80: 70, 70: 60, 60: 50, 50: 40, 40: 30}
+    pn_interp = {
+        90: "vivado.exe",
+        80: "python.exe",
+        70: "python3.exe",
+        60: "node.exe",
+        50: "bun.exe",
+        40: "deno.exe",
+        30: "Code.exe",
+    }
+
+    def _loader_skip_vivado_mcp(pid: int) -> str:
+        calls.append(pid)
+        if pid == 80:
+            return r"C:\Users\dev\codex\otter-vivado\.venv\Scripts\python.exe -m vivado_mcp"
+        if pid == 50:
+            return r"bun C:\npm\@openai\codex\bin\codex.js"
+        return ""
+
+    assert st.infer_client_from_ancestors(
+        90, pm_interp, pn_interp, cmdline_loader=_loader_skip_vivado_mcp
+    ) == ("Codex", 50)
+    assert len(calls) <= 4
+
+    # 5th interpreter not inspected once cap=4 reached -> falls back to Pass 2 VS Code
+    calls.clear()
+
+    def _loader_5th_only(pid: int) -> str:
+        calls.append(pid)
+        if pid == 40:
+            return "deno run @anthropic-ai/claude-code"
+        return ""
+
+    assert st.infer_client_from_ancestors(
+        90, pm_interp, pn_interp, cmdline_loader=_loader_5th_only
+    ) == ("VS Code", 30)
+    assert len(calls) == 4
+
+    # Cursor resources/app & Antigravity cmdline
+    assert st.infer_client_from_ancestors(
+        20,
+        {20: 10},
+        {20: "vivado.exe", 10: "node.exe"},
+        cmdline_loader=lambda _p: r"node C:\Program Files\cursor\resources\app\main.js",
+    ) == ("Cursor", 10)
+    assert st.infer_client_from_ancestors(
+        20,
+        {20: 10},
+        {20: "vivado.exe", 10: "node.exe"},
+        cmdline_loader=lambda _p: "node /opt/antigravity/language_server_linux_x64",
+    ) == ("Antigravity", 10)
+
+    # Negative cmdline guards: vivado_mcp path and bare folder substrings must NEVER misclassify
+    assert st.infer_client_from_ancestors(
+        20,
+        {20: 10},
+        {20: "vivado.exe", 10: "python.exe"},
+        cmdline_loader=lambda _p: r"python.exe D:\antigravity_demo\run.py",
+    ) == ("", None)
+    assert st.infer_client_from_ancestors(
+        20,
+        {20: 10},
+        {20: "vivado.exe", 10: "python.exe"},
+        cmdline_loader=lambda _p: r"python.exe D:\projects\codex\sim.py",
+    ) == ("", None)
+    assert st.infer_client_from_ancestors(
+        30,
+        {30: 20, 20: 10},
+        {30: "vivado.exe", 20: "python.exe", 10: "node.exe"},
+        cmdline_loader=lambda pid: (
+            r"C:\work\antigravity\otter-vivado\.venv\Scripts\python.exe -m vivado_mcp"
+            if pid == 20
+            else r"node C:\npm\@openai\codex\bin\codex.js"
+        ),
+    ) == ("Codex", 10)
+    assert st.infer_client_from_ancestors(True, {1: 2}, {1: "codex.exe"}) == ("", None)
+    assert st.infer_client_from_ancestors(
+        10, {10: True}, {1: "codex.exe", 10: "vivado.exe"}  # type: ignore[dict-item]
+    ) == ("", None)
+
+    # 5. Pass 2 Terminal / VS Code hosts, and bare cmd.exe is NEVER "终端"
+    assert st.infer_client_from_ancestors(
+        30, {30: 20, 20: 10}, {30: "vivado.exe", 20: "powershell.exe", 10: "WindowsTerminal.exe"}
+    ) == ("终端", 20)
+    assert st.infer_client_from_ancestors(
+        20, {20: 10}, {20: "vivado.exe", 10: "cmd.exe"}
+    ) == ("", None)
+
+    # 6. Cycle safety & 14-hop depth within max_depth=16
+    assert st.infer_client_from_ancestors(
+        10, {10: 20, 20: 10}, {10: "python.exe", 20: "cmd.exe"}
+    ) == ("", None)
+    deep_pm = {i: i - 1 for i in range(2, 16)}
+    deep_pn = {i: "python.exe" for i in range(2, 16)}
+    deep_pn[1] = "codex.exe"
+    assert st.infer_client_from_ancestors(15, deep_pm, deep_pn) == ("Codex", 1)
+
+
+def test_infer_pids_clients_and_scan_eda_processes_upgrade(monkeypatch):
+    parent_map = {
+        3001: 2001,
+        2001: 1001,
+        3002: 2002,
+        2002: 1002,
+        3003: 9999,
+    }
+    proc_names = {
+        3001: "vivado.exe",
+        2001: "cmd.exe",
+        1001: "codex.exe",
+        3002: "vivado.exe",
+        2002: "pwsh.exe",
+        1002: "WindowsTerminal.exe",
+        3003: "vivado.exe",
+        9999: "cmd.exe",
+    }
+    monkeypatch.setattr(st, "_snapshot_process_tree", lambda: (parent_map, proc_names))
+    monkeypatch.setattr(st, "_query_process_cmdline", lambda pid: "")
+    inferred = st.infer_pids_clients([3001, 3002, 3003])
+    assert inferred == {3001: ("Codex", 1001), 3002: ("终端", 2002)}
+
+    # scan_eda_processes upgrades generic owner_client and attributes unregistered live ancestors
+    fake_raw = [
+        {
+            "pid": 3001,
+            "parent_pid": 2001,
+            "name": "vivado.exe",
+            "rss_mb": 4000.0,
+            "uptime_sec": 100.0,
+            "command_hint": r"vivado.exe -mode batch -log E:\proj\isp.runs\impl_1\runme.log",
+            "killable": True,
+            "inferred_client": "Codex",
+            "inferred_client_pid": 1001,
+            "project_hint": "isp/impl_1",
+        },
+        {
+            "pid": 3002,
+            "parent_pid": 2002,
+            "name": "vivado.exe",
+            "rss_mb": 1500.0,
+            "uptime_sec": 50.0,
+            "command_hint": r"vivado.exe -mode batch -source D:\work\build.tcl",
+            "killable": True,
+            "inferred_client": "终端",
+            "inferred_client_pid": 2002,
+            "project_hint": "build.tcl",
+        },
+        {
+            "pid": 3003,
+            "parent_pid": 9999,
+            "name": "vivado.exe",
+            "rss_mb": 900.0,
+            "uptime_sec": 20.0,
+            "command_hint": r"vivado.exe -mode gui D:\fpga\top.xpr",
+            "killable": True,
+            "inferred_client": "",
+            "inferred_client_pid": None,
+            "project_hint": "top.xpr",
+        },
+    ]
+    monkeypatch.setattr(st, "_raw_eda_process_list", lambda: (parent_map, fake_raw))
+    known = {
+        3001: {
+            "owner_client": "",
+            "owner_pid": None,
+            "owner_alive": True,
+            "label": "",
+            "is_attached_gui": False,
+        }
+    }
+    procs = {p["pid"]: p for p in st.scan_eda_processes(known, has_attached_gui=False)}
+    assert procs[3001]["owner_client"] == "Codex"
+    assert procs[3001]["owner_pid"] == 1001
+    assert procs[3001]["associated_label"] == "isp/impl_1"
+    assert procs[3001]["is_orphan"] is False
+
+    assert procs[3002]["owner_client"] == "终端"
+    assert procs[3002]["owner_pid"] == 2002
+    assert procs[3002]["associated_label"] == "build.tcl"
+    assert procs[3002]["is_orphan"] is False
+
+    assert procs[3003]["owner_client"] == "Vivado GUI"
+    assert procs[3003]["associated_label"] == "top.xpr"
+    assert procs[3003]["is_orphan"] is False

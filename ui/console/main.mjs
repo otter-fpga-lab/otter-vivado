@@ -128,6 +128,72 @@ function fmtDuration(sec) {
   return `${h}h ${m % 60}m`;
 }
 
+function fmtEtaDur(sec, compact = false) {
+  if (typeof sec !== "number" || !Number.isFinite(sec) || sec < 0) return "—";
+  const tot = Math.round(sec);
+  if (tot < 60) return `${tot}s`;
+  const m = Math.floor(tot / 60);
+  const s = tot % 60;
+  if (m < 60) return compact ? (s ? `${m}m${s}s` : `${m}m`) : `${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return compact ? (rm ? `${h}h${rm}m` : `${h}h`) : `${h}h ${rm}m`;
+}
+
+function fmtShortDur(sec) {
+  if (typeof sec !== "number" || !Number.isFinite(sec) || sec < 0) return "0s";
+  const tot = Math.round(sec);
+  if (tot < 60) return `${tot}s`;
+  if (tot < 3600) return `${Math.max(1, Math.round(tot / 60))}m`;
+  return `${(tot / 3600).toFixed(1).replace(/\.0$/, "")}h`;
+}
+
+function fmtRange(minSec, maxSec) {
+  if (typeof minSec !== "number" || typeof maxSec !== "number") return "—";
+  const lo = Math.max(0, Math.min(minSec, maxSec));
+  const hi = Math.max(lo, maxSec);
+  if (hi < 90) {
+    const a = Math.max(1, Math.round(lo));
+    const b = Math.max(a, Math.round(hi));
+    return a === b ? `${a} 秒` : `${a}–${b} 秒`;
+  }
+  if (hi < 5400) {
+    const a = Math.max(1, Math.round(lo / 60));
+    const b = Math.max(a, Math.round(hi / 60));
+    return a === b ? `${a} 分钟` : `${a}–${b} 分钟`;
+  }
+  const a = (lo / 3600).toFixed(1).replace(/\.0$/, "");
+  const b = (hi / 3600).toFixed(1).replace(/\.0$/, "");
+  return a === b ? `${a} 小时` : `${a}–${b} 小时`;
+}
+
+function clientSlug(name) {
+  const s = String(name || "").trim().toLowerCase();
+  if (!s) return "";
+  if (s.includes("codex")) return "codex";
+  if (s.includes("antigravity")) return "antigravity";
+  if (s.includes("claude")) return "claude";
+  if (s.includes("cursor")) return "cursor";
+  if (s === "vscode" || s.includes("vs code")) return "vscode";
+  if (s === "vivado gui" || s === "gui") return "gui";
+  if (s === "终端" || s === "cli") return "terminal";
+  return "";
+}
+
+function renderClientPill(name) {
+  if (!name) return "";
+  const slug = clientSlug(name);
+  return `<span class="client-pill"${slug ? ` data-client="${slug}"` : ""}>${escapeHtml(name)}</span>`;
+}
+
+function etaCurrentStepNumber(eta) {
+  const total = Number(eta?.total_steps || eta?.steps?.length || 0);
+  if (total <= 0) return 0;
+  const done = Number(eta?.completed_steps || 0);
+  const hasActive = Boolean(eta?.active_step_id || (eta?.steps || []).some((s) => s.state === "active"));
+  return Math.min(total, Math.max(hasActive ? 1 : 0, done + (hasActive ? 1 : 0)));
+}
+
 function fmtBytes(size) {
   if (typeof size !== "number" || !Number.isFinite(size)) return "";
   if (size < 1024) return `${size} B`;
@@ -486,6 +552,7 @@ function buildItems(state) {
       version: run.version || "",
       elapsedText: run.elapsed || "—",
       progressPct: typeof run.progress_percent === "number" ? run.progress_percent : null,
+      eta: mon.eta || run.eta || null,
       timing,
       utilization,
       diagnostics,
@@ -593,6 +660,7 @@ function buildItems(state) {
             : "—",
       progressPct:
         typeof rr.progress === "number" && Number.isFinite(rr.progress) ? rr.progress : null,
+      eta: rr.eta || null,
       timing,
       utilization,
       diagnostics,
@@ -640,6 +708,7 @@ function buildItems(state) {
       version: job.vivado_version || "",
       elapsedText: fmtDuration(job.elapsed_sec),
       progressPct: null,
+      eta: job.eta || null,
       timing: job.timing || { wns: null, tns: null, whs: null, ths: null, met: null, parse_status: "missing" },
       utilization: job.utilization || { lut: null, ff: null, bram: null, dsp: null },
       diagnostics: job.diagnostics || { errors: 0, critical_warnings: 0, warnings: 0, all_issues: [], warning_items: [] },
@@ -676,6 +745,7 @@ function buildItems(state) {
       version: insp.vivado_version || "",
       elapsedText: insp.inspected_at ? fmtTime(insp.inspected_at) : "—",
       progressPct: null,
+      eta: insp.eta || null,
       timing: insp.timing || { wns: null, tns: null, whs: null, ths: null, met: null, parse_status: "missing" },
       utilization: insp.utilization || { lut: null, ff: null, bram: null, dsp: null },
       diagnostics: insp.diagnostics || { errors: 0, critical_warnings: 0, warnings: 0, all_issues: [], warning_items: [] },
@@ -710,6 +780,7 @@ function buildItems(state) {
       version: "",
       elapsedText: dbg.observed_at ? fmtTime(dbg.observed_at) : "—",
       progressPct: null,
+      eta: null,
       timing: { wns: null, tns: null, whs: null, ths: null, met: null, parse_status: "missing" },
       utilization: { lut: null, ff: null, bram: null, dsp: null },
       diagnostics: {
@@ -1108,10 +1179,28 @@ function updateDynamicIsland(items, counts) {
   }
 
   const badgeStatus = String(badgeSource?.status || "").toLowerCase();
+  const badgeEta = badgeSource?.eta;
+  const badgeIsRunning = Boolean(badgeSource && statusBucket(badgeSource.status) === "running");
   if (badgeSource?.timing?.parse_status === "ok" && typeof badgeSource.timing.wns === "number") {
     badgeEl.hidden = false;
     badgeEl.textContent = `WNS ${fmtSlack(badgeSource.timing.wns)}ns`;
     badgeEl.dataset.tone = badgeSource.timing.met ? "ok" : "fail";
+  } else if (badgeIsRunning && badgeEta) {
+    if (badgeEta.overrun) {
+      badgeEl.hidden = false;
+      badgeEl.textContent = `超出 +${fmtShortDur(badgeEta.overrun_sec)}`;
+      badgeEl.dataset.tone = "warn";
+    } else if (badgeEta.has_history && typeof badgeEta.estimated_pct === "number") {
+      badgeEl.hidden = false;
+      badgeEl.textContent = `~${Math.round(badgeEta.estimated_pct)}%`;
+      badgeEl.dataset.tone = "running";
+    } else if (Number(badgeEta.total_steps || 0) > 0) {
+      badgeEl.hidden = false;
+      badgeEl.textContent = `阶段 ${etaCurrentStepNumber(badgeEta)}/${Number(badgeEta.total_steps)}`;
+      badgeEl.dataset.tone = "neutral";
+    } else {
+      badgeEl.hidden = true;
+    }
   } else if (running === 0 && failed > 1 && WATCH_ALERT_TONES[badgeStatus]) {
     badgeEl.hidden = false;
     badgeEl.textContent = STATUS_LABELS[badgeStatus] || badgeStatus;
@@ -1160,11 +1249,13 @@ function renderRail(items) {
     for (const item of groupItems) {
       const selected = item.uid === ui.selectedUid ? "true" : "false";
       const sLower = String(item.status || "").toLowerCase();
+      const isRunning = statusBucket(item.status) === "running";
       const alertTone = WATCH_ALERT_TONES[sLower] || "";
       const hasTiming = item.timing && item.timing.parse_status === "ok" && typeof item.timing.wns === "number";
       const alertLabel = !hasTiming && alertTone ? STATUS_LABELS[sLower] || "" : "";
-      const wnsText = hasTiming ? `${fmtSlack(item.timing.wns)}` : alertLabel || "—";
-      const metAttr = hasTiming
+      const eta = item.eta;
+      let wnsText = hasTiming ? `${fmtSlack(item.timing.wns)}` : alertLabel || "—";
+      let metAttr = hasTiming
         ? item.timing.met
           ? "true"
           : "false"
@@ -1173,15 +1264,29 @@ function renderRail(items) {
           : alertTone === "crit"
             ? "false"
             : "na";
+      if (!hasTiming && !alertLabel && isRunning && eta) {
+        if (eta.overrun) {
+          wnsText = `+${fmtShortDur(eta.overrun_sec)}`;
+          metAttr = "warn";
+        } else if (eta.has_history && typeof eta.estimated_pct === "number") {
+          wnsText = `~${Math.round(eta.estimated_pct)}%`;
+          metAttr = "running";
+        } else if (Number(eta.total_steps || 0) > 0) {
+          wnsText = `${Number(eta.completed_steps || 0)}/${Number(eta.total_steps)}`;
+          metAttr = "running";
+        }
+      }
       const led = ledClass(item.status, item.timing);
       const alertAttr = alertTone ? ` data-alert="${escapeHtml(alertTone)}"` : "";
       const subText =
         hasTiming && alertTone && STATUS_LABELS[sLower]
           ? `${STATUS_LABELS[sLower]} · ${item.subtitle}`
           : item.subtitle;
-      const clientPill = item.clientSource
-        ? `<span class="client-pill">${escapeHtml(item.clientSource)}</span>`
-        : "";
+      const clientPill = renderClientPill(item.clientSource);
+      const miniBar =
+        isRunning && eta?.has_history && typeof eta.estimated_pct === "number"
+          ? `<span class="nav-card-eta-track"${eta.overrun ? ' data-overrun="true"' : ""} aria-hidden="true"><span class="nav-card-eta-fill" data-pct="${Math.max(0, Math.min(100, eta.estimated_pct))}"></span></span>`
+          : "";
       html.push(`
         <button type="button" class="nav-card" data-uid="${escapeHtml(item.uid)}" data-selected="${selected}"${alertAttr}>
           <div class="nav-card-top">
@@ -1196,12 +1301,14 @@ function renderRail(items) {
             <span class="nav-card-sub">${escapeHtml(subText)}</span>
             <span>${escapeHtml(item.elapsedText)}</span>
           </div>
+          ${miniBar}
         </button>
       `);
     }
     html.push(`</div></div>`);
   }
   railEl.innerHTML = html.join("");
+  applyProgressWidths(railEl);
   if (ui.pendingScrollSelection) {
     ui.pendingScrollSelection = false;
     const activeCard = railEl.querySelector('.nav-card[data-selected="true"]');
@@ -1298,6 +1405,7 @@ function renderPaneBar(item) {
     }
     if (clientPillEl) {
       clientPillEl.hidden = true;
+      delete clientPillEl.dataset.client;
     }
     if (metaEl) {
       metaEl.textContent = "无选中构建目标 · 主机进程与本机服务";
@@ -1323,8 +1431,12 @@ function renderPaneBar(item) {
     if (item.clientSource) {
       clientPillEl.hidden = false;
       clientPillEl.textContent = item.clientSource;
+      const slug = clientSlug(item.clientSource);
+      if (slug) clientPillEl.dataset.client = slug;
+      else delete clientPillEl.dataset.client;
     } else {
       clientPillEl.hidden = true;
+      delete clientPillEl.dataset.client;
     }
   }
   if (metaEl) {
@@ -1372,6 +1484,184 @@ function applyProgressWidths(container) {
   for (const fill of container.querySelectorAll(".util-bar-fill[data-pct]")) {
     fill.style.width = `${fill.dataset.pct}%`;
   }
+  for (const seg of container.querySelectorAll(".eta-seg[data-seg-w]")) {
+    const w = Number(seg.dataset.segW);
+    if (Number.isFinite(w) && w > 0) {
+      seg.style.flex = `${w} 1 0%`;
+    }
+  }
+  for (const fill of container.querySelectorAll(".eta-seg-fill[data-fill-pct]")) {
+    const p = Number(fill.dataset.fillPct);
+    if (Number.isFinite(p)) {
+      fill.style.width = `${Math.max(0, Math.min(100, p))}%`;
+    }
+  }
+  for (const bar of container.querySelectorAll(".nav-card-eta-fill[data-pct]")) {
+    const p = Number(bar.dataset.pct);
+    if (Number.isFinite(p)) {
+      bar.style.width = `${Math.max(0, Math.min(100, p))}%`;
+    }
+  }
+}
+
+function renderEtaCard(item) {
+  const eta = item.eta;
+  if (!eta || !Array.isArray(eta.steps) || !eta.steps.length) return "";
+
+  const bucket = statusBucket(item.status);
+  const isRunning = bucket === "running";
+  const isFailed = bucket === "failed" || eta.steps.some((s) => s.state === "failed");
+  const allDone = !isRunning && !isFailed && eta.steps.every((s) => s.state === "done");
+  const isCompleted = !isFailed && (bucket === "completed" || allDone);
+
+  const activeStep = eta.steps.find((s) => s.state === "active") || null;
+  const failedStep = eta.steps.find((s) => s.state === "failed") || null;
+  let titleText = "构建阶段参考";
+  if (isRunning) {
+    const lbl = eta.active_step_label || activeStep?.label || "";
+    const cmd = activeStep?.cmd || eta.active_step_id || "";
+    titleText = lbl && cmd && lbl !== cmd ? `${lbl} · ${cmd}` : lbl || cmd || "构建运行中";
+  } else if (isFailed) {
+    const failName =
+      failedStep?.cmd || failedStep?.id || eta.active_step_id || failedStep?.label || eta.active_step_label || "";
+    titleText = failName ? `在 ${failName} 阶段中止` : "构建已中止";
+  } else if (isCompleted) {
+    titleText = "已完成全部阶段";
+  } else if (eta.active_step_label || eta.active_step_id) {
+    const lbl = eta.active_step_label || "";
+    const cmd = eta.active_step_id || "";
+    titleText = lbl && cmd && lbl !== cmd ? `${lbl} · ${cmd}` : lbl || cmd;
+  }
+
+  const subphaseHtml =
+    eta.active_subphase && (isRunning || isFailed)
+      ? `<span class="eta-subphase mono" title="${escapeHtml(eta.active_subphase)}">${escapeHtml(eta.active_subphase)}</span>`
+      : "";
+
+  const elapsedDisp =
+    typeof eta.elapsed_sec === "number" && Number.isFinite(eta.elapsed_sec)
+      ? fmtEtaDur(eta.elapsed_sec)
+      : item.elapsedText || "—";
+  const hasHistTotal = eta.has_history && typeof eta.hist_total_sec === "number" && Number.isFinite(eta.hist_total_sec);
+  const histDisp = hasHistTotal ? fmtEtaDur(eta.hist_total_sec) : "";
+  const curStep = etaCurrentStepNumber(eta);
+  const totalSteps = Number(eta.total_steps || eta.steps.length || 0);
+
+  let rightHtml = "";
+  if (isRunning) {
+    if (eta.has_history && eta.overrun) {
+      rightHtml = `<span class="eta-badge" data-tone="warn">超出历史基准 +${escapeHtml(fmtEtaDur(eta.overrun_sec || 0))}</span><span>已用 ${escapeHtml(elapsedDisp)}${histDisp ? ` / 参考 ~${escapeHtml(histDisp)}` : ""}</span>`;
+    } else if (eta.has_history) {
+      const pctBadge =
+        typeof eta.estimated_pct === "number"
+          ? `<span class="eta-badge" data-tone="accent">~${Math.round(eta.estimated_pct)}%</span>`
+          : totalSteps > 0
+            ? `<span class="eta-badge">阶段 ${curStep}/${totalSteps}</span>`
+            : "";
+      rightHtml = `<span>已用 ${escapeHtml(elapsedDisp)}${histDisp ? ` / 参考 ~${escapeHtml(histDisp)}` : ""}</span>${pctBadge}`;
+    } else {
+      rightHtml = `<span>已用 ${escapeHtml(elapsedDisp)}</span>${totalSteps > 0 ? `<span class="eta-badge">阶段 ${curStep}/${totalSteps}</span>` : ""}`;
+    }
+  } else if (isFailed) {
+    rightHtml = `<span class="eta-badge" data-tone="fail">阶段中止</span><span>已用 ${escapeHtml(elapsedDisp)}${histDisp ? ` / 参考 ~${escapeHtml(histDisp)}` : ""}</span>`;
+  } else if (isCompleted) {
+    rightHtml = `<span>总耗时 ${escapeHtml(elapsedDisp)}</span>${histDisp ? `<span class="eta-hist-delta"> · 历史参考 ~${escapeHtml(histDisp)}</span>` : ""}`;
+  } else {
+    rightHtml = `<span>耗时 ${escapeHtml(elapsedDisp)}${histDisp ? ` / 参考 ~${escapeHtml(histDisp)}` : ""}</span>`;
+  }
+
+  const segsHtml = [];
+  const chipsHtml = [];
+  for (const step of eta.steps) {
+    const st = step.state || "pending";
+    const weight =
+      typeof step.weight_pct === "number" && Number.isFinite(step.weight_pct) && step.weight_pct > 0
+        ? step.weight_pct
+        : Math.round((1000 / eta.steps.length)) / 10;
+    const hasActual = typeof step.elapsed_sec === "number" && Number.isFinite(step.elapsed_sec);
+    const hasHist = typeof step.hist_sec === "number" && Number.isFinite(step.hist_sec);
+    const hasStepPct = typeof step.step_pct === "number" && Number.isFinite(step.step_pct);
+    const isIndet = isRunning && st === "active" && (!hasStepPct || !hasHist);
+
+    let fillPct = 0;
+    if (st === "done" || st === "failed") {
+      fillPct = 100;
+    } else if (st === "active") {
+      fillPct = isIndet ? 55 : Math.max(8, Math.min(100, step.step_pct));
+    }
+
+    let durText = "";
+    if (st === "done") {
+      durText = hasActual ? fmtEtaDur(step.elapsed_sec, true) : hasHist ? `~${fmtEtaDur(step.hist_sec, true)}` : "";
+    } else if (st === "active") {
+      if (hasActual && hasHist) durText = `${fmtEtaDur(step.elapsed_sec, true)} / ~${fmtEtaDur(step.hist_sec, true)}`;
+      else if (hasActual) durText = fmtEtaDur(step.elapsed_sec, true);
+      else if (hasHist) durText = `~${fmtEtaDur(step.hist_sec, true)}`;
+      else durText = isRunning ? "进行中" : "";
+    } else if (st === "failed") {
+      durText = hasActual ? fmtEtaDur(step.elapsed_sec, true) : "中止";
+    } else if (hasHist) {
+      durText = `~${fmtEtaDur(step.hist_sec, true)}`;
+    }
+
+    const lbl = step.label || step.id || "";
+    const cmdSuffix = step.cmd && step.cmd !== lbl ? ` (${step.cmd})` : "";
+    const segTitle = `${lbl}${cmdSuffix}${durText ? ` · ${durText}` : ""}`;
+    segsHtml.push(
+      `<div class="eta-seg" data-state="${escapeHtml(st)}"${isIndet ? ' data-indeterminate="true"' : ""} data-seg-w="${escapeHtml(weight)}" title="${escapeHtml(segTitle)}"><span class="eta-seg-fill" data-fill-pct="${fillPct}"></span></div>`
+    );
+
+    const icon =
+      st === "done"
+        ? "✓"
+        : st === "active"
+          ? isRunning
+            ? '<span class="eta-step-dot"></span>'
+            : "●"
+          : st === "failed"
+            ? "✕"
+            : "○";
+    const overAttr = st === "active" && eta.overrun ? ' data-overrun="true"' : "";
+    chipsHtml.push(`
+      <span class="eta-step" data-state="${escapeHtml(st)}"${overAttr} title="${escapeHtml(segTitle)}">
+        <span class="eta-step-ic" aria-hidden="true">${icon}</span>
+        <span class="eta-step-lbl">${escapeHtml(lbl)}</span>
+        ${durText ? `<span class="eta-step-dur mono">${escapeHtml(durText)}</span>` : ""}
+      </span>
+    `);
+  }
+
+  let captionText = "";
+  const basis = eta.basis ? String(eta.basis) : "";
+  if (isRunning) {
+    if (eta.has_history && !eta.overrun && typeof eta.remaining_min_sec === "number" && typeof eta.remaining_max_sec === "number") {
+      captionText = `参考剩余约 ${fmtRange(eta.remaining_min_sec, eta.remaining_max_sec)}${basis ? ` · ${basis}` : ""}`;
+    } else if (eta.has_history && eta.overrun) {
+      captionText = `已超出历史参考区间，仍在推进中（Vivado 阶段波动属正常现象）${basis ? ` · ${basis}` : ""}`;
+    } else if (eta.has_history) {
+      captionText = basis || "正在对照历史耗时基准";
+    } else {
+      captionText = "首次运行，暂不猜测剩余时间；本次完成后将自动记录分阶段耗时基准";
+    }
+  } else {
+    const sampleNote = eta.sample_count ? ` · 已积累 ${eta.sample_count} 次成功样本` : "";
+    captionText = `${basis || "按阶段追踪"}${sampleNote}`;
+  }
+
+  return `
+    <div class="eta-card">
+      <div class="eta-head">
+        <div class="eta-head-left">
+          <span class="eta-title">${escapeHtml(titleText)}</span>
+          ${subphaseHtml}
+        </div>
+        <div class="eta-head-right mono">${rightHtml}</div>
+      </div>
+      <div class="eta-seg-bar"${eta.overrun ? ' data-overrun="true"' : ""} aria-label="构建阶段进度">${segsHtml.join("")}</div>
+      <p class="eta-caption">${escapeHtml(captionText)}</p>
+      <div class="eta-steps">${chipsHtml.join("")}</div>
+    </div>
+  `;
 }
 
 function renderOverview(item) {
@@ -1469,8 +1759,24 @@ function renderOverview(item) {
     })
     .join("");
 
+  const hasEta = Boolean(item.eta && Array.isArray(item.eta.steps) && item.eta.steps.length);
+  const isRunning = statusBucket(item.status) === "running";
+  const etaCardHtml = hasEta ? renderEtaCard(item) : "";
+  const flowNames = { impl: "Implementation", synth: "Synthesis", batch: "Batch / OOC" };
+  const etaStepsCount = Number(item.eta?.total_steps || item.eta?.steps?.length || 0);
+  const etaTopSection =
+    isRunning && hasEta
+      ? `<div>
+           <div class="group-head">
+             <span>构建进度与耗时参考</span>
+             <span class="group-head-sub">${escapeHtml(flowNames[item.eta.flow] || item.eta.flow || "")}${Number.isFinite(etaStepsCount) && etaStepsCount > 0 ? ` · ${etaStepsCount} 阶段` : ""}</span>
+           </div>
+           <div class="group">${etaCardHtml}</div>
+         </div>`
+      : "";
+
   const progressBlock =
-    typeof item.progressPct === "number"
+    !hasEta && typeof item.progressPct === "number"
       ? `<div class="progress-head-wrap">
            <div class="util-row-top">
              <span class="util-name">Vivado 原生进度</span>
@@ -1479,6 +1785,8 @@ function renderOverview(item) {
            <div class="util-bar-track"><div class="util-bar-fill" data-pct="${Math.max(0, Math.min(100, item.progressPct))}"></div></div>
          </div>`
       : "";
+
+  const timelineTopBlock = !isRunning && hasEta ? etaCardHtml : progressBlock;
 
   const phases = item.phases || [];
   const phaseHtml = phases.length
@@ -1534,6 +1842,7 @@ function renderOverview(item) {
   el.innerHTML = `
     <div class="stack">
       ${errNote}
+      ${etaTopSection}
 
       <div>
         <div class="group-head">
@@ -1578,7 +1887,7 @@ function renderOverview(item) {
           <span class="group-head-sub">${escapeHtml(item.currentPhase || "—")}</span>
         </div>
         <div class="group">
-          ${progressBlock}
+          ${timelineTopBlock}
           ${phaseHtml}
         </div>
       </div>
@@ -1929,14 +2238,11 @@ function renderSessionsTab() {
           const isOrphan = Boolean(proc.is_orphan);
           const isPending = ui.pendingKillPid === pid;
           const isKilling = ui.killingPid === pid;
-          const ownerTag = isOrphan
-            ? `<span class="proc-tag" data-tone="orphan">疑似残留</span>`
-            : proc.owner_client
-              ? `<span class="client-pill">${escapeHtml(proc.owner_client)}</span>`
-              : "";
+          const clientTag = proc.owner_client ? renderClientPill(proc.owner_client) : "";
+          const orphanTag = isOrphan ? `<span class="proc-tag" data-tone="orphan">疑似残留</span>` : "";
           const assocTag =
             proc.associated_label && proc.associated_label !== proc.owner_client
-              ? `<span class="kind-chip">${escapeHtml(proc.associated_label)}</span>`
+              ? `<span class="kind-chip proc-assoc" title="${escapeHtml(proc.associated_label)}">${escapeHtml(proc.associated_label)}</span>`
               : "";
           const killHtml =
             proc.killable !== false
@@ -1947,7 +2253,8 @@ function renderSessionsTab() {
               <div class="proc-main">
                 <div class="proc-title-line">
                   <span class="proc-name mono">${escapeHtml(proc.name || "process")} · PID ${escapeHtml(pid)}</span>
-                  ${ownerTag}
+                  ${clientTag}
+                  ${orphanTag}
                   ${assocTag}
                 </div>
                 <div class="proc-meta-line">
@@ -2039,7 +2346,7 @@ function renderSessionsTab() {
           (s) => `
           <tr>
             <td class="mono">${escapeHtml(s.session_id)}</td>
-            <td><span class="client-pill">${escapeHtml(s.client)}</span></td>
+            <td>${renderClientPill(s.client)}</td>
             <td><span class="kind-chip">${escapeHtml(s.mode)}</span></td>
             <td><span class="status-badge" data-status="${escapeHtml(s.status)}">${escapeHtml(s.statusText)}</span></td>
             <td class="mono">${escapeHtml(s.port)}</td>

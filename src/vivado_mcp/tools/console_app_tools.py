@@ -19,6 +19,7 @@ from mcp.server.mcpserver import Context
 from mcp.types import CallToolResult, TextContent
 
 from vivado_mcp.batch_jobs import _decode_utf8_or_fallback, _is_link_or_junction
+from vivado_mcp.build_eta import compute_build_eta
 from vivado_mcp.config import list_vivado_installations
 from vivado_mcp.console_http import (
     ConsoleHttpServer,
@@ -26,8 +27,12 @@ from vivado_mcp.console_http import (
     probe_existing_console_hub,
 )
 from vivado_mcp.server import AppContext, get_app_context, mcp
-from vivado_mcp.shared_registry import detect_client_source
-from vivado_mcp.system_telemetry import collect_system_telemetry, kill_eda_process
+from vivado_mcp.shared_registry import detect_client_source, is_pid_alive
+from vivado_mcp.system_telemetry import (
+    collect_system_telemetry,
+    infer_pids_clients,
+    kill_eda_process,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -252,6 +257,19 @@ def _shrink_payload(
     if _json_byte_len(trimmed) <= limit_bytes:
         return trimmed
 
+    for bucket_key in ("batch_jobs", "inspected_targets", "remote_runs"):
+        for item in trimmed.get(bucket_key) or []:
+            if isinstance(item, dict):
+                item.pop("eta", None)
+    for mon in trimmed.get("run_monitors") or []:
+        if isinstance(mon, dict):
+            mon.pop("eta", None)
+            run = mon.get("run")
+            if isinstance(run, dict):
+                run.pop("eta", None)
+    if _json_byte_len(trimmed) <= limit_bytes:
+        return trimmed
+
     for keep in (8, 4, 2, 1, 0):
         for list_key in (
             "batch_jobs",
@@ -315,11 +333,25 @@ def _build_known_eda_pids(
         if not isinstance(job, dict) or job.get("status") != "running":
             continue
         pid = job.get("pid")
-        if isinstance(pid, int) and pid > 0:
+        if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+            raw_opid = job.get("owner_pid")
+            opid = (
+                raw_opid
+                if isinstance(raw_opid, int) and not isinstance(raw_opid, bool) and raw_opid > 0
+                else None
+            )
+            if job.get("is_local_owner"):
+                owner_alive = True
+            elif opid is not None:
+                owner_alive = is_pid_alive(opid)
+            else:
+                owner_alive = False
             known[pid] = {
-                "owner_client": str(job.get("client") or local_client),
-                "owner_pid": int(job.get("owner_pid") or 0) or None,
-                "owner_alive": True,
+                "owner_client": str(
+                    job.get("client") or (local_client if job.get("is_local_owner") else "")
+                ),
+                "owner_pid": opid,
+                "owner_alive": owner_alive,
                 "label": str(job.get("top") or job.get("job_id") or ""),
                 "is_attached_gui": False,
             }
@@ -348,6 +380,162 @@ def _build_known_eda_pids(
             known[opid] = info
 
     return known, has_attached_gui
+
+
+_GENERIC_CLIENTS = frozenset({"", "CLI", "外部"})
+
+
+def _collect_pids_needing_attribution(
+    batch_jobs: list[dict[str, Any]],
+    remote_runs: list[dict[str, Any]],
+) -> list[int]:
+    pids: list[int] = []
+    for job in batch_jobs:
+        if not isinstance(job, dict) or str(job.get("status") or "").lower() != "running":
+            continue
+        if str(job.get("client") or "").strip() not in _GENERIC_CLIENTS:
+            continue
+        for key_name in ("pid", "owner_pid"):
+            val = job.get(key_name)
+            if isinstance(val, int) and val > 0:
+                pids.append(val)
+    for rr in remote_runs:
+        if not isinstance(rr, dict):
+            continue
+        if not (rr.get("alive") or str(rr.get("status") or "").lower() == "running"):
+            continue
+        if str(rr.get("client") or "").strip() not in _GENERIC_CLIENTS:
+            continue
+        for key_name in ("vivado_pid", "owner_pid"):
+            val = rr.get(key_name)
+            if isinstance(val, int) and val > 0:
+                pids.append(val)
+    return pids
+
+
+def _backfill_inferred_clients(
+    batch_jobs: list[dict[str, Any]],
+    remote_runs: list[dict[str, Any]],
+    inferred_clients: dict[int, tuple[str, int | None]],
+) -> None:
+    if not inferred_clients:
+        return
+    for job in batch_jobs:
+        if not isinstance(job, dict) or str(job.get("status") or "").lower() != "running":
+            continue
+        if str(job.get("client") or "").strip() not in _GENERIC_CLIENTS:
+            continue
+        hit = None
+        for key_name in ("pid", "owner_pid"):
+            val = job.get(key_name)
+            if isinstance(val, int) and val in inferred_clients:
+                hit = inferred_clients[val]
+                break
+        if hit:
+            job["client"] = hit[0]
+            if not job.get("owner_pid") and hit[1]:
+                job["owner_pid"] = hit[1]
+    for rr in remote_runs:
+        if not isinstance(rr, dict):
+            continue
+        if not (rr.get("alive") or str(rr.get("status") or "").lower() == "running"):
+            continue
+        if str(rr.get("client") or "").strip() not in _GENERIC_CLIENTS:
+            continue
+        hit = None
+        for key_name in ("owner_pid", "vivado_pid"):
+            val = rr.get(key_name)
+            if isinstance(val, int) and val in inferred_clients:
+                hit = inferred_clients[val]
+                break
+        if hit:
+            rr["client"] = hit[0]
+            if not rr.get("owner_pid") and hit[1]:
+                rr["owner_pid"] = hit[1]
+
+
+def _enrich_etas_sync(
+    batch_jobs: list[dict[str, Any]],
+    remote_runs: list[dict[str, Any]],
+    run_monitors: list[dict[str, Any]],
+    inspected_targets: list[dict[str, Any]],
+) -> None:
+    for job in batch_jobs:
+        if not isinstance(job, dict):
+            continue
+        with contextlib.suppress(Exception):
+            eta = compute_build_eta(
+                status=str(job.get("status") or ""),
+                kind=str(job.get("kind") or ""),
+                project=str(job.get("project") or ""),
+                top=str(job.get("top") or ""),
+                part=str(job.get("part") or ""),
+                output_dir=job.get("output_dir") or None,
+                log_path=job.get("log_path") or None,
+                tcl_path=job.get("tcl_path") or None,
+                elapsed_sec=job.get("elapsed_sec"),
+                finished_at=job.get("finished_at"),
+            )
+            if eta is not None:
+                job["eta"] = eta
+
+    for rr in remote_runs:
+        if not isinstance(rr, dict):
+            continue
+        with contextlib.suppress(Exception):
+            eta = compute_build_eta(
+                status=str(rr.get("status") or rr.get("state") or ""),
+                run_name=str(rr.get("run_name") or ""),
+                target_step=str(rr.get("target_step") or ""),
+                project=str(rr.get("project_name") or ""),
+                top=str(rr.get("top") or ""),
+                part=str(rr.get("part") or ""),
+                xpr_path=str(rr.get("xpr_path") or ""),
+                run_dir=rr.get("run_dir") or None,
+                log_path=rr.get("log_path") or None,
+                elapsed_sec=rr.get("elapsed_sec"),
+            )
+            if eta is not None:
+                rr["eta"] = eta
+
+    for mon in run_monitors:
+        if not isinstance(mon, dict):
+            continue
+        run = mon.get("run")
+        if not isinstance(run, dict) or not run:
+            continue
+        with contextlib.suppress(Exception):
+            eta = compute_build_eta(
+                status=str(run.get("state") or mon.get("connection") or ""),
+                run_name=str(mon.get("run_name") or ""),
+                target_step=str(mon.get("target_step") or ""),
+                project=str(run.get("project") or ""),
+                top=str(run.get("top") or ""),
+                xpr_path=str(run.get("project_file") or ""),
+                run_dir=run.get("directory") or None,
+                log_path=run.get("log_path") or None,
+                elapsed_sec=run.get("elapsed"),
+            )
+            if eta is not None:
+                mon["eta"] = eta
+
+    for insp in inspected_targets:
+        if not isinstance(insp, dict):
+            continue
+        with contextlib.suppress(Exception):
+            eta = compute_build_eta(
+                status=str(insp.get("status") or ""),
+                kind=str(insp.get("kind") or ""),
+                project=str(insp.get("project") or ""),
+                top=str(insp.get("top") or ""),
+                part=str(insp.get("part") or ""),
+                xpr_path=str(insp.get("xpr_path") or ""),
+                output_dir=insp.get("output_dir") or None,
+                log_path=insp.get("log_path") or None,
+                runs=insp.get("runs") if isinstance(insp.get("runs"), list) else None,
+            )
+            if eta is not None:
+                insp["eta"] = eta
 
 
 async def collect_console_state(
@@ -427,12 +615,22 @@ async def collect_console_state(
         _sanitize_debug_snapshot(s) for s in app_ctx.debug_services.snapshots()
     ]
 
+    pids_to_infer = _collect_pids_needing_attribution(batch_jobs, remote_runs)
+    if pids_to_infer:
+        inferred_clients = await asyncio.to_thread(infer_pids_clients, pids_to_infer)
+        _backfill_inferred_clients(batch_jobs, remote_runs, inferred_clients)
+
     local_client = detect_client_source()
     known_pids, has_attached_gui = _build_known_eda_pids(
         sessions, batch_jobs, remote_runs, local_client
     )
-    system = await asyncio.to_thread(
-        collect_system_telemetry, known_pids, has_attached_gui=has_attached_gui
+    system, _ = await asyncio.gather(
+        asyncio.to_thread(
+            collect_system_telemetry, known_pids, has_attached_gui=has_attached_gui
+        ),
+        asyncio.to_thread(
+            _enrich_etas_sync, batch_jobs, remote_runs, run_monitors, inspected_targets
+        ),
     )
 
     state: dict[str, Any] = {

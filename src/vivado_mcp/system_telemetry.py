@@ -9,10 +9,12 @@ import contextlib
 import ctypes
 import functools
 import os
+import re
 import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +50,33 @@ _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _PROCESS_TERMINATE = 0x0001
 _TH32CS_SNAPPROCESS = 0x00000002
 _PROCESS_COMMAND_LINE_INFORMATION = 60
+
+_INTERPRETER_STEMS: frozenset[str] = frozenset(
+    {"node", "bun", "deno", "python", "python3", "pythonw"}
+)
+_VSCODE_HOST_STEMS: frozenset[str] = frozenset({"code", "code-insiders", "codium"})
+_TERMINAL_HOST_STEMS: frozenset[str] = frozenset(
+    {
+        "windowsterminal",
+        "wt",
+        "wezterm-gui",
+        "alacritty",
+        "kitty",
+        "mintty",
+        "powershell",
+        "pwsh",
+        "bash",
+        "zsh",
+    }
+)
+_RE_CMD_XPR = re.compile(r'(?:"([^"]+?\.xpr)"|\'([^\']+?\.xpr)\'|([^\s"\']+?\.xpr))', re.I)
+_RE_CMD_RUNS = re.compile(r"([^/\\\s\"']+?)\.runs[/\\]([^/\\\s\"']+)", re.I)
+_RE_CMD_SOURCE = re.compile(
+    r'(?:^|\s)-source\s+(?:"([^"]+)"|\'([^\']+)\'|([^\s"\']+))', re.I
+)
+_RE_CMD_LOG = re.compile(
+    r'(?:^|\s)-log\s+(?:"([^"]+)"|\'([^\']+)\'|([^\s"\']+))', re.I
+)
 
 if sys.platform == "win32":
     from ctypes import wintypes
@@ -206,14 +235,67 @@ def get_host_memory() -> dict[str, Any]:
     }
 
 
-def _query_win32_proc_details(pid: int) -> tuple[float, float, str]:
-    """查询单个 Windows 进程的 (rss_mb, uptime_sec, command_hint)。"""
+def _read_win32_cmdline_from_handle(k32: Any, ntdll: Any, handle: Any) -> str:
+    if ntdll is None:
+        return ""
+    needed = wintypes.ULONG(0)
+    ntdll.NtQueryInformationProcess(
+        handle, _PROCESS_COMMAND_LINE_INFORMATION, None, 0, ctypes.byref(needed)
+    )
+    if not (ctypes.sizeof(_UNICODE_STRING) <= needed.value <= 65536):
+        return ""
+    buf = ctypes.create_string_buffer(needed.value)
+    st = ntdll.NtQueryInformationProcess(
+        handle,
+        _PROCESS_COMMAND_LINE_INFORMATION,
+        buf,
+        needed.value,
+        ctypes.byref(needed),
+    )
+    if st != 0:
+        return ""
+    us = _UNICODE_STRING.from_buffer_copy(buf)
+    if us.Buffer and us.Length > 0:
+        return ctypes.wstring_at(us.Buffer, us.Length // 2)
+    return ""
+
+
+def _query_process_cmdline(pid: int) -> str:
+    """只读获取单个进程的完整命令行字符串，失败返回空串。"""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return ""
+    if sys.platform == "win32":
+        k32, ntdll = _win32_apis()
+        if ntdll is None:
+            return ""
+        handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return ""
+        try:
+            return _read_win32_cmdline_from_handle(k32, ntdll, handle)
+        except Exception:
+            return ""
+        finally:
+            k32.CloseHandle(handle)
+
+    cmdline_path = Path(f"/proc/{pid}/cmdline")
+    if cmdline_path.is_file():
+        with contextlib.suppress(OSError):
+            return cmdline_path.read_bytes().replace(b"\x00", b" ").decode(
+                "utf-8", errors="replace"
+            )
+    return ""
+
+
+def _query_win32_proc_details(pid: int) -> tuple[float, float, str, str]:
+    """查询单个 Windows 进程的 ``(rss_mb, uptime_sec, command_hint, raw_cmd)``。"""
     k32, ntdll = _win32_apis()
     handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
-        return 0.0, 0.0, ""
+        return 0.0, 0.0, "", ""
     rss_mb = 0.0
     uptime_sec = 0.0
+    raw_cmd = ""
     cmd_hint = ""
     try:
         pmc = _PROCESS_MEMORY_COUNTERS()
@@ -233,30 +315,14 @@ def _query_win32_proc_details(pid: int) -> tuple[float, float, str]:
                 created_unix = (ft_val - 116444736000000000) / 10_000_000.0
                 uptime_sec = round(max(0.0, time.time() - created_unix), 1)
 
-        if ntdll is not None:
-            needed = wintypes.ULONG(0)
-            ntdll.NtQueryInformationProcess(
-                handle, _PROCESS_COMMAND_LINE_INFORMATION, None, 0, ctypes.byref(needed)
-            )
-            if ctypes.sizeof(_UNICODE_STRING) <= needed.value <= 65536:
-                buf = ctypes.create_string_buffer(needed.value)
-                st = ntdll.NtQueryInformationProcess(
-                    handle,
-                    _PROCESS_COMMAND_LINE_INFORMATION,
-                    buf,
-                    needed.value,
-                    ctypes.byref(needed),
-                )
-                if st == 0:
-                    us = _UNICODE_STRING.from_buffer_copy(buf)
-                    if us.Buffer and us.Length > 0:
-                        raw_cmd = ctypes.wstring_at(us.Buffer, us.Length // 2)
-                        cmd_hint = _compact_command_hint(raw_cmd)
+        raw_cmd = _read_win32_cmdline_from_handle(k32, ntdll, handle)
+        if raw_cmd:
+            cmd_hint = _compact_command_hint(raw_cmd)
     except Exception:
         pass
     finally:
         k32.CloseHandle(handle)
-    return rss_mb, uptime_sec, cmd_hint
+    return rss_mb, uptime_sec, cmd_hint, raw_cmd
 
 
 def _compact_command_hint(raw_cmd: str) -> str:
@@ -264,6 +330,221 @@ def _compact_command_hint(raw_cmd: str) -> str:
     if len(text) <= 180:
         return text
     return f"{text[:85]} ... {text[-85:]}"
+
+
+def _extract_project_hint(cmd_text: str) -> str:
+    """从 Vivado 命令行中的 .xpr / -source / -log 提取可读工程或脚本线索。"""
+    text = (cmd_text or "").strip()
+    if not text:
+        return ""
+
+    def _basename(raw: str) -> str:
+        return raw.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+
+    m_xpr = _RE_CMD_XPR.search(text)
+    if m_xpr:
+        xpr = next((g for g in m_xpr.groups() if g), "")
+        if xpr:
+            return _basename(xpr)
+
+    m_runs = _RE_CMD_RUNS.search(text)
+    if m_runs:
+        return f"{m_runs.group(1)}/{m_runs.group(2)}"
+
+    m_src = _RE_CMD_SOURCE.search(text)
+    if m_src:
+        src = next((g for g in m_src.groups() if g), "")
+        if src:
+            return _basename(src)
+
+    m_log = _RE_CMD_LOG.search(text)
+    if m_log:
+        log = next((g for g in m_log.groups() if g), "")
+        if log:
+            parts = [p for p in log.replace("\\", "/").split("/") if p]
+            if len(parts) >= 2 and parts[-1].lower() in {"vivado.log", "runme.log"}:
+                return f"{parts[-2]}/{parts[-1]}"
+            return parts[-1]
+    return ""
+
+
+def _exe_stem(raw_name: str) -> str:
+    base = (raw_name or "").replace("\\", "/").rsplit("/", 1)[-1].strip().lower()
+    return base.removesuffix(".exe")
+
+
+def _is_interpreter_stem(stem: str) -> bool:
+    return stem in _INTERPRETER_STEMS or stem.startswith("python3.")
+
+
+def _match_ai_client_cmdline(cmd: str) -> str:
+    cmd_norm = (cmd or "").lower().replace("\\", "/")
+    if not cmd_norm:
+        return ""
+    if "vivado_mcp" in cmd_norm or "vivado-mcp" in cmd_norm:
+        return ""
+    if (
+        "@openai/codex" in cmd_norm
+        or "openai.chatgpt" in cmd_norm
+        or "/codex.js" in cmd_norm
+        or "/codex.mjs" in cmd_norm
+        or "codex-code-mode" in cmd_norm
+    ):
+        return "Codex"
+    if "@anthropic-ai/claude-code" in cmd_norm or "/claude-code" in cmd_norm:
+        return "Claude"
+    if (
+        "antigravity.exe" in cmd_norm
+        or "language_server_windows" in cmd_norm
+        or "language_server_linux" in cmd_norm
+        or "language_server_macos" in cmd_norm
+        or "/antigravity/resources/app" in cmd_norm
+    ):
+        return "Antigravity"
+    if "/cursor/resources/app" in cmd_norm or "cursor.app/contents/resources/app" in cmd_norm:
+        return "Cursor"
+    return ""
+
+
+def infer_client_from_ancestors(
+    pid: int,
+    parent_map: dict[int, int],
+    proc_names: dict[int, str],
+    *,
+    cmdline_loader: Callable[[int], str] | None = None,
+    max_depth: int = 16,
+) -> tuple[str, int | None]:
+    """沿 OS 父进程链最多回溯 ``max_depth`` 跳，识别所属 AI 客户端或编辑器/终端宿主。"""
+    if type(pid) is not int or pid <= 0:
+        return "", None
+
+    ancestors: list[tuple[int, str]] = []
+    seen: set[int] = {pid}
+    cur = parent_map.get(pid)
+    for _ in range(max_depth):
+        if type(cur) is not int or cur <= 0 or cur in seen:
+            break
+        seen.add(cur)
+        ancestors.append((cur, _exe_stem(proc_names.get(cur, ""))))
+        cur = parent_map.get(cur)
+
+    if not ancestors:
+        return "", None
+
+    # Pass 1: AI clients checked across full ancestor chain FIRST
+    for anc_pid, stem in ancestors:
+        if stem == "codex" or stem.startswith("codex-"):
+            return "Codex", anc_pid
+        if stem == "claude" or stem.startswith("claude-"):
+            return "Claude", anc_pid
+        if stem == "cursor" or stem.startswith("cursor-"):
+            return "Cursor", anc_pid
+        if (
+            stem == "antigravity"
+            or stem == "language_server"
+            or stem.startswith("language_server_")
+        ):
+            return "Antigravity", anc_pid
+
+    if cmdline_loader is not None:
+        inspected = 0
+        for anc_pid, stem in ancestors:
+            if not _is_interpreter_stem(stem):
+                continue
+            inspected += 1
+            cmd = ""
+            with contextlib.suppress(Exception):
+                cmd = cmdline_loader(anc_pid) or ""
+            matched = _match_ai_client_cmdline(cmd)
+            if matched:
+                return matched, anc_pid
+            if inspected >= 4:
+                break
+
+    # Pass 2: Editor / Terminal hosts (only if Pass 1 found nothing; never match bare cmd.exe)
+    for anc_pid, stem in ancestors:
+        if stem in _VSCODE_HOST_STEMS:
+            return "VS Code", anc_pid
+        if stem in _TERMINAL_HOST_STEMS:
+            return "终端", anc_pid
+
+    return "", None
+
+
+def _snapshot_process_tree() -> tuple[dict[int, int], dict[int, str]]:
+    """单次系统快照采集 ``(parent_map, proc_names)``。"""
+    parent_map: dict[int, int] = {}
+    proc_names: dict[int, str] = {}
+
+    if sys.platform == "win32":
+        k32, _ = _win32_apis()
+        snap = k32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
+        if not snap or snap == ctypes.c_void_p(-1).value:
+            return parent_map, proc_names
+        try:
+            entry = _PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
+            ok = k32.Process32FirstW(snap, ctypes.byref(entry))
+            while ok:
+                pid = int(entry.th32ProcessID)
+                ppid = int(entry.th32ParentProcessID)
+                exe_name = str(entry.szExeFile)
+                parent_map[pid] = ppid
+                proc_names[pid] = exe_name.lower()
+                ok = k32.Process32NextW(snap, ctypes.byref(entry))
+        finally:
+            k32.CloseHandle(snap)
+        return parent_map, proc_names
+
+    proc_root = Path("/proc")
+    if proc_root.is_dir():
+        for pdir in proc_root.iterdir():
+            if not pdir.name.isdigit():
+                continue
+            pid = int(pdir.name)
+            try:
+                stat_text = (pdir / "stat").read_text(encoding="utf-8", errors="replace")
+                lpar = stat_text.find("(")
+                rpar = stat_text.rfind(")")
+                if lpar == -1 or rpar <= lpar:
+                    continue
+                comm = stat_text[lpar + 1 : rpar]
+                rest = stat_text[rpar + 2 :].split()
+                ppid = int(rest[1]) if len(rest) >= 2 else 0
+                parent_map[pid] = ppid
+                proc_names[pid] = comm.lower()
+            except (OSError, ValueError):
+                continue
+    return parent_map, proc_names
+
+
+def infer_pids_clients(pids: Iterable[int]) -> dict[int, tuple[str, int | None]]:
+    """在单次进程树快照中批量推断各查询 PID 的真实所属客户端及宿主 PID。"""
+    unique_pids: list[int] = []
+    seen_pids: set[int] = set()
+    for p in pids:
+        if isinstance(p, int) and not isinstance(p, bool) and p > 0 and p not in seen_pids:
+            seen_pids.add(p)
+            unique_pids.append(p)
+    if not unique_pids:
+        return {}
+
+    parent_map, proc_names = _snapshot_process_tree()
+    cmd_cache: dict[int, str] = {}
+
+    def _cached_cmdline(anc_pid: int) -> str:
+        if anc_pid not in cmd_cache:
+            cmd_cache[anc_pid] = _query_process_cmdline(anc_pid)
+        return cmd_cache[anc_pid]
+
+    results: dict[int, tuple[str, int | None]] = {}
+    for pid in unique_pids:
+        client, client_pid = infer_client_from_ancestors(
+            pid, parent_map, proc_names, cmdline_loader=_cached_cmdline
+        )
+        if client:
+            results[pid] = (client, client_pid)
+    return results
 
 
 def _is_eda_target(name_lower: str) -> tuple[bool, bool]:
@@ -285,7 +566,14 @@ def _is_eda_target(name_lower: str) -> tuple[bool, bool]:
 def _raw_eda_process_list() -> tuple[dict[int, int], list[dict[str, Any]]]:
     """扫描系统活进程，返回 ``(parent_map, eda_raw_entries)``。"""
     parent_map: dict[int, int] = {}
+    proc_names: dict[int, str] = {}
     eda_entries: list[dict[str, Any]] = []
+    cmd_cache: dict[int, str] = {}
+
+    def _cached_cmdline(anc_pid: int) -> str:
+        if anc_pid not in cmd_cache:
+            cmd_cache[anc_pid] = _query_process_cmdline(anc_pid)
+        return cmd_cache[anc_pid]
 
     if sys.platform == "win32":
         k32, _ = _win32_apis()
@@ -302,6 +590,7 @@ def _raw_eda_process_list() -> tuple[dict[int, int], list[dict[str, Any]]]:
                 ppid = int(entry.th32ParentProcessID)
                 exe_name = str(entry.szExeFile)
                 parent_map[pid] = ppid
+                proc_names[pid] = exe_name.lower()
                 tracked, killable = _is_eda_target(exe_name.lower())
                 if tracked and pid > 4:
                     candidates.append((pid, ppid, exe_name, killable))
@@ -310,7 +599,10 @@ def _raw_eda_process_list() -> tuple[dict[int, int], list[dict[str, Any]]]:
             k32.CloseHandle(snap)
 
         for pid, ppid, exe_name, killable in candidates:
-            rss_mb, uptime_sec, cmd_hint = _query_win32_proc_details(pid)
+            rss_mb, uptime_sec, cmd_hint, raw_cmd = _query_win32_proc_details(pid)
+            inferred_client, inferred_client_pid = infer_client_from_ancestors(
+                pid, parent_map, proc_names, cmdline_loader=_cached_cmdline
+            )
             eda_entries.append(
                 {
                     "pid": pid,
@@ -320,12 +612,16 @@ def _raw_eda_process_list() -> tuple[dict[int, int], list[dict[str, Any]]]:
                     "uptime_sec": uptime_sec,
                     "command_hint": cmd_hint,
                     "killable": killable,
+                    "inferred_client": inferred_client,
+                    "inferred_client_pid": inferred_client_pid,
+                    "project_hint": _extract_project_hint(raw_cmd or cmd_hint),
                 }
             )
         return parent_map, eda_entries
 
     proc_root = Path("/proc")
     if proc_root.is_dir():
+        candidates_posix: list[tuple[int, int, str, bool, float, str, str]] = []
         for pdir in proc_root.iterdir():
             if not pdir.name.isdigit():
                 continue
@@ -340,33 +636,44 @@ def _raw_eda_process_list() -> tuple[dict[int, int], list[dict[str, Any]]]:
                 rest = stat_text[rpar + 2 :].split()
                 ppid = int(rest[1]) if len(rest) >= 2 else 0
                 parent_map[pid] = ppid
+                proc_names[pid] = comm.lower()
                 tracked, killable = _is_eda_target(comm.lower())
                 if not tracked:
                     continue
+                raw_cmd = ""
                 cmd_hint = ""
                 with contextlib.suppress(OSError):
-                    cmd_raw = (pdir / "cmdline").read_bytes().replace(b"\x00", b" ").decode(
+                    raw_cmd = (pdir / "cmdline").read_bytes().replace(b"\x00", b" ").decode(
                         "utf-8", errors="replace"
                     )
-                    cmd_hint = _compact_command_hint(cmd_raw)
+                    cmd_hint = _compact_command_hint(raw_cmd)
                 rss_mb = 0.0
                 with contextlib.suppress(OSError, ValueError):
                     statm = (pdir / "statm").read_text().split()
                     if len(statm) >= 2:
                         rss_mb = round((int(statm[1]) * os.sysconf("SC_PAGE_SIZE")) / (1024**2), 1)
-                eda_entries.append(
-                    {
-                        "pid": pid,
-                        "parent_pid": ppid,
-                        "name": comm,
-                        "rss_mb": rss_mb,
-                        "uptime_sec": 0.0,
-                        "command_hint": cmd_hint,
-                        "killable": killable,
-                    }
-                )
+                candidates_posix.append((pid, ppid, comm, killable, rss_mb, cmd_hint, raw_cmd))
             except (OSError, ValueError):
                 continue
+
+        for pid, ppid, comm, killable, rss_mb, cmd_hint, raw_cmd in candidates_posix:
+            inferred_client, inferred_client_pid = infer_client_from_ancestors(
+                pid, parent_map, proc_names, cmdline_loader=_cached_cmdline
+            )
+            eda_entries.append(
+                {
+                    "pid": pid,
+                    "parent_pid": ppid,
+                    "name": comm,
+                    "rss_mb": rss_mb,
+                    "uptime_sec": 0.0,
+                    "command_hint": cmd_hint,
+                    "killable": killable,
+                    "inferred_client": inferred_client,
+                    "inferred_client_pid": inferred_client_pid,
+                    "project_hint": _extract_project_hint(raw_cmd or cmd_hint),
+                }
+            )
     return parent_map, eda_entries
 
 
@@ -377,7 +684,7 @@ def _match_owner_info(
 ) -> dict[str, Any] | None:
     cur = pid
     seen: set[int] = set()
-    for _ in range(10):
+    for _ in range(16):
         if cur in known_pids:
             return known_pids[cur]
         ppid = parent_map.get(cur)
@@ -403,6 +710,9 @@ def scan_eda_processes(
         name = str(proc["name"])
         name_low = name.lower()
         cmd_hint = str(proc.get("command_hint") or "")
+        inferred_client = str(proc.get("inferred_client") or "")
+        inferred_client_pid = proc.get("inferred_client_pid")
+        project_hint = str(proc.get("project_hint") or "") or _extract_project_hint(cmd_hint)
         owner = _match_owner_info(pid, parent_map, known)
 
         owner_client = ""
@@ -418,6 +728,12 @@ def scan_eda_processes(
             owner_pid = int(opid) if isinstance(opid, int) else None
             associated_label = str(owner.get("label") or owner.get("associated_label") or "")
             is_orphan = (not owner_alive) and (not is_gui)
+            if owner_client in {"", "外部", "CLI"} and inferred_client:
+                owner_client = inferred_client
+            if owner_pid is None and isinstance(inferred_client_pid, int):
+                owner_pid = inferred_client_pid
+            if not associated_label and project_hint:
+                associated_label = project_hint
         else:
             # 若已有活跃 attach/external GUI 会话，将交互式 GUI vivado.exe 归为 GUI
             cmd_low = cmd_hint.lower()
@@ -434,8 +750,23 @@ def scan_eda_processes(
                 owner_client = "GUI"
                 associated_label = "Attached Vivado GUI"
                 is_orphan = False
+            elif inferred_client:
+                owner_client = inferred_client
+                owner_pid = (
+                    int(inferred_client_pid)
+                    if isinstance(inferred_client_pid, int)
+                    else None
+                )
+                associated_label = project_hint
+                is_orphan = False
+            elif is_vivado and "-mode gui" in cmd_low:
+                owner_client = "Vivado GUI"
+                associated_label = project_hint or "Vivado GUI"
+                is_orphan = False
             elif proc.get("killable", True):
                 is_orphan = True
+                if not associated_label and project_hint:
+                    associated_label = project_hint
 
         results.append(
             {
